@@ -66,18 +66,18 @@ type NodeKind = "file" | "class" | "interface" | "function" | "component";
 type EdgeKind = "import" | "call" | "extends" | "implements" | "renders";
 
 interface GraphNode {
-  id: string;          // stable: `${filePath}#${symbolName}` (or filePath for files)
+  id: string; // stable: `${filePath}#${symbolName}` (or filePath for files)
   kind: NodeKind;
-  label: string;       // display name
+  label: string; // display name
   filePath: string;
-  line: number;        // declaration line (1-based)
-  parentFile: string;  // owning file id, for collapse/expand
+  line: number; // declaration line (1-based)
+  parentFile: string; // owning file id, for collapse/expand
 }
 
 interface GraphEdge {
-  id: string;          // `${source}->${target}:${kind}`
-  source: string;      // node id
-  target: string;      // node id
+  id: string; // `${source}->${target}:${kind}`
+  source: string; // node id
+  target: string; // node id
   kind: EdgeKind;
 }
 
@@ -156,4 +156,3 @@ components/
 - Live filesystem watching or re-scan on change.
 - Analyzing non-JS/TS languages.
 - Editing code from the graph.
-```
