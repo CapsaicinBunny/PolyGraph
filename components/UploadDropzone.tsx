@@ -1,12 +1,51 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Box, Button, Heading, HStack, Spinner, Stack, Text } from "@chakra-ui/react";
+import { Box, Button, Heading, HStack, Progress, Stack, Text } from "@chakra-ui/react";
 import { readSourceFiles } from "@/lib/client/read-files";
 import type { AnalyzeResult, SourceFileMap } from "@/lib/graph/types";
 
 interface UploadDropzoneProps {
   onResult: (result: AnalyzeResult, stats: { fileCount: number; skipped: number }) => void;
+}
+
+type Phase = "idle" | "reading" | "analyzing";
+
+function ProgressBar({
+  phase,
+  progress,
+  fileCount,
+}: {
+  phase: Phase;
+  progress: { done: number; total: number };
+  fileCount: number;
+}) {
+  const reading = phase === "reading";
+  const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+  const label = reading
+    ? `Reading files… ${progress.done}/${progress.total || "…"}`
+    : `Analyzing ${fileCount} ${fileCount === 1 ? "file" : "files"}…`;
+
+  return (
+    <Progress.Root
+      // Indeterminate (animated stripes) while the server analyzes; determinate while reading.
+      value={reading ? pct : null}
+      w="full"
+      maxW="sm"
+      size="sm"
+      colorPalette="blue"
+      striped={!reading}
+      animated
+    >
+      <HStack justify="space-between" mb="1.5">
+        <Progress.Label>{label}</Progress.Label>
+        {reading && <Progress.ValueText />}
+      </HStack>
+      <Progress.Track>
+        <Progress.Range />
+      </Progress.Track>
+    </Progress.Root>
+  );
 }
 
 // Recursively collect File objects from a drag-drop of folders.
@@ -48,17 +87,17 @@ async function filesFromDataTransfer(dt: DataTransfer): Promise<File[]> {
 export function UploadDropzone({ onResult }: UploadDropzoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [fileCount, setFileCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
+  const busy = phase !== "idle";
+
   async function analyze(files: SourceFileMap, skipped: number) {
-    const fileCount = Object.keys(files).length;
-    if (fileCount === 0) {
-      setError("No .ts / .tsx / .js / .jsx files found in that folder.");
-      return;
-    }
-    setLoading(true);
-    setError(null);
+    const count = Object.keys(files).length;
+    setFileCount(count);
+    setPhase("analyzing");
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
@@ -70,16 +109,26 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         throw new Error(body.error ?? `Analysis failed (${res.status})`);
       }
       const result = (await res.json()) as AnalyzeResult;
-      onResult(result, { fileCount, skipped });
+      onResult(result, { fileCount: count, skipped });
+      // On success the parent swaps this view out; no need to reset state.
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed");
-    } finally {
-      setLoading(false);
+      setPhase("idle");
     }
   }
 
   async function handleFileList(list: FileList | File[]) {
-    const { files, skipped } = await readSourceFiles(list);
+    setError(null);
+    setProgress({ done: 0, total: 0 });
+    setPhase("reading");
+    const { files, skipped } = await readSourceFiles(list, (done, total) =>
+      setProgress({ done, total }),
+    );
+    if (Object.keys(files).length === 0) {
+      setPhase("idle");
+      setError("No .ts / .tsx / .js / .jsx files found in that folder.");
+      return;
+    }
     await analyze(files, skipped);
   }
 
@@ -99,12 +148,13 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
       textAlign="center"
       onDragOver={(e) => {
         e.preventDefault();
-        setDragging(true);
+        if (!busy) setDragging(true);
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={async (e) => {
         e.preventDefault();
         setDragging(false);
+        if (busy) return;
         const files = await filesFromDataTransfer(e.dataTransfer);
         await handleFileList(files);
       }}
@@ -121,11 +171,8 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
           </Text>
         </Text>
 
-        {loading ? (
-          <HStack gap="3" color="fg.muted">
-            <Spinner size="sm" />
-            <Text>Analyzing…</Text>
-          </HStack>
+        {busy ? (
+          <ProgressBar phase={phase} progress={progress} fileCount={fileCount} />
         ) : (
           <Button colorPalette="blue" size="lg" onClick={() => inputRef.current?.click()}>
             Choose folder

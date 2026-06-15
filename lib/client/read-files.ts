@@ -17,24 +17,38 @@ export interface ReadResult {
   skipped: number;
 }
 
+/** Reports how many source files have been read so far, out of the total to read. */
+export type ReadProgress = (done: number, total: number) => void;
+
 /** Read a list of uploaded files into a path->source map, filtering non-source files. */
-export async function readSourceFiles(fileList: FileList | File[]): Promise<ReadResult> {
+export async function readSourceFiles(
+  fileList: FileList | File[],
+  onProgress?: ReadProgress,
+): Promise<ReadResult> {
   const files: SourceFileMap = {};
   let skipped = 0;
 
-  const all = Array.from(fileList);
+  // First pass: filter to the source files we actually intend to read, so progress
+  // is reported against a meaningful total (not every file in node_modules).
+  const candidates: { path: string; file: File }[] = [];
+  for (const file of Array.from(fileList)) {
+    const path = relativePath(file);
+    if (!SOURCE_EXT.test(path) || IGNORE_DIR.test(path) || file.size > MAX_FILE_BYTES) {
+      skipped++;
+      continue;
+    }
+    candidates.push({ path, file });
+  }
+
+  const total = candidates.length;
+  let done = 0;
+  onProgress?.(0, total);
+
   await Promise.all(
-    all.map(async (file) => {
-      const path = relativePath(file);
-      if (!SOURCE_EXT.test(path) || IGNORE_DIR.test(path)) {
-        skipped++;
-        return;
-      }
-      if (file.size > MAX_FILE_BYTES) {
-        skipped++;
-        return;
-      }
+    candidates.map(async ({ path, file }) => {
       files[path] = await file.text();
+      done++;
+      onProgress?.(done, total);
     }),
   );
 
