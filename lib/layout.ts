@@ -93,7 +93,129 @@ function dagreLayout(
   return positions;
 }
 
-/** Concentric rings by graph distance from root (in-degree 0) nodes. */
+// --- Disconnected-graph handling -------------------------------------------
+// Views are typically sparse: many nodes have no edges in the current filter.
+// Laying the whole set out at once collapses badly — dagre dumps every isolated
+// node onto rank 0 (one ultra-wide row), radial piles them at the center. So we
+// split the view into connected components, lay each out independently with the
+// chosen algorithm, and shelf-pack the results: connected clusters read clearly
+// and singletons tile neatly instead of collapsing into a line/blob.
+
+/** Connected components (edges treated as undirected) via union-find. */
+function connectedComponents(view: LayoutInput): string[][] {
+  const parent = new Map<string, string>();
+  for (const n of view.nodes) parent.set(n.id, n.id);
+  const find = (x: string): string => {
+    let r = x;
+    while (parent.get(r) !== r) r = parent.get(r) as string;
+    while (parent.get(x) !== r) {
+      const next = parent.get(x) as string;
+      parent.set(x, r);
+      x = next;
+    }
+    return r;
+  };
+  for (const e of view.edges) {
+    if (!parent.has(e.source) || !parent.has(e.target)) continue;
+    const ra = find(e.source);
+    const rb = find(e.target);
+    if (ra !== rb) parent.set(ra, rb);
+  }
+  const groups = new Map<string, string[]>();
+  for (const n of view.nodes) {
+    const r = find(n.id);
+    const g = groups.get(r);
+    if (g) g.push(n.id);
+    else groups.set(r, [n.id]);
+  }
+  return [...groups.values()];
+}
+
+interface Box {
+  width: number;
+  height: number;
+}
+
+/** Row-major shelf packing (tallest box first); returns a top-left offset per box. */
+function shelfPack(boxes: Box[], gap: number): XYPosition[] {
+  const offsets: XYPosition[] = boxes.map(() => ({ x: 0, y: 0 }));
+  if (boxes.length === 0) return offsets;
+  const totalArea = boxes.reduce((a, b) => a + (b.width + gap) * (b.height + gap), 0);
+  const maxWidth = Math.max(...boxes.map((b) => b.width));
+  // Roughly square overall, but never narrower than the widest component.
+  const rowWidth = Math.max(maxWidth, Math.sqrt(totalArea) * 1.4);
+  const order = boxes.map((_, i) => i).sort((a, b) => boxes[b].height - boxes[a].height);
+  let x = 0;
+  let y = 0;
+  let shelfH = 0;
+  for (const i of order) {
+    const b = boxes[i];
+    if (x > 0 && x + b.width > rowWidth) {
+      x = 0;
+      y += shelfH + gap;
+      shelfH = 0;
+    }
+    offsets[i] = { x, y };
+    x += b.width + gap;
+    shelfH = Math.max(shelfH, b.height);
+  }
+  return offsets;
+}
+
+/** Lay each connected component out with `perComponent`, then shelf-pack them. */
+function layoutByComponents(
+  view: LayoutInput,
+  perComponent: (sub: LayoutInput) => Positions,
+): Positions {
+  const nodeById = new Map(view.nodes.map((n) => [n.id, n]));
+  const comps = connectedComponents(view);
+
+  const laid = comps.map((ids) => {
+    let positions: Positions;
+    if (ids.length === 1) {
+      const node = nodeById.get(ids[0]) as { id: string; kind: string };
+      positions = new Map([topLeft(node, 0, 0)]);
+    } else {
+      const idset = new Set(ids);
+      positions = perComponent({
+        nodes: ids.map((id) => nodeById.get(id) as { id: string; kind: string }),
+        edges: view.edges.filter((e) => idset.has(e.source) && idset.has(e.target)),
+      });
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const id of ids) {
+      const p = positions.get(id);
+      if (!p) continue;
+      const { width, height } = nodeSize(nodeById.get(id)?.kind ?? "");
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + width);
+      maxY = Math.max(maxY, p.y + height);
+    }
+    return { ids, positions, minX, minY, width: maxX - minX, height: maxY - minY };
+  });
+
+  const offsets = shelfPack(
+    laid.map((c) => ({ width: c.width, height: c.height })),
+    60,
+  );
+
+  const out: Positions = new Map();
+  laid.forEach((c, i) => {
+    const dx = offsets[i].x - c.minX;
+    const dy = offsets[i].y - c.minY;
+    for (const id of c.ids) {
+      const p = c.positions.get(id);
+      if (p) out.set(id, { x: p.x + dx, y: p.y + dy });
+    }
+  });
+  return out;
+}
+
+/** Concentric rings by graph distance from root (in-degree 0) nodes, for one component. */
 function radialLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   if (view.nodes.length === 0) return positions;
@@ -148,12 +270,17 @@ function radialLayout(view: LayoutInput): Positions {
   return positions;
 }
 
-/** All nodes evenly spaced on a single circle. */
+/** A component's nodes evenly spaced on a single circle. */
 function circularLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   const n = view.nodes.length;
   if (n === 0) return positions;
-  const radius = Math.max(220, (n * 90) / (2 * Math.PI));
+  if (n === 1) {
+    positions.set(...topLeft(view.nodes[0], 0, 0));
+    return positions;
+  }
+  // Radius from a fixed per-node arc length so nodes never crowd on the ring.
+  const radius = Math.max(160, (n * 80) / (2 * Math.PI));
   view.nodes.forEach((node, i) => {
     const angle = (i / n) * Math.PI * 2;
     positions.set(...topLeft(node, Math.cos(angle) * radius, Math.sin(angle) * radius));
@@ -193,20 +320,20 @@ function forceLayout(view: LayoutInput): Positions {
     .map((e) => ({ source: e.source, target: e.target }));
 
   const sim = forceSimulation(simNodes)
-    .force("charge", forceManyBody().strength(-500))
+    .force("charge", forceManyBody().strength(-1200).distanceMax(2200))
     .force(
       "link",
       forceLink<SimNode, { source: string; target: string }>(links)
         .id((d) => d.id)
-        .distance(150)
-        .strength(0.5),
+        .distance(220)
+        .strength(0.4),
     )
     .force("center", forceCenter(0, 0))
-    .force("collide", forceCollide(70))
+    .force("collide", forceCollide(110))
     .stop();
 
   // Run to convergence synchronously (no animation), deterministic given the input.
-  for (let i = 0; i < 320; i++) sim.tick();
+  for (let i = 0; i < 400; i++) sim.tick();
 
   view.nodes.forEach((node, i) => {
     const sn = simNodes[i];
@@ -260,16 +387,16 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
   const { algorithm = "layered", direction = "LR" } = options;
   switch (algorithm) {
     case "tree":
-      return dagreLayout(view, direction, "tight-tree");
+      return layoutByComponents(view, (sub) => dagreLayout(sub, direction, "tight-tree"));
     case "radial":
-      return radialLayout(view);
+      return layoutByComponents(view, radialLayout);
     case "circular":
-      return circularLayout(view);
+      return layoutByComponents(view, circularLayout);
     case "grid":
       return gridLayout(view);
     case "force":
       return forceLayout(view);
     default:
-      return dagreLayout(view, direction, "network-simplex");
+      return layoutByComponents(view, (sub) => dagreLayout(sub, direction, "network-simplex"));
   }
 }
