@@ -1,20 +1,22 @@
-; Kotlin language pack. Classes, objects, functions, and top-level properties
-; become nodes. Supertypes (class or interface) -> extends.
+; Kotlin language pack (tree-sitter-kotlin-ng). Classes, objects, functions, and
+; top-level properties become nodes. Supertypes -> extends.
 
 ; --- definitions ---
-(class_declaration (type_identifier) @name) @definition.class
-(object_declaration (type_identifier) @name) @definition.object
-(function_declaration (simple_identifier) @name) @definition.function
-(property_declaration (variable_declaration (simple_identifier) @name)) @definition.property
+(class_declaration name: (identifier) @name) @definition.class
+(object_declaration name: (identifier) @name) @definition.object
+(function_declaration name: (identifier) @name) @definition.function
+(property_declaration (variable_declaration (identifier) @name)) @definition.property
 
-; --- inheritance (Kotlin lists supertypes via delegation_specifier) ---
+; --- inheritance (supertypes via delegation_specifiers) ---
 (class_declaration
-  (delegation_specifier (constructor_invocation (user_type (type_identifier) @name)))) @reference.extends
+  (delegation_specifiers
+    (delegation_specifier (constructor_invocation (user_type (identifier) @name))))) @reference.extends
 (class_declaration
-  (delegation_specifier (user_type (type_identifier) @name))) @reference.extends
+  (delegation_specifiers
+    (delegation_specifier (type (user_type (identifier) @name))))) @reference.extends
 
 ; --- calls ---
-(call_expression (simple_identifier) @name) @reference.call
+(call_expression (identifier) @name) @reference.call
 
 ; --- imports (import a.b.C -> simple name C) ---
-(import_header (identifier) @module) @import
+(import [(identifier) (qualified_identifier)] @module) @import

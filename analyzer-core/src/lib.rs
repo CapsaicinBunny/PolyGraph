@@ -11,7 +11,9 @@ use std::collections::{HashMap, HashSet};
 
 use napi_derive::napi;
 use serde::Serialize;
+use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Parser, Query, QueryCursor};
+use tree_sitter_language::LanguageFn;
 
 #[derive(Serialize)]
 struct OutNode {
@@ -60,29 +62,23 @@ fn edge_id(s: &str, t: &str, kind: &str) -> String {
 
 fn language_for(grammar: &str) -> Option<tree_sitter::Language> {
     match grammar {
-        "python" => Some(tree_sitter_python::language()),
-        "java" => Some(tree_sitter_java::language()),
-        "kotlin" => Some(tree_sitter_kotlin::language()),
-        "rust" => Some(tree_sitter_rust::language()),
-        "go" => Some(tree_sitter_go::language()),
-        "scala" => Some(tree_sitter_scala::language()),
-        "json" => Some(tree_sitter_json::language()),
-        "csharp" => Some(tree_sitter_c_sharp::language()),
-        // F# ships a LanguageFn (needs tree-sitter 0.23+ to `.into()`); on 0.22 we
-        // bind its raw C entry point directly as the classic `() -> Language`.
-        "fsharp" => Some(unsafe { tree_sitter_fsharp() }),
+        "python" => Some(tree_sitter_python::LANGUAGE.into()),
+        "java" => Some(tree_sitter_java::LANGUAGE.into()),
+        "kotlin" => Some(tree_sitter_kotlin_ng::LANGUAGE.into()),
+        "rust" => Some(tree_sitter_rust::LANGUAGE.into()),
+        "go" => Some(tree_sitter_go::LANGUAGE.into()),
+        "scala" => Some(tree_sitter_scala::LANGUAGE.into()),
+        "json" => Some(tree_sitter_json::LANGUAGE.into()),
+        "csharp" => Some(tree_sitter_c_sharp::LANGUAGE.into()),
+        "fsharp" => Some(tree_sitter_fsharp::LANGUAGE_FSHARP.into()),
         // Vendored WebAssembly-text grammar (compiled by build.rs; see vendor/wat).
-        "wat" => Some(unsafe { tree_sitter_wat() }),
+        "wat" => Some(unsafe { LanguageFn::from_raw(tree_sitter_wat) }.into()),
         _ => None,
     }
 }
 
-// Force the F# grammar crate to link so its C entry point is available below.
-use tree_sitter_fsharp as _;
-
 extern "C" {
-    fn tree_sitter_wat() -> tree_sitter::Language;
-    fn tree_sitter_fsharp() -> tree_sitter::Language;
+    fn tree_sitter_wat() -> *const ();
 }
 
 const REF_KINDS: [&str; 7] = [
@@ -214,7 +210,8 @@ fn extract_file(file_path: &str, source: &str, parser: &mut Parser, query: &Quer
     let mut imports: Vec<RawImport> = Vec::new();
 
     let mut cursor = QueryCursor::new();
-    for m in cursor.matches(query, root, src) {
+    let mut query_matches = cursor.matches(query, root, src);
+    while let Some(m) = query_matches.next() {
         let mut name_node: Option<Node> = None;
         let mut def_kind: Option<String> = None;
         let mut def_node: Option<Node> = None;
