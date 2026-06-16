@@ -116,7 +116,7 @@ function GraphCanvasInner({
         onSelect(node.id);
       }}
     >
-      <Background gap={20} color="var(--chakra-colors-border-muted)" />
+      <Background gap={22} size={1} color="rgba(148, 163, 184, 0.10)" />
       <Controls showInteractive={false} />
       <MiniMap
         pannable
