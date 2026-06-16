@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Badge,
   Box,
@@ -19,6 +19,7 @@ import {
 } from "@chakra-ui/react";
 import { readSourceFiles } from "@/lib/client/read-files";
 import { apiBase } from "@/lib/client/api";
+import { isTauri } from "@/lib/client/env";
 import type { AnalyzeResult, SourceFileMap } from "@/lib/graph/types";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -152,6 +153,30 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
   const [error, setError] = useState<string | null>(null);
 
   const busy = phase !== "idle";
+
+  // Only true inside the Tauri desktop app (gated on mount to avoid a hydration
+  // mismatch against the statically-exported HTML).
+  const [tauri, setTauri] = useState(false);
+  useEffect(() => setTauri(isTauri()), []);
+
+  // Native folder picker (desktop only): returns a real absolute path, which the
+  // sidecar reads directly from disk.
+  async function pickFolder() {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const dir = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose a project folder",
+      });
+      if (typeof dir === "string") {
+        setPath(dir);
+        void scan(dir);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't open the folder picker.");
+    }
+  }
 
   // Primary path: the server reads the folder directly from disk (no upload).
   async function scan(dirPath: string) {
@@ -328,6 +353,11 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
                       }}
                     />
                   </InputGroup>
+                  {tauri && (
+                    <Button variant="outline" size="lg" onClick={() => void pickFolder()}>
+                      Choose folder…
+                    </Button>
+                  )}
                   <Button colorPalette="blue" size="lg" px="8" onClick={() => void scan(path)}>
                     Scan
                   </Button>
@@ -335,68 +365,72 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
               </Stack>
             </Box>
 
-            <HStack color="fg.subtle" fontSize="xs" gap="3">
-              <Box flex="1" h="1px" bg="border" />
-              <Text>or read a folder in your browser</Text>
-              <Box flex="1" h="1px" bg="border" />
-            </HStack>
+            {!tauri && (
+              <>
+                <HStack color="fg.subtle" fontSize="xs" gap="3">
+                  <Box flex="1" h="1px" bg="border" />
+                  <Text>or read a folder in your browser</Text>
+                  <Box flex="1" h="1px" bg="border" />
+                </HStack>
 
-            {/* Fallback: pick/drop a folder; files are read locally in the page. */}
-            <Box
-              role="button"
-              tabIndex={0}
-              w="full"
-              textAlign="center"
-              p={{ base: "8", md: "10" }}
-              borderWidth="2px"
-              borderStyle="dashed"
-              borderColor={dragging ? "blue.400" : "border.emphasized"}
-              rounded="2xl"
-              bg={dragging ? "blue.subtle" : "transparent"}
-              transition="all 0.15s"
-              cursor="pointer"
-              _hover={{ borderColor: "blue.400", bg: "bg.subtle" }}
-              onClick={() => inputRef.current?.click()}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  inputRef.current?.click();
-                }
-              }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setDragging(true);
-              }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={async (e) => {
-                e.preventDefault();
-                setDragging(false);
-                const files = await filesFromDataTransfer(e.dataTransfer);
-                await handleFileList(files);
-              }}
-            >
-              <Stack gap="2" align="center">
-                <Text fontSize="3xl">📂</Text>
-                <Text fontWeight="semibold" fontSize="md">
-                  Drop a project folder
-                </Text>
-                <Text fontSize="xs" color="fg.subtle" maxW="sm">
-                  Files are read here in the page and processed locally. Browsers can't reveal a
-                  folder's path, so this can't fill the box above — and your browser will ask to
-                  confirm reading the folder.
-                </Text>
-                <Flex wrap="wrap" justify="center" gap="1" pt="2" maxW="md">
-                  {SUPPORTED.map((ext) => (
-                    <Badge key={ext} size="sm" variant="outline" colorPalette="gray">
-                      {ext}
-                    </Badge>
-                  ))}
-                  <Badge size="sm" variant="outline" colorPalette="gray">
-                    +14 more
-                  </Badge>
-                </Flex>
-              </Stack>
-            </Box>
+                {/* Fallback: pick/drop a folder; files are read locally in the page. */}
+                <Box
+                  role="button"
+                  tabIndex={0}
+                  w="full"
+                  textAlign="center"
+                  p={{ base: "8", md: "10" }}
+                  borderWidth="2px"
+                  borderStyle="dashed"
+                  borderColor={dragging ? "blue.400" : "border.emphasized"}
+                  rounded="2xl"
+                  bg={dragging ? "blue.subtle" : "transparent"}
+                  transition="all 0.15s"
+                  cursor="pointer"
+                  _hover={{ borderColor: "blue.400", bg: "bg.subtle" }}
+                  onClick={() => inputRef.current?.click()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      inputRef.current?.click();
+                    }
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragging(true);
+                  }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    setDragging(false);
+                    const files = await filesFromDataTransfer(e.dataTransfer);
+                    await handleFileList(files);
+                  }}
+                >
+                  <Stack gap="2" align="center">
+                    <Text fontSize="3xl">📂</Text>
+                    <Text fontWeight="semibold" fontSize="md">
+                      Drop a project folder
+                    </Text>
+                    <Text fontSize="xs" color="fg.subtle" maxW="sm">
+                      Files are read here in the page and processed locally. Browsers can't reveal a
+                      folder's path, so this can't fill the box above — and your browser will ask to
+                      confirm reading the folder.
+                    </Text>
+                    <Flex wrap="wrap" justify="center" gap="1" pt="2" maxW="md">
+                      {SUPPORTED.map((ext) => (
+                        <Badge key={ext} size="sm" variant="outline" colorPalette="gray">
+                          {ext}
+                        </Badge>
+                      ))}
+                      <Badge size="sm" variant="outline" colorPalette="gray">
+                        +14 more
+                      </Badge>
+                    </Flex>
+                  </Stack>
+                </Box>
+              </>
+            )}
           </>
         )}
 

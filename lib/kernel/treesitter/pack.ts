@@ -27,10 +27,15 @@ interface PackMeta {
   queries?: string;
 }
 
-const PACKS_DIR = join(process.cwd(), "language-packs");
+// POLYGRAPH_PACKS lets a packaged build (Tauri) point at the bundled
+// language-packs resource dir; otherwise resolve relative to the working
+// directory for local dev and tests.
+function packsDir(): string {
+  return process.env.POLYGRAPH_PACKS || join(process.cwd(), "language-packs");
+}
 
 export async function loadPack(id: string): Promise<LanguagePack> {
-  const dir = join(PACKS_DIR, id);
+  const dir = join(packsDir(), id);
   const meta = parseYaml(await readFile(join(dir, "pack.yaml"), "utf8")) as PackMeta;
   const query = await readFile(join(dir, meta.queries ?? "tags.scm"), "utf8");
   return {
