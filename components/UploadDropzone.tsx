@@ -9,6 +9,7 @@ import {
   Flex,
   Heading,
   HStack,
+  Image,
   Input,
   InputGroup,
   Progress,
@@ -37,23 +38,6 @@ const CAPABILITIES: { label: string; palette: string }[] = [
 
 // A representative slice of the ~25 supported languages, shown on the dropzone.
 const SUPPORTED = ["TS", "JS", "Python", "Rust", "Go", "Java", "C++", "C#", "Swift", "Ruby", "SQL"];
-
-function GraphMark() {
-  return (
-    <svg viewBox="0 0 48 48" width="56" height="56" aria-hidden="true">
-      <g strokeWidth="2.5" strokeLinecap="round">
-        <line x1="15" y1="16" x2="31" y2="13" stroke="#64748b" />
-        <line x1="16" y1="18" x2="22" y2="33" stroke="#3b82f6" />
-        <line x1="33" y1="15" x2="34" y2="31" stroke="#a855f7" />
-        <line x1="24" y1="35" x2="33" y2="33" stroke="#22c55e" />
-      </g>
-      <circle cx="14" cy="16" r="5" fill="#94a3b8" />
-      <circle cx="33" cy="13" r="5" fill="#a855f7" />
-      <circle cx="23" cy="34" r="5" fill="#3b82f6" />
-      <circle cx="35" cy="32" r="5" fill="#22c55e" />
-    </svg>
-  );
-}
 
 function FolderIcon() {
   return (
@@ -243,17 +227,13 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
       <Stack gap="8">
         {/* Hero */}
         <Stack gap="4" align="center" textAlign="center">
-          <Box
-            color="fg"
-            p="3"
+          <Image
+            src="/polygraph-icon.svg"
+            alt="PolyGraph"
+            boxSize={{ base: "76px", md: "92px" }}
+            shadow="md"
             rounded="2xl"
-            bg="bg.subtle"
-            borderWidth="1px"
-            borderColor="border.emphasized"
-            shadow="sm"
-          >
-            <GraphMark />
-          </Box>
+          />
           <Stack gap="1.5" align="center">
             <Heading size={{ base: "xl", md: "2xl" }} letterSpacing="tight">
               PolyGraph

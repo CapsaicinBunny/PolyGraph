@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">PolyGraph icon</title>
+  <desc id="desc">A stylized letter P made from interconnected graph nodes and edges on a dark rounded-square background.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#071328"/>
+      <stop offset="100%" stop-color="#020814"/>
+    </linearGradient>
+
+    <linearGradient id="gPurpleOrange" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#B642D8"/>
+      <stop offset="55%" stop-color="#FF4F6D"/>
+      <stop offset="100%" stop-color="#FF8A18"/>
+    </linearGradient>
+
+    <linearGradient id="gOrangeYellow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FF7A1A"/>
+      <stop offset="100%" stop-color="#FFD51E"/>
+    </linearGradient>
+
+    <linearGradient id="gYellowGreen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFE31E"/>
+      <stop offset="55%" stop-color="#A7EC37"/>
+      <stop offset="100%" stop-color="#19D8A0"/>
+    </linearGradient>
+
+    <linearGradient id="gBluePurple" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#1688FF"/>
+      <stop offset="55%" stop-color="#4A63FF"/>
+      <stop offset="100%" stop-color="#A542E2"/>
+    </linearGradient>
+
+    <linearGradient id="gBlueCyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1E75FF"/>
+      <stop offset="100%" stop-color="#18D8F0"/>
+    </linearGradient>
+
+    <linearGradient id="gCyanGreen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1CB8E8"/>
+      <stop offset="100%" stop-color="#35D76E"/>
+    </linearGradient>
+
+    <linearGradient id="gPurpleBlue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#9B43E5"/>
+      <stop offset="100%" stop-color="#287FFF"/>
+    </linearGradient>
+
+    <!-- Toned-down glow -->
+    <filter id="softGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feColorMatrix
+        in="blur"
+        type="matrix"
+        values="1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                0 0 0 0.28 0"
+        result="softBlur"/>
+      <feMerge>
+        <feMergeNode in="softBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect x="8" y="8" width="1008" height="1008" rx="180" fill="url(#bg)"/>
+
+  <!-- Subtle code-line accents -->
+  <g opacity="0.28" fill="#6E7B96">
+    <rect x="112" y="264" width="120" height="18" rx="9"/>
+    <rect x="132" y="316" width="30" height="18" rx="9"/>
+    <rect x="180" y="316" width="110" height="18" rx="9"/>
+    <rect x="100" y="368" width="145" height="18" rx="9"/>
+    <rect x="170" y="418" width="78" height="18" rx="9"/>
+    <rect x="84" y="480" width="92" height="18" rx="9"/>
+    <rect x="116" y="536" width="132" height="18" rx="9"/>
+    <rect x="88" y="588" width="54" height="18" rx="9"/>
+    <rect x="160" y="588" width="82" height="18" rx="9"/>
+    <rect x="82" y="644" width="116" height="18" rx="9"/>
+    <rect x="122" y="698" width="82" height="18" rx="9"/>
+
+    <rect x="782" y="278" width="84" height="18" rx="9"/>
+    <rect x="790" y="324" width="56" height="18" rx="9"/>
+    <rect x="858" y="324" width="56" height="18" rx="9"/>
+    <rect x="812" y="370" width="100" height="18" rx="9"/>
+    <rect x="810" y="470" width="70" height="18" rx="9"/>
+    <rect x="786" y="524" width="60" height="18" rx="9"/>
+    <rect x="750" y="582" width="86" height="18" rx="9"/>
+    <rect x="858" y="582" width="56" height="18" rx="9"/>
+    <rect x="776" y="632" width="102" height="18" rx="9"/>
+    <rect x="742" y="684" width="84" height="18" rx="9"/>
+
+    <rect x="454" y="668" width="120" height="18" rx="9"/>
+    <rect x="462" y="718" width="56" height="18" rx="9"/>
+    <rect x="548" y="718" width="102" height="18" rx="9"/>
+    <rect x="468" y="766" width="110" height="18" rx="9"/>
+    <rect x="606" y="766" width="106" height="18" rx="9"/>
+  </g>
+
+  <!-- Graph edges -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="26" filter="url(#softGlow)">
+    <path d="M340 238 L530 184" stroke="url(#gPurpleOrange)"/>
+    <path d="M530 184 L712 252" stroke="url(#gOrangeYellow)"/>
+    <path d="M712 252 L770 422" stroke="url(#gYellowGreen)"/>
+    <path d="M770 422 L682 628" stroke="url(#gYellowGreen)"/>
+
+    <path d="M340 238 L510 340" stroke="url(#gPurpleOrange)"/>
+    <path d="M530 184 L510 340" stroke="url(#gPurpleOrange)"/>
+    <path d="M510 340 L712 252" stroke="url(#gOrangeYellow)"/>
+    <path d="M510 340 L650 404" stroke="url(#gOrangeYellow)"/>
+    <path d="M650 404 L770 422" stroke="url(#gYellowGreen)"/>
+    <path d="M650 404 L612 536" stroke="url(#gYellowGreen)"/>
+    <path d="M612 536 L682 628" stroke="url(#gYellowGreen)"/>
+
+    <path d="M340 238 L310 452" stroke="url(#gBluePurple)"/>
+    <path d="M310 452 L280 690" stroke="url(#gBluePurple)"/>
+    <path d="M280 690 L254 828" stroke="url(#gBlueCyan)"/>
+    <path d="M254 828 L392 802" stroke="url(#gBlueCyan)"/>
+    <path d="M392 802 L420 566" stroke="url(#gBlueCyan)"/>
+
+    <path d="M310 452 L420 566" stroke="url(#gPurpleBlue)"/>
+    <path d="M280 690 L420 566" stroke="url(#gBlueCyan)"/>
+    <path d="M310 452 L510 340" stroke="url(#gPurpleBlue)"/>
+    <path d="M420 566 L510 340" stroke="url(#gPurpleBlue)"/>
+    <path d="M420 566 L612 536" stroke="url(#gCyanGreen)"/>
+    <path d="M420 566 L682 628" stroke="url(#gCyanGreen)"/>
+  </g>
+
+  <!-- Graph nodes -->
+  <g filter="url(#softGlow)">
+    <circle cx="340" cy="238" r="38" fill="#B542D8"/>
+    <circle cx="530" cy="184" r="38" fill="#FF7A1A"/>
+    <circle cx="712" cy="252" r="38" fill="#FFD51E"/>
+    <circle cx="510" cy="340" r="40" fill="#FF6650"/>
+    <circle cx="650" cy="404" r="31" fill="#D9EE25"/>
+    <circle cx="770" cy="422" r="38" fill="#A9EC37"/>
+    <circle cx="612" cy="536" r="32" fill="#42D86F"/>
+    <circle cx="682" cy="628" r="36" fill="#17D8A5"/>
+
+    <circle cx="310" cy="452" r="38" fill="#5A45F4"/>
+    <circle cx="420" cy="566" r="42" fill="#1B9AF3"/>
+    <circle cx="280" cy="690" r="36" fill="#1F80FF"/>
+    <circle cx="254" cy="828" r="34" fill="#1D73FF"/>
+    <circle cx="392" cy="802" r="36" fill="#19D4ED"/>
+  </g>
+</svg>
