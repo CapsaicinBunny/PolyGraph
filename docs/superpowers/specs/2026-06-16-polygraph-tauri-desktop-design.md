@@ -33,7 +33,7 @@ drag/drop reader is retained only as a web-mode fallback.
 ts-morph wraps the TypeScript compiler (JavaScript). Keeping type-resolved call
 edges, JSX component/renders detection, framework/paradigm roles, and JSDoc
 nodes means shipping a JS runtime inside the app. The 26 tree-sitter grammars
-are already native Rust (`analyzer-core`), so the JS runtime is the *only*
+are already native Rust (`analyzer-core`), so the JS runtime is the _only_
 reason a sidecar exists. We compile that runtime into a single self-contained
 binary with `bun build --compile` (Approach A).
 
@@ -61,6 +61,7 @@ when not running inside Tauri.
 ## Components
 
 ### 1. Shared handlers — `lib/server/handlers.ts`
+
 Extract the bodies of the current `app/api/scan/route.ts` and
 `app/api/analyze/route.ts` into framework-agnostic functions:
 
@@ -73,6 +74,7 @@ only meaningful logic move; everything under `lib/` is otherwise untouched, so
 the 71 existing tests stay green.
 
 ### 2. Sidecar — `sidecar/server.ts`
+
 A Bun HTTP server using these handlers:
 
 - Binds `127.0.0.1:0`, prints `POLYGRAPH_PORT=<n>`, flushes stdout.
@@ -86,6 +88,7 @@ Built per-OS in CI: `bun build --compile --target=bun-<os>-<arch>
 sidecar/server.ts --outfile polygraph-sidecar[.exe]`.
 
 ### 3. Client — `app/`, `components/`
+
 - `next.config` → `output: "export"`.
 - **Remove `app/api/scan` and `app/api/analyze`.** Dev and production both hit
   the sidecar, so there is one analysis code path and static export has no
@@ -99,6 +102,7 @@ sidecar/server.ts --outfile polygraph-sidecar[.exe]`.
   fallback (gated on `!isTauri()`).
 
 ### 4. Tauri shell — `src-tauri/`
+
 - `main.rs`: spawn the sidecar via `tauri-plugin-shell` sidecar API, read stdout
   until the `POLYGRAPH_PORT=` line, store the base URL, inject it into the
   webview; surface a native error dialog if the sidecar fails to start; ensure
@@ -108,6 +112,7 @@ sidecar/server.ts --outfile polygraph-sidecar[.exe]`.
   `out/`) as bundled `resources`; updater endpoint + per-OS signing config.
 
 ### 5. CI — `.github/workflows/release.yml`
+
 Matrix over `windows-latest`, `macos-latest`, `ubuntu-latest`. Each runner:
 
 1. Install Rust + Bun + Node.
@@ -152,15 +157,15 @@ decoupled core honest without doing full Tauri bundling on every push.
 
 - **Phase 1 — Decouple (local-runnable):** extract handlers, build the Bun
   sidecar, point the client at it, remove Next routes, `output: "export"`. Add
-  `ci.yml`. *Verifiable as a web app + sidecar on Windows; CI green.*
+  `ci.yml`. _Verifiable as a web app + sidecar on Windows; CI green._
 - **Phase 2 — Wrap:** `src-tauri/` shell, native dialog, sidecar spawn + port
   wiring, bundle `.node`. CI `release.yml` produces an unsigned Windows bundle.
-  *Verifiable by downloading and launching the CI artifact.*
+  _Verifiable by downloading and launching the CI artifact._
 - **Phase 3 — Cross-platform matrix:** extend `release.yml` to macOS + Linux;
-  per-OS native binaries. *Verifiable by three downloadable unsigned bundles.*
+  per-OS native binaries. _Verifiable by three downloadable unsigned bundles._
 - **Phase 4 — Sign + auto-update:** Windows Authenticode, Apple Developer ID +
-  notarization, Linux AppImage; Tauri updater plugin + manifest. *Requires
-  certificates supplied by the maintainer via repo secrets.*
+  notarization, Linux AppImage; Tauri updater plugin + manifest. _Requires
+  certificates supplied by the maintainer via repo secrets._
 
 ## Open dependencies / things the maintainer must provide
 
