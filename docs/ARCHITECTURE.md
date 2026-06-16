@@ -16,9 +16,11 @@ folder ─▶ scan (server fs) ─▶ kernel ─▶ providers ─▶ GraphModel
                               Vello WebGPU canvas (GPU-drawn vectors)
 ```
 
-1. **Input** — either `/api/scan` (the server walks an absolute path on disk, skipping
-   `node_modules`/build output — nothing is uploaded) or the in-browser folder reader (files are
-   read in the page and POSTed to `/api/analyze`).
+1. **Input** — the React client sends the folder path (or, on the web fallback, a
+   read-in-browser file map) to the **Bun analysis sidecar** (`sidecar/server.ts`),
+   a loopback HTTP server hosting `/scan` and `/analyze`. The sidecar calls the
+   shared handlers (`lib/server/handlers.ts`); scan reads the path from disk —
+   nothing is uploaded.
 2. **Kernel** (`lib/kernel/`) — buckets files by extension and runs every matching language
    **provider concurrently** (`Promise.all`), then merges their universal-IR fragments,
    de-duplicates, and drops edges to unknown nodes.
@@ -114,7 +116,8 @@ language-packs/         declarative tree-sitter packs (one folder per language)
 analyzer-core/          native Rust (napi-rs) tree-sitter core (+ vendor/wat)
 vello-renderer/         Rust→WASM WebGPU vector renderer
 app/
-  page.tsx              renders the Explorer
-  api/{scan,analyze}/   analysis endpoints (Node.js runtime)
+  page.tsx              renders the Explorer (static-exported SPA)
+sidecar/server.ts       Bun loopback server hosting /scan and /analyze
+lib/server/handlers.ts  framework-agnostic runScan / runAnalyze
 components/             Explorer, UploadDropzone, VelloGraphCanvas, Sidebar, NodeDetailPanel
 ```
