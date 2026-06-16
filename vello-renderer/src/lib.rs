@@ -140,8 +140,8 @@ impl VelloCanvas {
 
     /// Replace the graph data (JSON: { nodes:[...], edges:[...] }).
     pub fn set_data(&mut self, json: &str) -> Result<(), JsValue> {
-        self.data =
-            serde_json::from_str(json).map_err(|e| JsValue::from_str(&format!("bad scene json: {e}")))?;
+        self.data = serde_json::from_str(json)
+            .map_err(|e| JsValue::from_str(&format!("bad scene json: {e}")))?;
         Ok(())
     }
 
@@ -174,8 +174,7 @@ impl VelloCanvas {
         if self.data.nodes.is_empty() {
             return vec![self.cam_x, self.cam_y, self.cam_scale];
         }
-        let (mut min_x, mut min_y, mut max_x, mut max_y) =
-            (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for n in &self.data.nodes {
             min_x = min_x.min(n.x);
             min_y = min_y.min(n.y);
@@ -206,7 +205,8 @@ impl VelloCanvas {
     pub fn render(&mut self) -> Result<(), JsValue> {
         self.scene.reset();
         let camera = self.camera();
-        let font_ref = FontRef::new(FONT_BYTES).map_err(|e| JsValue::from_str(&format!("font: {e}")))?;
+        let font_ref =
+            FontRef::new(FONT_BYTES).map_err(|e| JsValue::from_str(&format!("font: {e}")))?;
         let charmap = font_ref.charmap();
         let metrics = font_ref.glyph_metrics(Size::new(GLYPH_SIZE), LocationRef::default());
 
@@ -221,15 +221,20 @@ impl VelloCanvas {
 
         // Edges first (under the cards). Drawn in screen space so line width and
         // dash size stay constant at any zoom; curved + animated marching ants.
+        // Each segment is clipped to a padded viewport BEFORE dashing — an
+        // off-screen endpoint at high zoom would otherwise yield a multi-million
+        // pixel line and dashing it would exhaust the wasm allocator.
         let dash = Stroke::new(1.4).with_dashes(self.dash_phase, [6.0, 6.0]);
-        let to_screen =
-            |x: f64, y: f64| -> (f64, f64) { (x * self.cam_scale + self.cam_x, y * self.cam_scale + self.cam_y) };
+        const PAD: f64 = 120.0;
+        let (cx, cy, cs) = (self.cam_x, self.cam_y, self.cam_scale);
         for e in &self.data.edges {
-            let (sx1, sy1) = to_screen(e.x1, e.y1);
-            let (sx2, sy2) = to_screen(e.x2, e.y2);
-            if sx1.max(sx2) < 0.0 || sx1.min(sx2) > self.vw || sy1.max(sy2) < 0.0 || sy1.min(sy2) > self.vh {
+            let (ax, ay) = (e.x1 * cs + cx, e.y1 * cs + cy);
+            let (bx, by) = (e.x2 * cs + cx, e.y2 * cs + cy);
+            let Some((sx1, sy1, sx2, sy2)) =
+                clip_segment(ax, ay, bx, by, -PAD, -PAD, self.vw + PAD, self.vh + PAD)
+            else {
                 continue;
-            }
+            };
             let dx = sx2 - sx1;
             let dy = sy2 - sy1;
             // Smooth S-curve: pull control points along the dominant axis (like React Flow).
@@ -242,7 +247,8 @@ impl VelloCanvas {
             };
             let curve = CubicBez::new(Point::new(sx1, sy1), c1, c2, Point::new(sx2, sy2));
             let color = Color::from_rgb8(e.color[0], e.color[1], e.color[2]);
-            self.scene.stroke(&dash, Affine::IDENTITY, color, None, &curve);
+            self.scene
+                .stroke(&dash, Affine::IDENTITY, color, None, &curve);
         }
 
         let label_lod = self.cam_scale >= LABEL_MIN_SCALE;
@@ -255,7 +261,8 @@ impl VelloCanvas {
             let accent = Color::from_rgb8(n.color[0], n.color[1], n.color[2]);
             let selected = Some(&n.id) == self.selected.as_ref();
             let card = RoundedRect::new(n.x, n.y, n.x + n.w, n.y + n.h, 6.0);
-            self.scene.fill(Fill::NonZero, camera, CARD_FILL, None, &card);
+            self.scene
+                .fill(Fill::NonZero, camera, CARD_FILL, None, &card);
             let border = if selected { SELECT } else { CARD_BORDER };
             let stroke_w = if selected { 1.8 } else { 1.0 };
             self.scene
@@ -266,8 +273,10 @@ impl VelloCanvas {
 
             // Search-match outline.
             if searching && n.label.to_lowercase().contains(&self.search) {
-                let hl = RoundedRect::new(n.x - 2.0, n.y - 2.0, n.x + n.w + 2.0, n.y + n.h + 2.0, 7.0);
-                self.scene.stroke(&Stroke::new(2.0), camera, MATCH, None, &hl);
+                let hl =
+                    RoundedRect::new(n.x - 2.0, n.y - 2.0, n.x + n.w + 2.0, n.y + n.h + 2.0, 7.0);
+                self.scene
+                    .stroke(&Stroke::new(2.0), camera, MATCH, None, &hl);
             }
 
             if !label_lod {
@@ -275,7 +284,15 @@ impl VelloCanvas {
             }
 
             // Vector icon (in the accent color) — replaces the unrenderable glyph chars.
-            draw_icon(&mut self.scene, camera, &n.shape, n.x + 16.0, n.y + n.h / 2.0, ICON_R, accent);
+            draw_icon(
+                &mut self.scene,
+                camera,
+                &n.shape,
+                n.x + 16.0,
+                n.y + n.h / 2.0,
+                ICON_R,
+                accent,
+            );
 
             // Filename label (dark), vertically centered, clipped to the card width.
             let baseline = n.y + n.h / 2.0 + 4.0;
@@ -290,7 +307,11 @@ impl VelloCanvas {
                         return None;
                     }
                     let gid = charmap.map(c)?;
-                    let g = Glyph { id: gid.to_u32(), x: gx as f32, y: baseline as f32 };
+                    let g = Glyph {
+                        id: gid.to_u32(),
+                        x: gx as f32,
+                        y: baseline as f32,
+                    };
                     gx += metrics.advance_width(gid).unwrap_or(0.0) as f64;
                     Some(g)
                 })
@@ -314,7 +335,11 @@ impl VelloCanvas {
                             return None;
                         }
                         let gid = charmap.map(c)?;
-                        let g = Glyph { id: gid.to_u32(), x: bx as f32, y: baseline as f32 };
+                        let g = Glyph {
+                            id: gid.to_u32(),
+                            x: bx as f32,
+                            y: baseline as f32,
+                        };
                         bx += metrics.advance_width(gid).unwrap_or(0.0) as f64;
                         Some(g)
                     })
@@ -345,27 +370,91 @@ impl VelloCanvas {
             .map_err(|e| JsValue::from_str(&format!("render failed: {e}")))?;
 
         let frame = match self.surface.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            other => return Err(JsValue::from_str(&format!("surface unavailable: {other:?}"))),
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            other => {
+                return Err(JsValue::from_str(&format!(
+                    "surface unavailable: {other:?}"
+                )))
+            }
         };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = device_handle
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vello-blit") });
-        self.surface
-            .blitter
-            .copy(&device_handle.device, &mut encoder, &self.surface.target_view, &view);
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder =
+            device_handle
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("vello-blit"),
+                });
+        self.surface.blitter.copy(
+            &device_handle.device,
+            &mut encoder,
+            &self.surface.target_view,
+            &view,
+        );
         device_handle.queue.submit([encoder.finish()]);
         frame.present();
         Ok(())
     }
 }
 
+/// Liang–Barsky line clip to an axis-aligned rect. Returns the clipped segment, or
+/// None if it lies entirely outside — bounds dash work to the visible viewport.
+fn clip_segment(
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    minx: f64,
+    miny: f64,
+    maxx: f64,
+    maxy: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let p = [-dx, dx, -dy, dy];
+    let q = [x0 - minx, maxx - x0, y0 - miny, maxy - y0];
+    let mut t0 = 0.0_f64;
+    let mut t1 = 1.0_f64;
+    for i in 0..4 {
+        if p[i] == 0.0 {
+            if q[i] < 0.0 {
+                return None; // parallel to this edge and outside it
+            }
+        } else {
+            let r = q[i] / p[i];
+            if p[i] < 0.0 {
+                if r > t1 {
+                    return None;
+                }
+                if r > t0 {
+                    t0 = r;
+                }
+            } else {
+                if r < t0 {
+                    return None;
+                }
+                if r < t1 {
+                    t1 = r;
+                }
+            }
+        }
+    }
+    Some((x0 + t0 * dx, y0 + t0 * dy, x0 + t1 * dx, y0 + t1 * dy))
+}
+
 /// Draw a small vector icon centered at (cx, cy) with half-size `r`, in `color`.
 fn draw_icon(scene: &mut Scene, t: Affine, shape: &str, cx: f64, cy: f64, r: f64, color: Color) {
     match shape {
         "circle" => {
-            scene.fill(Fill::NonZero, t, color, None, &Circle::new(Point::new(cx, cy), r));
+            scene.fill(
+                Fill::NonZero,
+                t,
+                color,
+                None,
+                &Circle::new(Point::new(cx, cy), r),
+            );
         }
         "square" => {
             let s = RoundedRect::new(cx - r, cy - r, cx + r, cy + r, 1.0);
