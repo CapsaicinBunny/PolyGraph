@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { Provider } from "@/components/ui/provider";
 
 export const metadata: Metadata = {
-  title: "TS Module Scanner",
-  description: "Interactive dependency graph for TypeScript / JavaScript codebases",
+  title: "Code Atlas",
+  description: "Interactive dependency graph for codebases across ~25 languages",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

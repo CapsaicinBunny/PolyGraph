@@ -1,9 +1,11 @@
-# TS Module Scanner
+# Code Atlas
 
-An interactive dependency-graph analyzer for **TypeScript/JavaScript, Python, Java, Kotlin,
-Rust, and Go** codebases. Drop in a project folder and explore a node graph of its modules,
-classes, interfaces, structs, traits, functions, and components — and the relationships between
-them: imports, calls, inheritance, instantiation, and JSX component usage.
+An interactive dependency-graph analyzer for codebases across **~25 languages** — TypeScript/
+JavaScript, Python, Java, Kotlin, Rust, Go, Scala, C#, F#, C, C++, Objective-C, Swift, Zig,
+Haskell, Ruby, PHP, Bash, Lua, Dart, Julia, R, Nix, OCaml, SQL, and WebAssembly. Drop in a
+project folder and explore a node graph of its modules, classes, interfaces, structs, traits,
+functions, and components — and the relationships between them: imports, calls, inheritance,
+instantiation, and JSX component usage.
 
 ![node graph](docs/screenshot.png)
 

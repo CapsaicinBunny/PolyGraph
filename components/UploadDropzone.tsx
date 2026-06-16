@@ -12,6 +12,7 @@ import {
   Input,
   InputGroup,
   Progress,
+  Spinner,
   Stack,
   Text,
 } from "@chakra-ui/react";
@@ -34,7 +35,8 @@ const CAPABILITIES: { label: string; palette: string }[] = [
   { label: "ECS", palette: "orange" },
 ];
 
-const SUPPORTED = [".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte"];
+// A representative slice of the ~25 supported languages, shown on the dropzone.
+const SUPPORTED = ["TS", "JS", "Python", "Rust", "Go", "Java", "C++", "C#", "Swift", "Ruby", "SQL"];
 
 function GraphMark() {
   return (
@@ -64,40 +66,57 @@ function FolderIcon() {
   );
 }
 
-function ProgressBar({
+// The busy state — shown immediately on scan/read so a long server walk never
+// looks dead. Scanning + analyzing are indeterminate (the server has no granular
+// progress); the in-browser read reports done/total.
+function StatusPanel({
   phase,
   progress,
   fileCount,
 }: {
-  phase: Phase;
+  phase: Exclude<Phase, "idle">;
   progress: { done: number; total: number };
   fileCount: number;
 }) {
   const reading = phase === "reading";
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
-  const label =
+  const title =
     phase === "scanning"
-      ? "Scanning folder…"
+      ? "Scanning folder on disk…"
       : reading
-        ? `Reading files… ${progress.done}/${progress.total || "…"}`
+        ? "Reading files in your browser…"
         : `Analyzing ${fileCount} ${fileCount === 1 ? "file" : "files"}…`;
+  const note =
+    phase === "scanning"
+      ? "Reading and parsing every file — large projects can take 10–20 seconds."
+      : reading
+        ? `${progress.done}/${progress.total || "…"} files`
+        : "Resolving imports, calls, and inheritance across the codebase.";
 
   return (
-    <Progress.Root
-      value={reading ? pct : null}
-      size="sm"
-      colorPalette="blue"
-      striped={!reading}
-      animated
+    <Box
+      p={{ base: "6", md: "8" }}
+      borderWidth="1px"
+      borderColor="border.emphasized"
+      rounded="2xl"
+      bg="bg.panel"
+      shadow="sm"
     >
-      <HStack justify="space-between" mb="1.5">
-        <Progress.Label>{label}</Progress.Label>
-        {reading && <Progress.ValueText />}
-      </HStack>
-      <Progress.Track>
-        <Progress.Range />
-      </Progress.Track>
-    </Progress.Root>
+      <Stack gap="4">
+        <HStack gap="3">
+          <Spinner size="sm" color="blue.solid" borderWidth="2px" />
+          <Text fontWeight="semibold">{title}</Text>
+        </HStack>
+        <Progress.Root value={reading ? pct : null} size="sm" colorPalette="blue" striped animated>
+          <Progress.Track>
+            <Progress.Range />
+          </Progress.Track>
+        </Progress.Root>
+        <Text fontSize="sm" color="fg.muted">
+          {note}
+        </Text>
+      </Stack>
+    </Box>
   );
 }
 
@@ -148,7 +167,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
 
   const busy = phase !== "idle";
 
-  // Primary path: the server reads the folder directly from disk.
+  // Primary path: the server reads the folder directly from disk (no upload).
   async function scan(dirPath: string) {
     const trimmed = dirPath.trim();
     if (!trimmed) {
@@ -237,11 +256,11 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
           </Box>
           <Stack gap="1.5" align="center">
             <Heading size={{ base: "xl", md: "2xl" }} letterSpacing="tight">
-              TS Module Scanner
+              Code Atlas
             </Heading>
             <Text color="fg.muted" maxW="lg">
-              Map a TypeScript / JavaScript codebase into an interactive graph — modules, classes,
-              functions, components, and what calls what.
+              Map a codebase into an interactive graph — modules, types, functions, and what calls
+              what. ~25 languages, framework- and paradigm-agnostic.
             </Text>
           </Stack>
           <Flex wrap="wrap" justify="center" gap="2" pt="1">
@@ -259,131 +278,117 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
           </Flex>
         </Stack>
 
-        {/* Primary: scan a path on this machine */}
-        <Box
-          p={{ base: "5", md: "6" }}
-          borderWidth="1px"
-          borderColor="border.emphasized"
-          rounded="2xl"
-          bg="bg.panel"
-          shadow="sm"
-        >
-          <Stack gap="4">
-            <Stack gap="1">
-              <Heading size="md">Scan a folder</Heading>
-              <Text color="fg.muted" fontSize="sm">
-                Enter an absolute path. It's read directly from disk by the local server — nothing
-                is uploaded or copied;{" "}
-                <Text as="span" color="fg.subtle">
-                  node_modules
-                </Text>{" "}
-                and build output are skipped.
-              </Text>
-            </Stack>
+        {busy ? (
+          <StatusPanel phase={phase} progress={progress} fileCount={fileCount} />
+        ) : (
+          <>
+            {/* Primary: scan a path on this machine */}
+            <Box
+              p={{ base: "5", md: "6" }}
+              borderWidth="1px"
+              borderColor="border.emphasized"
+              rounded="2xl"
+              bg="bg.panel"
+              shadow="sm"
+            >
+              <Stack gap="4">
+                <Stack gap="1">
+                  <Heading size="md">Scan a folder</Heading>
+                  <Text color="fg.muted" fontSize="sm">
+                    Enter an absolute path. The local server reads it directly from disk — nothing
+                    is uploaded or copied;{" "}
+                    <Text as="span" color="fg.subtle">
+                      node_modules
+                    </Text>{" "}
+                    and build output are skipped.
+                  </Text>
+                </Stack>
 
-            <Stack direction={{ base: "column", sm: "row" }} gap="2.5">
-              <InputGroup flex="1" startElement={<FolderIcon />}>
-                <Input
-                  placeholder="C:\\path\\to\\your\\project"
-                  value={path}
-                  disabled={busy}
-                  fontFamily="mono"
-                  size="lg"
-                  aria-label="Folder path to scan"
-                  onChange={(e) => setPath(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !busy) void scan(path);
-                  }}
-                />
-              </InputGroup>
-              <Button
-                colorPalette="blue"
-                size="lg"
-                px="8"
-                loading={phase === "scanning"}
-                loadingText="Scanning"
-                disabled={busy}
-                onClick={() => void scan(path)}
-              >
-                Scan
-              </Button>
-            </Stack>
-          </Stack>
-        </Box>
-
-        <HStack color="fg.subtle" fontSize="xs" gap="3">
-          <Box flex="1" h="1px" bg="border" />
-          <Text>or pick a folder in your browser</Text>
-          <Box flex="1" h="1px" bg="border" />
-        </HStack>
-
-        {/* Fallback: pick/drop a folder; files are read in the browser */}
-        <Box
-          role="button"
-          tabIndex={busy ? -1 : 0}
-          aria-disabled={busy}
-          w="full"
-          textAlign="center"
-          p={{ base: "8", md: "10" }}
-          borderWidth="2px"
-          borderStyle="dashed"
-          borderColor={dragging ? "blue.400" : "border.emphasized"}
-          rounded="2xl"
-          bg={dragging ? "blue.subtle" : "transparent"}
-          transition="all 0.15s"
-          cursor={busy ? "default" : "pointer"}
-          _hover={busy ? undefined : { borderColor: "blue.400", bg: "bg.subtle" }}
-          onClick={() => {
-            if (!busy) inputRef.current?.click();
-          }}
-          onKeyDown={(e) => {
-            if (!busy && (e.key === "Enter" || e.key === " ")) {
-              e.preventDefault();
-              inputRef.current?.click();
-            }
-          }}
-          onDragOver={(e) => {
-            e.preventDefault();
-            if (!busy) setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={async (e) => {
-            e.preventDefault();
-            setDragging(false);
-            if (busy) return;
-            const files = await filesFromDataTransfer(e.dataTransfer);
-            await handleFileList(files);
-          }}
-        >
-          {busy && phase !== "scanning" ? (
-            <Box maxW="sm" mx="auto">
-              <ProgressBar phase={phase} progress={progress} fileCount={fileCount} />
+                <Stack direction={{ base: "column", sm: "row" }} gap="2.5">
+                  <InputGroup flex="1" startElement={<FolderIcon />}>
+                    <Input
+                      placeholder="C:\\path\\to\\your\\project"
+                      value={path}
+                      fontFamily="mono"
+                      size="lg"
+                      aria-label="Folder path to scan"
+                      onChange={(e) => setPath(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void scan(path);
+                      }}
+                    />
+                  </InputGroup>
+                  <Button colorPalette="blue" size="lg" px="8" onClick={() => void scan(path)}>
+                    Scan
+                  </Button>
+                </Stack>
+              </Stack>
             </Box>
-          ) : (
-            <Stack gap="2" align="center">
-              <Text fontSize="3xl">📂</Text>
-              <Text fontWeight="semibold" fontSize="md">
-                Drop a project folder
-              </Text>
-              <Text fontSize="xs" color="fg.subtle">
-                or click to browse
-              </Text>
-              <Flex wrap="wrap" justify="center" gap="1" pt="1" maxW="sm">
-                {SUPPORTED.map((ext) => (
-                  <Badge
-                    key={ext}
-                    size="sm"
-                    variant="outline"
-                    colorPalette="gray"
-                    fontFamily="mono"
-                  >
-                    {ext}
+
+            <HStack color="fg.subtle" fontSize="xs" gap="3">
+              <Box flex="1" h="1px" bg="border" />
+              <Text>or read a folder in your browser</Text>
+              <Box flex="1" h="1px" bg="border" />
+            </HStack>
+
+            {/* Fallback: pick/drop a folder; files are read locally in the page. */}
+            <Box
+              role="button"
+              tabIndex={0}
+              w="full"
+              textAlign="center"
+              p={{ base: "8", md: "10" }}
+              borderWidth="2px"
+              borderStyle="dashed"
+              borderColor={dragging ? "blue.400" : "border.emphasized"}
+              rounded="2xl"
+              bg={dragging ? "blue.subtle" : "transparent"}
+              transition="all 0.15s"
+              cursor="pointer"
+              _hover={{ borderColor: "blue.400", bg: "bg.subtle" }}
+              onClick={() => inputRef.current?.click()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  inputRef.current?.click();
+                }
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={async (e) => {
+                e.preventDefault();
+                setDragging(false);
+                const files = await filesFromDataTransfer(e.dataTransfer);
+                await handleFileList(files);
+              }}
+            >
+              <Stack gap="2" align="center">
+                <Text fontSize="3xl">📂</Text>
+                <Text fontWeight="semibold" fontSize="md">
+                  Drop a project folder
+                </Text>
+                <Text fontSize="xs" color="fg.subtle" maxW="sm">
+                  Files are read here in the page and processed locally. Browsers can't reveal a
+                  folder's path, so this can't fill the box above — and your browser will ask to
+                  confirm reading the folder.
+                </Text>
+                <Flex wrap="wrap" justify="center" gap="1" pt="2" maxW="md">
+                  {SUPPORTED.map((ext) => (
+                    <Badge key={ext} size="sm" variant="outline" colorPalette="gray">
+                      {ext}
+                    </Badge>
+                  ))}
+                  <Badge size="sm" variant="outline" colorPalette="gray">
+                    +14 more
                   </Badge>
-                ))}
-              </Flex>
-            </Stack>
-          )}
-        </Box>
+                </Flex>
+              </Stack>
+            </Box>
+          </>
+        )}
 
         {error && (
           <Box
@@ -403,7 +408,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         )}
 
         <Text fontSize="xs" color="fg.subtle" textAlign="center">
-          Runs entirely on your machine. Nothing is uploaded.
+          Runs entirely on your machine. Nothing leaves your computer.
         </Text>
 
         <input
