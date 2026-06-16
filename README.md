@@ -27,6 +27,10 @@ component usage.
   - **Angular** — `@Component` / `@Directive` / `@Pipe` / `@Injectable` / `@NgModule`
   - **ECS** — `ecs-component` / `ecs-system` / `ecs-entity` from naming (`*Component`/`*System`/
     `*Entity`), lowercase decorators, and `defineSystem` / `defineQuery` (in a bitECS context)
+- **Two renderers** — a **React Flow** canvas (rich: minimap, animated edges, draggable nodes)
+  for small/medium graphs, and a **GPU renderer** (PixiJS v8, WebGPU with WebGL fallback) that
+  draws nodes/edges as GPU primitives and scales to thousands of nodes. The toolbar
+  **Renderer** toggle switches between them; large graphs (>1200 nodes) default to GPU.
 - **External dependencies** (toggle in the toolbar, off by default) — imported npm packages,
   Node builtins, and `Bun` / `Deno` / `process` API usage appear as dashed external nodes,
   color-coded by source family (npm / Node / Deno / Bun); edges into them are tinted to match.

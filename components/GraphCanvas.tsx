@@ -13,7 +13,8 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { buildView, type ViewEdgeKind } from "@/lib/aggregate";
+import type { ViewEdgeKind } from "@/lib/aggregate";
+import { buildScene, type SceneFilters } from "@/lib/graph/scene";
 import type {
   Environment,
   ExternalKind,
@@ -23,13 +24,8 @@ import type {
   NodeRole,
   Runtime,
 } from "@/lib/graph/types";
-import { EDGE_STYLES, nodeStyle } from "@/lib/graph/visual";
-import {
-  DIRECTIONAL_ALGORITHMS,
-  type LayoutAlgorithm,
-  type LayoutDirection,
-  layoutViewCached,
-} from "@/lib/layout";
+import { nodeStyle } from "@/lib/graph/visual";
+import { DIRECTIONAL_ALGORITHMS, type LayoutAlgorithm, type LayoutDirection } from "@/lib/layout";
 import { GraphFlowNode } from "./nodes/GraphFlowNode";
 
 const nodeTypes = { graph: GraphFlowNode };
@@ -37,23 +33,6 @@ const nodeTypes = { graph: GraphFlowNode };
 // Scale guards: above these counts the cost outweighs the benefit, so we drop them.
 const ANIMATE_EDGE_LIMIT = 250; // animated edges cause a repaint storm at scale
 const MINIMAP_NODE_LIMIT = 600; // the minimap re-draws every node
-
-// Stable per-analysis id, so the layout cache signature can't collide across scans.
-let graphCounter = 0;
-const graphIds = new WeakMap<object, string>();
-function graphKeyFor(graph: GraphModel): string {
-  let id = graphIds.get(graph);
-  if (!id) {
-    graphCounter += 1;
-    id = String(graphCounter);
-    graphIds.set(graph, id);
-  }
-  return id;
-}
-
-function ser<T>(set: Set<T>): string {
-  return [...set].map(String).sort().join(",");
-}
 
 interface GraphCanvasProps {
   graph: GraphModel;
@@ -90,112 +69,63 @@ function GraphCanvasInner({
 }: GraphCanvasProps) {
   const { fitView } = useReactFlow();
 
-  // Expensive layer: filter -> view -> layout. Recomputes ONLY when something that
-  // changes geometry changes (NOT on selection/search), and the layout itself is cached.
+  const filters: SceneFilters = useMemo(
+    () => ({
+      showExternal,
+      enabledNodeKinds,
+      enabledCategories,
+      enabledEnvironments,
+      enabledRuntimes,
+      enabledEdgeKinds,
+    }),
+    [
+      showExternal,
+      enabledNodeKinds,
+      enabledCategories,
+      enabledEnvironments,
+      enabledRuntimes,
+      enabledEdgeKinds,
+    ],
+  );
+
+  // Expensive layer: scene (filter -> view -> cached layout) + edge styling. Recomputes
+  // only on geometry changes, NOT on selection/search.
   const base = useMemo(() => {
-    const visible = (n: GraphModel["nodes"][number]) => {
-      if (n.kind === "external") return showExternal;
-      if (n.environment && !enabledEnvironments.has(n.environment)) return false;
-      if (n.runtimes?.length && !n.runtimes.some((r) => enabledRuntimes.has(r))) return false;
-      if (n.kind === "file") return true;
-      return enabledNodeKinds.has(n.kind) && (!n.category || enabledCategories.has(n.category));
-    };
-    const keptIds = new Set(graph.nodes.filter(visible).map((n) => n.id));
-    const sourceGraph = {
-      nodes: graph.nodes.filter(visible),
-      edges: graph.edges.filter((e) => keptIds.has(e.source) && keptIds.has(e.target)),
-    };
-    const view = buildView(sourceGraph, expanded);
-    const visibleEdges = view.edges.filter(
-      (e) => e.kind === "contains" || enabledEdgeKinds.has(e.kind),
-    );
-
-    const signature = [
-      graphKeyFor(graph),
-      algorithm,
-      direction,
-      `x${showExternal ? 1 : 0}`,
-      ser(expanded),
-      ser(enabledNodeKinds),
-      ser(enabledCategories),
-      ser(enabledEnvironments),
-      ser(enabledRuntimes),
-      ser(enabledEdgeKinds),
-    ].join("|");
-    const positions = layoutViewCached(
-      signature,
-      { nodes: view.nodes, edges: visibleEdges },
-      {
-        algorithm,
-        direction,
-      },
-    );
-
+    const scene = buildScene(graph, expanded, filters, algorithm, direction);
     const handleDirection = DIRECTIONAL_ALGORITHMS.includes(algorithm) ? direction : "LR";
+    const animate = scene.edges.length <= ANIMATE_EDGE_LIMIT;
+    const rfEdges: Edge[] = scene.edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      animated: animate && e.kind !== "contains",
+      style: {
+        stroke: e.color,
+        strokeWidth: e.dashed ? 1.5 : 2,
+        strokeDasharray: e.toExternal ? "5 3" : e.dashed ? "4 4" : undefined,
+      },
+      markerEnd: e.dashed ? undefined : { type: MarkerType.ArrowClosed, color: e.color },
+    }));
+    return { sceneNodes: scene.nodes, rfEdges, handleDirection };
+  }, [graph, expanded, filters, algorithm, direction]);
 
-    const symbolCount = new Map<string, number>();
-    for (const n of graph.nodes) {
-      if (n.kind !== "file")
-        symbolCount.set(n.parentFile, (symbolCount.get(n.parentFile) ?? 0) + 1);
-    }
+  const showMiniMap = base.sceneNodes.length <= MINIMAP_NODE_LIMIT;
 
-    const externalColor = new Map<string, string>();
-    for (const n of view.nodes) {
-      if (n.kind === "external")
-        externalColor.set(n.id, nodeStyle(n.kind, n.role, n.externalKind).color);
-    }
-
-    const animate = visibleEdges.length <= ANIMATE_EDGE_LIMIT;
-    const rfEdges: Edge[] = visibleEdges.map((e) => {
-      const style = EDGE_STYLES[e.kind as ViewEdgeKind];
-      const dashed = e.kind === "contains";
-      const toExternal = externalColor.get(e.target);
-      const color = toExternal ?? style.color;
-      return {
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        animated: animate && e.kind !== "contains",
-        style: {
-          stroke: color,
-          strokeWidth: dashed ? 1.5 : 2,
-          strokeDasharray: toExternal ? "5 3" : dashed ? "4 4" : undefined,
-        },
-        markerEnd: dashed ? undefined : { type: MarkerType.ArrowClosed, color },
-      };
-    });
-
-    return { viewNodes: view.nodes, positions, symbolCount, handleDirection, rfEdges };
-  }, [
-    graph,
-    expanded,
-    enabledEdgeKinds,
-    algorithm,
-    direction,
-    showExternal,
-    enabledNodeKinds,
-    enabledCategories,
-    enabledEnvironments,
-    enabledRuntimes,
-  ]);
-
-  const showMiniMap = base.viewNodes.length <= MINIMAP_NODE_LIMIT;
-
-  // Cheap layer: per-node styling for selection/search. A plain array map — no layout.
+  // Cheap layer: per-node styling for selection/search — a plain array map, no layout.
   const rfNodes = useMemo(() => {
     const query = search.trim().toLowerCase();
     const searching = query.length > 0;
-    return base.viewNodes.map<Node>((n) => ({
+    return base.sceneNodes.map<Node>((n) => ({
       id: n.id,
       type: "graph",
-      position: base.positions.get(n.id) ?? { x: 0, y: 0 },
+      position: { x: n.x, y: n.y },
       selected: n.id === selectedId,
       data: {
         label: n.label,
         kind: n.kind,
         role: n.role,
         externalKind: n.externalKind,
-        symbolCount: base.symbolCount.get(n.id) ?? 0,
+        symbolCount: n.symbolCount,
         expanded: expanded.has(n.id),
         matched: searching && n.label.toLowerCase().includes(query),
         searching,
@@ -204,7 +134,6 @@ function GraphCanvasInner({
     }));
   }, [base, selectedId, search, expanded]);
 
-  // Re-fit the viewport when the geometry changes (layout/expand/new graph).
   useEffect(() => {
     const id = requestAnimationFrame(() => fitView({ padding: 0.2, duration: 300 }));
     return () => cancelAnimationFrame(id);
@@ -218,7 +147,6 @@ function GraphCanvasInner({
       fitView
       minZoom={0.02}
       maxZoom={2}
-      // Virtualize: only mount nodes/edges inside the viewport — essential for large graphs.
       onlyRenderVisibleElements
       proOptions={{ hideAttribution: true }}
       onNodeClick={(_, node) => {
