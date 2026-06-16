@@ -49,6 +49,17 @@ export const EDGE_STYLES: Record<ViewEdgeKind, KindStyle> = {
   contains: { label: "Contains", palette: "gray", color: "#475569" },
 };
 
+/** Symbol node kinds the user can toggle (excludes file, which always shows, and external). */
+export const FILTERABLE_NODE_KINDS: NodeKind[] = [
+  "class",
+  "interface",
+  "type",
+  "enum",
+  "function",
+  "component",
+  "variable",
+];
+
 /** Edge kinds the user can filter (excludes the synthetic "contains"). */
 export const FILTERABLE_EDGE_KINDS: ViewEdgeKind[] = [
   "import",

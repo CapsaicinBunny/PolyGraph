@@ -14,7 +14,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { buildView, type ViewEdgeKind } from "@/lib/aggregate";
-import type { ExternalKind, GraphModel, NodeKind, NodeRole } from "@/lib/graph/types";
+import type { ExternalKind, GraphModel, NodeCategory, NodeKind, NodeRole } from "@/lib/graph/types";
 import { EDGE_STYLES, nodeStyle } from "@/lib/graph/visual";
 import {
   DIRECTIONAL_ALGORITHMS,
@@ -35,6 +35,8 @@ interface GraphCanvasProps {
   algorithm: LayoutAlgorithm;
   direction: LayoutDirection;
   showExternal: boolean;
+  enabledNodeKinds: Set<NodeKind>;
+  enabledCategories: Set<NodeCategory>;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
 }
@@ -48,26 +50,26 @@ function GraphCanvasInner({
   algorithm,
   direction,
   showExternal,
+  enabledNodeKinds,
+  enabledCategories,
   onSelect,
   onToggleExpand,
 }: GraphCanvasProps) {
   const { fitView } = useReactFlow();
 
   const { rfNodes, rfEdges } = useMemo(() => {
-    // External nodes are hidden unless the toggle is on.
-    const sourceGraph = showExternal
-      ? graph
-      : (() => {
-          const externalIds = new Set(
-            graph.nodes.filter((n) => n.kind === "external").map((n) => n.id),
-          );
-          return {
-            nodes: graph.nodes.filter((n) => n.kind !== "external"),
-            edges: graph.edges.filter(
-              (e) => !externalIds.has(e.source) && !externalIds.has(e.target),
-            ),
-          };
-        })();
+    // Apply node filters: files always show; externals follow their toggle; symbols
+    // must pass the kind + category filters. Edges with a hidden endpoint drop out.
+    const visible = (n: GraphModel["nodes"][number]) => {
+      if (n.kind === "file") return true;
+      if (n.kind === "external") return showExternal;
+      return enabledNodeKinds.has(n.kind) && (!n.category || enabledCategories.has(n.category));
+    };
+    const keptIds = new Set(graph.nodes.filter(visible).map((n) => n.id));
+    const sourceGraph = {
+      nodes: graph.nodes.filter(visible),
+      edges: graph.edges.filter((e) => keptIds.has(e.source) && keptIds.has(e.target)),
+    };
     const view = buildView(sourceGraph, expanded);
     const visibleEdges = view.edges.filter(
       (e) => e.kind === "contains" || enabledEdgeKinds.has(e.kind),
@@ -133,7 +135,18 @@ function GraphCanvasInner({
     });
 
     return { rfNodes, rfEdges };
-  }, [graph, expanded, enabledEdgeKinds, search, selectedId, algorithm, direction, showExternal]);
+  }, [
+    graph,
+    expanded,
+    enabledEdgeKinds,
+    search,
+    selectedId,
+    algorithm,
+    direction,
+    showExternal,
+    enabledNodeKinds,
+    enabledCategories,
+  ]);
 
   // Re-fit the viewport after the layout changes (direction switch, expand/collapse,
   // or a freshly loaded graph). rAF lets React Flow measure the new node positions first.

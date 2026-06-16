@@ -6,10 +6,11 @@ import {
   EDGE_STYLES,
   EXTERNAL_STYLES,
   FILTERABLE_EDGE_KINDS,
+  FILTERABLE_NODE_KINDS,
   NODE_STYLES,
   ROLE_STYLES,
 } from "@/lib/graph/visual";
-import type { ExternalKind, NodeKind, NodeRole } from "@/lib/graph/types";
+import type { ExternalKind, NodeCategory, NodeKind, NodeRole } from "@/lib/graph/types";
 import { DIRECTIONAL_ALGORITHMS, type LayoutAlgorithm, type LayoutDirection } from "@/lib/layout";
 
 interface SidebarProps {
@@ -17,11 +18,20 @@ interface SidebarProps {
   onSearch: (value: string) => void;
   enabledEdgeKinds: Set<ViewEdgeKind>;
   onToggleEdgeKind: (kind: ViewEdgeKind) => void;
+  enabledNodeKinds: Set<NodeKind>;
+  onToggleNodeKind: (kind: NodeKind) => void;
+  enabledCategories: Set<NodeCategory>;
+  onToggleCategory: (category: NodeCategory) => void;
   algorithm: LayoutAlgorithm;
   onAlgorithm: (algorithm: LayoutAlgorithm) => void;
   direction: LayoutDirection;
   onDirection: (direction: LayoutDirection) => void;
 }
+
+const CATEGORIES: { value: NodeCategory; label: string; color: string }[] = [
+  { value: "ui", label: "UI", color: "#22c55e" },
+  { value: "feature", label: "Feature", color: "#3b82f6" },
+];
 
 const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
   { value: "layered", label: "Layered", glyph: "▤" },
@@ -48,6 +58,10 @@ export function Sidebar({
   onSearch,
   enabledEdgeKinds,
   onToggleEdgeKind,
+  enabledNodeKinds,
+  onToggleNodeKind,
+  enabledCategories,
+  onToggleCategory,
   algorithm,
   onAlgorithm,
   direction,
@@ -158,17 +172,52 @@ export function Sidebar({
 
       <Box>
         <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
+          Category
+        </Heading>
+        <SimpleGrid columns={2} gap="1.5">
+          {CATEGORIES.map((c) => {
+            const active = enabledCategories.has(c.value);
+            return (
+              <Button
+                key={c.value}
+                size="sm"
+                justifyContent="flex-start"
+                variant={active ? "subtle" : "ghost"}
+                colorPalette={active ? (c.value === "ui" ? "green" : "blue") : "gray"}
+                opacity={active ? 1 : 0.55}
+                onClick={() => onToggleCategory(c.value)}
+              >
+                <Dot color={c.color} />
+                <Text ml="2">{c.label}</Text>
+              </Button>
+            );
+          })}
+        </SimpleGrid>
+      </Box>
+
+      <Box>
+        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
           Node types
         </Heading>
-        <Stack gap="2">
-          {(Object.keys(NODE_STYLES) as NodeKind[]).map((kind) => (
-            <HStack key={kind} gap="2">
-              <Dot color={NODE_STYLES[kind].color} />
-              <Text fontSize="sm" color="fg.muted">
-                {NODE_STYLES[kind].label}
-              </Text>
-            </HStack>
-          ))}
+        <Stack gap="1.5">
+          {FILTERABLE_NODE_KINDS.map((kind) => {
+            const active = enabledNodeKinds.has(kind);
+            const style = NODE_STYLES[kind];
+            return (
+              <Button
+                key={kind}
+                size="sm"
+                justifyContent="flex-start"
+                variant={active ? "subtle" : "ghost"}
+                colorPalette={active ? style.palette : "gray"}
+                opacity={active ? 1 : 0.55}
+                onClick={() => onToggleNodeKind(kind)}
+              >
+                <Dot color={style.color} />
+                <Text ml="2">{style.label}</Text>
+              </Button>
+            );
+          })}
         </Stack>
       </Box>
 

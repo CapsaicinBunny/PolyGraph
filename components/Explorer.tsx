@@ -3,8 +3,8 @@
 import { useCallback, useMemo, useState } from "react";
 import { Badge, Box, Button, Flex, Heading, HStack, Text } from "@chakra-ui/react";
 import type { ViewEdgeKind } from "@/lib/aggregate";
-import type { AnalyzeResult } from "@/lib/graph/types";
-import { FILTERABLE_EDGE_KINDS } from "@/lib/graph/visual";
+import type { AnalyzeResult, NodeCategory, NodeKind } from "@/lib/graph/types";
+import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "@/lib/graph/visual";
 import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import { GraphCanvas } from "./GraphCanvas";
 import { NodeDetailPanel } from "./NodeDetailPanel";
@@ -22,6 +22,12 @@ export function Explorer() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [enabledEdgeKinds, setEnabledEdgeKinds] = useState<Set<ViewEdgeKind>>(
     () => new Set(FILTERABLE_EDGE_KINDS),
+  );
+  const [enabledNodeKinds, setEnabledNodeKinds] = useState<Set<NodeKind>>(
+    () => new Set(FILTERABLE_NODE_KINDS),
+  );
+  const [enabledCategories, setEnabledCategories] = useState<Set<NodeCategory>>(
+    () => new Set<NodeCategory>(["ui", "feature"]),
   );
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -85,6 +91,24 @@ export function Explorer() {
     });
   }, []);
 
+  const handleToggleNodeKind = useCallback((kind: NodeKind) => {
+    setEnabledNodeKinds((prev) => {
+      const next = new Set(prev);
+      if (next.has(kind)) next.delete(kind);
+      else next.add(kind);
+      return next;
+    });
+  }, []);
+
+  const handleToggleCategory = useCallback((category: NodeCategory) => {
+    setEnabledCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
+  }, []);
+
   if (!result || !graph) {
     return (
       <Box h="100vh" bg="bg" overflow="auto">
@@ -136,6 +160,10 @@ export function Explorer() {
           onSearch={setSearch}
           enabledEdgeKinds={enabledEdgeKinds}
           onToggleEdgeKind={handleToggleEdgeKind}
+          enabledNodeKinds={enabledNodeKinds}
+          onToggleNodeKind={handleToggleNodeKind}
+          enabledCategories={enabledCategories}
+          onToggleCategory={handleToggleCategory}
           algorithm={algorithm}
           onAlgorithm={setAlgorithm}
           direction={direction}
@@ -151,6 +179,8 @@ export function Explorer() {
             algorithm={algorithm}
             direction={direction}
             showExternal={showExternal}
+            enabledNodeKinds={enabledNodeKinds}
+            enabledCategories={enabledCategories}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
           />
