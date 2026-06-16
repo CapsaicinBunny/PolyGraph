@@ -189,11 +189,27 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
     const count = Object.keys(files).length;
     setFileCount(count);
     setPhase("analyzing");
+
+    // Serializing the whole file map can exceed V8's max string length
+    // (~512 MB) on very large projects — there's no way around it in the
+    // browser, so steer the user to the server path-scan (which sends only the
+    // folder path and returns just the graph).
+    let body: string;
+    try {
+      body = JSON.stringify({ files });
+    } catch {
+      setPhase("idle");
+      setError(
+        "This project is too large to read in the browser. Use the “Scan a folder” box above — the local server reads it directly from disk, with no size limit.",
+      );
+      return;
+    }
+
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ files }),
+        body,
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
