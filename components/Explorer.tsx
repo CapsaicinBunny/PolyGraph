@@ -2,7 +2,6 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { Badge, Box, Button, Flex, Heading, HStack, Text } from "@chakra-ui/react";
-import dynamic from "next/dynamic";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import type {
   AnalyzeResult,
@@ -18,18 +17,9 @@ import { NodeDetailPanel } from "./NodeDetailPanel";
 import { Sidebar } from "./Sidebar";
 import { UploadDropzone } from "./UploadDropzone";
 
-// Pixi touches browser-only globals on import, so load it client-side only.
-const PixiGraphCanvas = dynamic(() => import("./PixiGraphCanvas").then((m) => m.PixiGraphCanvas), {
-  ssr: false,
-});
-
 const ALL_ENVIRONMENTS: Environment[] = ["client", "server"];
 const ALL_RUNTIMES: Runtime[] = ["node", "deno", "bun"];
 const ALL_CATEGORIES: NodeCategory[] = ["ui", "feature"];
-// Default to the GPU (Pixi) renderer only when the collapsed (file-level) view itself
-// is very large. The default view shows file nodes, so we size on file count — symbol
-// nodes stay hidden until you expand, and React Flow (crisp vector) handles ~1000 fine.
-const GPU_AUTO_FILE_THRESHOLD = 1500;
 
 interface Stats {
   fileCount: number;
@@ -58,7 +48,6 @@ export function Explorer() {
   const [algorithm, setAlgorithm] = useState<LayoutAlgorithm>("layered");
   const [direction, setDirection] = useState<LayoutDirection>("LR");
   const [showExternal, setShowExternal] = useState(false);
-  const [rendererOverride, setRendererOverride] = useState<"flow" | "gpu" | null>(null);
 
   const graph = result?.graph ?? null;
 
@@ -72,9 +61,6 @@ export function Explorer() {
     () => (graph?.nodes ?? []).filter((n) => n.kind === "file").map((n) => n.id),
     [graph],
   );
-
-  // The default view renders file nodes, so size the renderer choice on the file count.
-  const renderer = rendererOverride ?? (fileIds.length > GPU_AUTO_FILE_THRESHOLD ? "gpu" : "flow");
   const allExpanded = fileIds.length > 0 && fileIds.every((id) => expanded.has(id));
 
   const handleToggleExpandAll = useCallback(() => {
@@ -87,7 +73,6 @@ export function Explorer() {
     setExpanded(new Set());
     setSelectedId(null);
     setSearch("");
-    setRendererOverride(null); // re-apply the auto renderer choice for the new graph
   }, []);
 
   const handleSelect = useCallback(
@@ -191,15 +176,6 @@ export function Explorer() {
         <Button
           ml="auto"
           size="sm"
-          variant="subtle"
-          colorPalette={renderer === "gpu" ? "green" : "gray"}
-          title="Renderer: GPU (Pixi/WebGPU) scales to thousands of nodes; Flow (React Flow) is richer for small graphs"
-          onClick={() => setRendererOverride(renderer === "gpu" ? "flow" : "gpu")}
-        >
-          {renderer === "gpu" ? "Renderer: GPU" : "Renderer: Flow"}
-        </Button>
-        <Button
-          size="sm"
           variant={showExternal ? "subtle" : "ghost"}
           colorPalette={showExternal ? "purple" : "gray"}
           onClick={() => setShowExternal((v) => !v)}
@@ -235,29 +211,22 @@ export function Explorer() {
           onDirection={setDirection}
         />
         <Box flex="1" minW="0" position="relative">
-          {(() => {
-            const canvasProps = {
-              graph,
-              expanded,
-              enabledEdgeKinds,
-              search,
-              selectedId,
-              algorithm,
-              direction,
-              showExternal,
-              enabledNodeKinds,
-              enabledCategories,
-              enabledEnvironments,
-              enabledRuntimes,
-              onSelect: handleSelect,
-              onToggleExpand: handleToggleExpand,
-            };
-            return renderer === "gpu" ? (
-              <PixiGraphCanvas {...canvasProps} />
-            ) : (
-              <GraphCanvas {...canvasProps} />
-            );
-          })()}
+          <GraphCanvas
+            graph={graph}
+            expanded={expanded}
+            enabledEdgeKinds={enabledEdgeKinds}
+            search={search}
+            selectedId={selectedId}
+            algorithm={algorithm}
+            direction={direction}
+            showExternal={showExternal}
+            enabledNodeKinds={enabledNodeKinds}
+            enabledCategories={enabledCategories}
+            enabledEnvironments={enabledEnvironments}
+            enabledRuntimes={enabledRuntimes}
+            onSelect={handleSelect}
+            onToggleExpand={handleToggleExpand}
+          />
         </Box>
         {selectedId && (
           <NodeDetailPanel
