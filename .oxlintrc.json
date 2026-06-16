@@ -10,5 +10,5 @@
     "no-unused-vars": "warn",
     "no-console": "off"
   },
-  "ignorePatterns": ["node_modules", ".next", "out", "build"]
+  "ignorePatterns": ["node_modules", ".next", "out", "build", "vello-renderer"]
 }
