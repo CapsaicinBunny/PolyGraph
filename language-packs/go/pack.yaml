@@ -1,0 +1,8 @@
+id: go
+extensions: [".go"]
+grammar: go
+# by-name resolution: Go cross-file refs within a package have no import, so
+# they resolve against the global unique-definer index.
+imports:
+  style: go
+queries: tags.scm

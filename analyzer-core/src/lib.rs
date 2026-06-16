@@ -63,6 +63,8 @@ fn language_for(grammar: &str) -> Option<tree_sitter::Language> {
         "python" => Some(tree_sitter_python::language()),
         "java" => Some(tree_sitter_java::language()),
         "kotlin" => Some(tree_sitter_kotlin::language()),
+        "rust" => Some(tree_sitter_rust::language()),
+        "go" => Some(tree_sitter_go::language()),
         _ => None,
     }
 }
@@ -339,12 +341,13 @@ fn build_graph(per_file: &HashMap<String, FileExtract>, import_style: &str) -> O
         symbols_by_file.insert(file.as_str(), name_to_id);
     }
 
-    // JVM-style resolution (Java/Kotlin): imports map by simple class name and
-    // same-package refs have no import, so build a global unique-definer index
-    // (symbol name -> the single file that defines it, None if ambiguous).
-    let jvm = import_style == "jvm";
+    // By-name resolution (everything except Python's path-based imports — Java,
+    // Kotlin, Rust, Go): imports map by simple symbol name and same-scope refs
+    // often have no import, so build a global unique-definer index (symbol name
+    // -> the single file that defines it, None if ambiguous).
+    let by_name = import_style != "python";
     let mut definer: HashMap<&str, Option<&str>> = HashMap::new();
-    if jvm {
+    if by_name {
         for file in &files {
             for s in &per_file[*file].symbols {
                 definer
@@ -371,8 +374,12 @@ fn build_graph(per_file: &HashMap<String, FileExtract>, import_style: &str) -> O
         let fid = file_node_id(file);
         let mut binds: HashMap<&str, String> = HashMap::new();
         for imp in &per_file[*file].imports {
-            let (target, bind_name): (Option<String>, Option<&str>) = if jvm {
-                let simple = imp.module.rsplit('.').next().unwrap_or(imp.module.as_str());
+            let (target, bind_name): (Option<String>, Option<&str>) = if by_name {
+                let simple = imp
+                    .module
+                    .rsplit(|c| c == '.' || c == ':' || c == '/')
+                    .find(|s| !s.is_empty())
+                    .unwrap_or(imp.module.as_str());
                 (definer_file(simple).map(str::to_string), Some(simple))
             } else {
                 (
@@ -414,7 +421,7 @@ fn build_graph(per_file: &HashMap<String, FileExtract>, import_style: &str) -> O
                 Some((*id).to_string())
             } else if let Some(tf) = binds.get(r.name.as_str()) {
                 Some(resolve_in(tf))
-            } else if jvm {
+            } else if by_name {
                 definer_file(r.name.as_str()).map(resolve_in)
             } else {
                 None

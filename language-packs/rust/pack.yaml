@@ -1,0 +1,8 @@
+id: rust
+extensions: [".rs"]
+grammar: rust
+# by-name resolution (use-paths map by final segment; same-crate refs resolve
+# against the global unique-definer index). Any non-"python" style triggers it.
+imports:
+  style: rust
+queries: tags.scm

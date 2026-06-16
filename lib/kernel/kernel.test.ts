@@ -89,6 +89,44 @@ describe("multi-language kernel", () => {
     expect(hasEdge("App.kt#User", "App.kt#validate", "call")).toBe(true);
   });
 
+  test("extracts Rust structs/traits/functions, calls, and use imports", async () => {
+    const files = {
+      "shapes.rs":
+        "pub trait Draw {}\npub struct Circle;\nimpl Draw for Circle {}\npub fn area() -> f64 { compute() }\nfn compute() -> f64 { 1.0 }\n",
+      "main.rs": "use crate::shapes::Circle;\nfn main() { area(); }\n",
+    };
+    const { graph } = await analyzeProject(files);
+    const ids = new Set(graph.nodes.map((n) => n.id));
+    expect(ids.has("shapes.rs#Draw")).toBe(true);
+    expect(ids.has("shapes.rs#Circle")).toBe(true);
+    expect(ids.has("shapes.rs#area")).toBe(true);
+
+    const hasEdge = (s: string, t: string, k: string) =>
+      graph.edges.some((e) => e.source === s && e.target === t && e.kind === k);
+    expect(hasEdge("main.rs", "shapes.rs", "import")).toBe(true);
+    expect(hasEdge("main.rs#main", "shapes.rs#area", "call")).toBe(true);
+    expect(hasEdge("shapes.rs#area", "shapes.rs#compute", "call")).toBe(true);
+  });
+
+  test("extracts Go types and same-package calls", async () => {
+    const files = {
+      "model.go":
+        "package model\ntype User struct { Name string }\ntype Store interface { Save() }\nfunc NewUser() *User { return validate() }\nfunc validate() *User { return nil }\n",
+    };
+    const { graph } = await analyzeProject(files);
+    const ids = new Set(graph.nodes.map((n) => n.id));
+    expect(ids.has("model.go#User")).toBe(true);
+    expect(ids.has("model.go#Store")).toBe(true);
+    expect(ids.has("model.go#NewUser")).toBe(true);
+    // same-package call resolves with no import
+    expect(
+      graph.edges.some(
+        (e) =>
+          e.source === "model.go#NewUser" && e.target === "model.go#validate" && e.kind === "call",
+      ),
+    ).toBe(true);
+  });
+
   test("still analyzes TypeScript through the kernel", async () => {
     const { graph } = await analyzeProject({ "a.ts": "export function foo() {}\n" });
     expect(graph.nodes.some((n) => n.id === "a.ts#foo")).toBe(true);
