@@ -104,20 +104,30 @@ function GraphCanvasInner({
       },
     }));
 
+    // Edges that point at an external node take that node's family color so they
+    // read as a distinct group from internal edges.
+    const externalColor = new Map<string, string>();
+    for (const n of view.nodes) {
+      if (n.kind === "external")
+        externalColor.set(n.id, nodeStyle(n.kind, n.role, n.externalKind).color);
+    }
+
     const rfEdges: Edge[] = visibleEdges.map((e) => {
       const style = EDGE_STYLES[e.kind as ViewEdgeKind];
       const dashed = e.kind === "contains";
+      const toExternal = externalColor.get(e.target);
+      const color = toExternal ?? style.color;
       return {
         id: e.id,
         source: e.source,
         target: e.target,
-        animated: e.kind === "call",
+        animated: e.kind === "call" && !toExternal,
         style: {
-          stroke: style.color,
+          stroke: color,
           strokeWidth: 1.5,
-          strokeDasharray: dashed ? "4 4" : undefined,
+          strokeDasharray: toExternal ? "5 3" : dashed ? "4 4" : undefined,
         },
-        markerEnd: dashed ? undefined : { type: MarkerType.ArrowClosed, color: style.color },
+        markerEnd: dashed ? undefined : { type: MarkerType.ArrowClosed, color },
       };
     });
 

@@ -12,6 +12,14 @@ export type NodeKind =
 /** Source family of an external (out-of-project) node. */
 export type ExternalKind = "node" | "deno" | "bun" | "npm";
 
+/** How an imported npm package is declared in package.json (or not). */
+export type DependencyType =
+  | "dependency"
+  | "devDependency"
+  | "peerDependency"
+  | "optionalDependency"
+  | "undeclared";
+
 export type EdgeKind =
   | "import"
   | "call"
@@ -60,6 +68,10 @@ export interface GraphNode {
   runtimes?: Runtime[];
   /** For `kind: "external"`, which source family it belongs to. */
   externalKind?: ExternalKind;
+  /** For npm externals: declared version from package.json, if known. */
+  version?: string;
+  /** For npm externals: how the package is declared (or "undeclared"). */
+  dependencyType?: DependencyType;
 }
 
 export interface GraphEdge {

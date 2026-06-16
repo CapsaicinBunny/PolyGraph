@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import { type NextRequest, NextResponse } from "next/server";
 import { analyzeSources } from "@/lib/analyzer";
+import { readPackageDeps } from "@/lib/server/package-deps";
 import { scanDirectory } from "@/lib/server/scan-dir";
 
 // Reads the local filesystem, so it must run on the Node.js runtime.
@@ -42,7 +43,8 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
-    const result = analyzeSources(files);
+    const packages = await readPackageDeps(path);
+    const result = analyzeSources(files, { packages });
     return NextResponse.json({ ...result, fileCount, skipped, root: path });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Scan failed";

@@ -26,7 +26,10 @@ component usage.
   `defineSystem`, `defineQuery`).
 - **External dependencies** (toggle in the toolbar, off by default) — imported npm packages,
   Node builtins, and `Bun` / `Deno` / `process` API usage appear as dashed external nodes,
-  color-coded by source family (npm / Node / Deno / Bun).
+  color-coded by source family (npm / Node / Deno / Bun); edges into them are tinted to match.
+  npm subpath imports collapse to one node per package, and when scanning a path the node is
+  enriched from `package.json` with its **version** and dependency type (dependency /
+  devDependency / peer / **undeclared** — handy for spotting missing deps).
 - **Layout algorithms** — Layered and Tree (dagre, with top-down / left-right / bottom-up /
   right-left directions, Mermaid-style), plus Radial, Circular, Grid, and Force-directed
   (d3-force). The view auto-fits on change.

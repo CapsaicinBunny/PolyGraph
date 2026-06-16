@@ -98,9 +98,26 @@ export function NodeDetailPanel({ graph, selectedId, onSelect, onClose }: NodeDe
 
       {node.kind === "external" ? (
         <Box>
-          <Text fontSize="xs" color="fg.muted">
+          <Text fontSize="xs" color="fg.muted" mb="1.5">
             External dependency
           </Text>
+          {node.externalKind === "npm" && (
+            <HStack gap="1.5" wrap="wrap" mb="2">
+              {node.dependencyType && (
+                <Badge
+                  colorPalette={node.dependencyType === "undeclared" ? "red" : "purple"}
+                  variant="subtle"
+                >
+                  {node.dependencyType}
+                </Badge>
+              )}
+              {node.version && (
+                <Badge colorPalette="gray" variant="subtle" fontFamily="mono">
+                  {node.version}
+                </Badge>
+              )}
+            </HStack>
+          )}
           <Text fontSize="sm" color="fg.muted">
             Out of the analyzed project. Edges below show where it’s used.
           </Text>

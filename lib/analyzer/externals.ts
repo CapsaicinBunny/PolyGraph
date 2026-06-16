@@ -6,6 +6,7 @@ import {
   type GraphEdge,
   type GraphNode,
 } from "../graph/types";
+import type { PackageDeps } from "../server/package-deps";
 import { NODE_BUILTINS } from "./facets";
 import { type DeclIndex, enclosingNodeId } from "./nodes";
 import { toRelativePath } from "./project";
@@ -13,6 +14,12 @@ import { toRelativePath } from "./project";
 export interface ExternalResult {
   nodes: GraphNode[];
   edges: GraphEdge[];
+}
+
+/** Collapse a subpath import to its package name: `@scope/pkg/x` -> `@scope/pkg`, `pkg/x` -> `pkg`. */
+export function npmPackageName(spec: string): string {
+  const parts = spec.split("/");
+  return spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
 }
 
 // Runtime globals whose member usage becomes an external API node.
@@ -42,23 +49,32 @@ function isBareSpecifier(spec: string): boolean {
  *
  * These are always computed; the UI decides whether to show them.
  */
-export function analyzeExternals(project: Project, index: DeclIndex): ExternalResult {
+export function analyzeExternals(
+  project: Project,
+  index: DeclIndex,
+  packages: PackageDeps = {},
+): ExternalResult {
   const nodes = new Map<string, GraphNode>();
   const edges: GraphEdge[] = [];
   const seenEdge = new Set<string>();
 
   const addNode = (id: string, label: string, externalKind: ExternalKind) => {
-    if (!nodes.has(id)) {
-      nodes.set(id, {
-        id,
-        kind: "external",
-        label,
-        filePath: "",
-        line: 0,
-        parentFile: id,
-        externalKind,
-      });
+    if (nodes.has(id)) return;
+    const node: GraphNode = {
+      id,
+      kind: "external",
+      label,
+      filePath: "",
+      line: 0,
+      parentFile: id,
+      externalKind,
+    };
+    if (externalKind === "npm") {
+      const dep = packages[label];
+      node.dependencyType = dep?.type ?? "undeclared";
+      if (dep) node.version = dep.version;
     }
+    nodes.set(id, node);
   };
   const addEdge = (source: string, target: string, kind: "import" | "call") => {
     const id = edgeId(source, target, kind);
@@ -76,8 +92,11 @@ export function analyzeExternals(project: Project, index: DeclIndex): ExternalRe
       const spec = decl.getModuleSpecifierValue?.();
       if (!spec || !isBareSpecifier(spec)) continue;
       if (decl.getModuleSpecifierSourceFile()) continue; // resolves inside the project
-      const id = `external:module:${spec}`;
-      addNode(id, spec, classifyModule(spec));
+      const externalKind = classifyModule(spec);
+      // Collapse npm subpath imports to one node per package.
+      const label = externalKind === "npm" ? npmPackageName(spec) : spec;
+      const id = `external:module:${label}`;
+      addNode(id, label, externalKind);
       addEdge(fileId, id, "import");
     }
 

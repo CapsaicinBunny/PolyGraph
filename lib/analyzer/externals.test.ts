@@ -31,6 +31,31 @@ describe("external nodes", () => {
     expect(graph.nodes.some((n) => n.kind === "external")).toBe(false);
   });
 
+  test("npm subpath imports collapse to one node per package", () => {
+    const { graph } = analyzeSources({
+      "a.ts": `import { NextResponse } from "next/server"; import next from "next"; export const x = 1;`,
+    });
+    const externalIds = graph.nodes.filter((n) => n.kind === "external").map((n) => n.id);
+    expect(externalIds).toContain("external:module:next");
+    expect(externalIds).not.toContain("external:module:next/server");
+  });
+
+  test("npm externals are enriched with version + dependency type from package.json", () => {
+    const { graph } = analyzeSources(
+      { "a.ts": `import React from "react"; import L from "lodash"; export const x = 1;` },
+      {
+        packages: {
+          react: { version: "^19.0.0", type: "dependency" },
+          // lodash intentionally absent -> undeclared
+        },
+      },
+    );
+    const react = node(graph, "external:module:react");
+    expect(react?.version).toBe("^19.0.0");
+    expect(react?.dependencyType).toBe("dependency");
+    expect(node(graph, "external:module:lodash")?.dependencyType).toBe("undeclared");
+  });
+
   test("Bun / Deno / process API usage becomes external API nodes", () => {
     const { graph } = analyzeSources({
       "b.ts": `export function serve() { return Bun.serve({}); }`,
