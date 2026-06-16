@@ -2,6 +2,7 @@
 
 import { Badge, Box, HStack, Text } from "@chakra-ui/react";
 import { Handle, type NodeProps, Position } from "@xyflow/react";
+import type { LayoutDirection } from "@/lib/layout";
 import type { NodeKind } from "@/lib/graph/types";
 import { NODE_STYLES } from "@/lib/graph/visual";
 
@@ -12,6 +13,7 @@ export interface GraphFlowNodeData {
   expanded: boolean;
   matched: boolean;
   searching: boolean;
+  direction: LayoutDirection;
   [key: string]: unknown;
 }
 
@@ -23,11 +25,20 @@ const KIND_GLYPH: Record<NodeKind, string> = {
   component: "⬡",
 };
 
+// Where edges enter (target) and leave (source) a node, per flow direction.
+const HANDLES: Record<LayoutDirection, { target: Position; source: Position }> = {
+  LR: { target: Position.Left, source: Position.Right },
+  RL: { target: Position.Right, source: Position.Left },
+  TB: { target: Position.Top, source: Position.Bottom },
+  BT: { target: Position.Bottom, source: Position.Top },
+};
+
 export function GraphFlowNode({ data, selected }: NodeProps) {
   const d = data as GraphFlowNodeData;
   const style = NODE_STYLES[d.kind];
   const isFile = d.kind === "file";
   const dimmed = d.searching && !d.matched;
+  const handles = HANDLES[d.direction] ?? HANDLES.LR;
 
   return (
     <Box
@@ -49,7 +60,7 @@ export function GraphFlowNode({ data, selected }: NodeProps) {
     >
       <Handle
         type="target"
-        position={Position.Left}
+        position={handles.target}
         style={{ background: style.color, border: "none" }}
       />
       <HStack gap="2" align="center">
@@ -75,7 +86,7 @@ export function GraphFlowNode({ data, selected }: NodeProps) {
       </HStack>
       <Handle
         type="source"
-        position={Position.Right}
+        position={handles.source}
         style={{ background: style.color, border: "none" }}
       />
     </Box>

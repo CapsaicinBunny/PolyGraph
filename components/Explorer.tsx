@@ -5,6 +5,7 @@ import { Badge, Box, Button, Flex, Heading, HStack, Text } from "@chakra-ui/reac
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import type { AnalyzeResult } from "@/lib/graph/types";
 import { FILTERABLE_EDGE_KINDS } from "@/lib/graph/visual";
+import type { LayoutDirection } from "@/lib/layout";
 import { GraphCanvas } from "./GraphCanvas";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 import { Sidebar } from "./Sidebar";
@@ -24,6 +25,7 @@ export function Explorer() {
   );
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [direction, setDirection] = useState<LayoutDirection>("LR");
 
   const graph = result?.graph ?? null;
 
@@ -110,6 +112,8 @@ export function Explorer() {
           onSearch={setSearch}
           enabledEdgeKinds={enabledEdgeKinds}
           onToggleEdgeKind={handleToggleEdgeKind}
+          direction={direction}
+          onDirection={setDirection}
         />
         <Box flex="1" minW="0" position="relative">
           <GraphCanvas
@@ -118,6 +122,7 @@ export function Explorer() {
             enabledEdgeKinds={enabledEdgeKinds}
             search={search}
             selectedId={selectedId}
+            direction={direction}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
           />

@@ -1,22 +1,39 @@
 "use client";
 
-import { Box, Button, Heading, HStack, Input, Stack, Text } from "@chakra-ui/react";
+import { Box, Button, Heading, HStack, Input, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import { EDGE_STYLES, FILTERABLE_EDGE_KINDS, NODE_STYLES } from "@/lib/graph/visual";
 import type { NodeKind } from "@/lib/graph/types";
+import type { LayoutDirection } from "@/lib/layout";
 
 interface SidebarProps {
   search: string;
   onSearch: (value: string) => void;
   enabledEdgeKinds: Set<ViewEdgeKind>;
   onToggleEdgeKind: (kind: ViewEdgeKind) => void;
+  direction: LayoutDirection;
+  onDirection: (direction: LayoutDirection) => void;
 }
+
+const DIRECTIONS: { value: LayoutDirection; label: string; glyph: string }[] = [
+  { value: "TB", label: "Top down", glyph: "↓" },
+  { value: "LR", label: "Left → right", glyph: "→" },
+  { value: "BT", label: "Bottom up", glyph: "↑" },
+  { value: "RL", label: "Right → left", glyph: "←" },
+];
 
 function Dot({ color }: { color: string }) {
   return <Box w="10px" h="10px" rounded="full" bg={color} flexShrink={0} />;
 }
 
-export function Sidebar({ search, onSearch, enabledEdgeKinds, onToggleEdgeKind }: SidebarProps) {
+export function Sidebar({
+  search,
+  onSearch,
+  enabledEdgeKinds,
+  onToggleEdgeKind,
+  direction,
+  onDirection,
+}: SidebarProps) {
   return (
     <Stack
       w="260px"
@@ -38,6 +55,33 @@ export function Sidebar({ search, onSearch, enabledEdgeKinds, onToggleEdgeKind }
           value={search}
           onChange={(e) => onSearch(e.target.value)}
         />
+      </Box>
+
+      <Box>
+        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
+          Layout
+        </Heading>
+        <SimpleGrid columns={2} gap="1.5">
+          {DIRECTIONS.map((d) => {
+            const active = direction === d.value;
+            return (
+              <Button
+                key={d.value}
+                size="sm"
+                justifyContent="flex-start"
+                variant={active ? "subtle" : "ghost"}
+                colorPalette={active ? "blue" : "gray"}
+                opacity={active ? 1 : 0.7}
+                onClick={() => onDirection(d.value)}
+              >
+                <Text fontWeight="bold">{d.glyph}</Text>
+                <Text ml="1.5" fontSize="xs">
+                  {d.label}
+                </Text>
+              </Button>
+            );
+          })}
+        </SimpleGrid>
       </Box>
 
       <Box>

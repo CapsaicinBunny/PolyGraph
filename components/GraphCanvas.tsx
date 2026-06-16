@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import {
   Background,
   Controls,
@@ -9,12 +9,14 @@ import {
   MiniMap,
   type Node,
   ReactFlow,
+  ReactFlowProvider,
+  useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { buildView, type ViewEdgeKind } from "@/lib/aggregate";
 import type { GraphModel, NodeKind } from "@/lib/graph/types";
 import { EDGE_STYLES, NODE_STYLES } from "@/lib/graph/visual";
-import { layoutView } from "@/lib/layout";
+import { type LayoutDirection, layoutView } from "@/lib/layout";
 import { GraphFlowNode } from "./nodes/GraphFlowNode";
 
 const nodeTypes = { graph: GraphFlowNode };
@@ -25,25 +27,29 @@ interface GraphCanvasProps {
   enabledEdgeKinds: Set<ViewEdgeKind>;
   search: string;
   selectedId: string | null;
+  direction: LayoutDirection;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
 }
 
-export function GraphCanvas({
+function GraphCanvasInner({
   graph,
   expanded,
   enabledEdgeKinds,
   search,
   selectedId,
+  direction,
   onSelect,
   onToggleExpand,
 }: GraphCanvasProps) {
+  const { fitView } = useReactFlow();
+
   const { rfNodes, rfEdges } = useMemo(() => {
     const view = buildView(graph, expanded);
     const visibleEdges = view.edges.filter(
       (e) => e.kind === "contains" || enabledEdgeKinds.has(e.kind),
     );
-    const positions = layoutView({ nodes: view.nodes, edges: visibleEdges });
+    const positions = layoutView({ nodes: view.nodes, edges: visibleEdges }, { direction });
     const query = search.trim().toLowerCase();
     const searching = query.length > 0;
     const symbolCount = new Map<string, number>();
@@ -64,6 +70,7 @@ export function GraphCanvas({
         expanded: expanded.has(n.id),
         matched: searching && n.label.toLowerCase().includes(query),
         searching,
+        direction,
       },
     }));
 
@@ -85,7 +92,14 @@ export function GraphCanvas({
     });
 
     return { rfNodes, rfEdges };
-  }, [graph, expanded, enabledEdgeKinds, search, selectedId]);
+  }, [graph, expanded, enabledEdgeKinds, search, selectedId, direction]);
+
+  // Re-fit the viewport after the layout changes (direction switch, expand/collapse,
+  // or a freshly loaded graph). rAF lets React Flow measure the new node positions first.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => fitView({ padding: 0.2, duration: 300 }));
+    return () => cancelAnimationFrame(id);
+  }, [fitView, direction, expanded, graph]);
 
   return (
     <ReactFlow
@@ -93,7 +107,7 @@ export function GraphCanvas({
       edges={rfEdges}
       nodeTypes={nodeTypes}
       fitView
-      minZoom={0.1}
+      minZoom={0.05}
       maxZoom={2}
       proOptions={{ hideAttribution: true }}
       onNodeClick={(_, node) => {
@@ -112,5 +126,13 @@ export function GraphCanvas({
         style={{ background: "var(--chakra-colors-bg-panel)" }}
       />
     </ReactFlow>
+  );
+}
+
+export function GraphCanvas(props: GraphCanvasProps) {
+  return (
+    <ReactFlowProvider>
+      <GraphCanvasInner {...props} />
+    </ReactFlowProvider>
   );
 }
