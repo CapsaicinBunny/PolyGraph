@@ -207,6 +207,32 @@ function forceLayout(view: GraphView): Positions {
   return positions;
 }
 
+// Small LRU of computed layouts, so toggling filters/algorithms back to a prior
+// state (or any re-render) reuses positions instead of re-running dagre/force.
+const LAYOUT_CACHE_MAX = 24;
+const layoutCache = new Map<string, Positions>();
+
+/** layoutView, memoized by an externally supplied signature that uniquely identifies the view. */
+export function layoutViewCached(
+  signature: string,
+  view: GraphView,
+  options: LayoutOptions = {},
+): Positions {
+  const cached = layoutCache.get(signature);
+  if (cached) {
+    layoutCache.delete(signature); // refresh recency
+    layoutCache.set(signature, cached);
+    return cached;
+  }
+  const positions = layoutView(view, options);
+  layoutCache.set(signature, positions);
+  if (layoutCache.size > LAYOUT_CACHE_MAX) {
+    const oldest = layoutCache.keys().next().value;
+    if (oldest !== undefined) layoutCache.delete(oldest);
+  }
+  return positions;
+}
+
 /**
  * Compute node positions for a view using the chosen algorithm. Returns top-left
  * positions (React Flow's convention) keyed by node id. Deterministic for a given input.

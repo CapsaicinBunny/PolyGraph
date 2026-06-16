@@ -39,11 +39,55 @@ export interface AnalyzeOptions {
   packages?: PackageDeps;
 }
 
+// Memoize the (expensive) ts-morph analysis by a content hash, so re-scanning the
+// same unchanged sources returns instantly.
+const ANALYSIS_CACHE_MAX = 8;
+const analysisCache = new Map<string, AnalyzeResult>();
+
+/** cyrb53 fold over many strings without building one giant concatenation. */
+function hashParts(parts: Iterable<string>): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (const str of parts) {
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    // separator so ["ab","c"] != ["a","bc"]
+    h1 = Math.imul(h1 ^ 0, 2654435761);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+function analysisSignature(files: SourceFileMap, options: AnalyzeOptions): string {
+  const parts: string[] = [];
+  for (const path of Object.keys(files).sort()) {
+    parts.push(path, files[path]);
+  }
+  const packages = options.packages ?? {};
+  for (const name of Object.keys(packages).sort()) {
+    parts.push("", name, packages[name].version, packages[name].type);
+  }
+  return `${Object.keys(files).length}:${hashParts(parts)}`;
+}
+
 /**
  * Analyze a map of source files into a graph model. Files that fail to parse are
- * collected into `errors` and skipped; the rest still produce a graph.
+ * collected into `errors` and skipped; the rest still produce a graph. Memoized by
+ * a content hash of the inputs.
  */
 export function analyzeSources(files: SourceFileMap, options: AnalyzeOptions = {}): AnalyzeResult {
+  const signature = analysisSignature(files, options);
+  const cached = analysisCache.get(signature);
+  if (cached) {
+    analysisCache.delete(signature);
+    analysisCache.set(signature, cached);
+    return cached;
+  }
+
   const errors: AnalyzeError[] = [];
   const project = createInMemoryProject(files);
 
@@ -88,5 +132,12 @@ export function analyzeSources(files: SourceFileMap, options: AnalyzeOptions = {
   );
 
   const graph: GraphModel = { nodes, edges: validEdges };
-  return { graph, errors };
+  const result: AnalyzeResult = { graph, errors };
+
+  analysisCache.set(signature, result);
+  if (analysisCache.size > ANALYSIS_CACHE_MAX) {
+    const oldest = analysisCache.keys().next().value;
+    if (oldest !== undefined) analysisCache.delete(oldest);
+  }
+  return result;
 }
