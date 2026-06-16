@@ -1,0 +1,6 @@
+id: csharp
+extensions: [".cs"]
+grammar: csharp
+imports:
+  style: csharp
+queries: tags.scm

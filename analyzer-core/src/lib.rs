@@ -67,14 +67,22 @@ fn language_for(grammar: &str) -> Option<tree_sitter::Language> {
         "go" => Some(tree_sitter_go::language()),
         "scala" => Some(tree_sitter_scala::language()),
         "json" => Some(tree_sitter_json::language()),
+        "csharp" => Some(tree_sitter_c_sharp::language()),
+        // F# ships a LanguageFn (needs tree-sitter 0.23+ to `.into()`); on 0.22 we
+        // bind its raw C entry point directly as the classic `() -> Language`.
+        "fsharp" => Some(unsafe { tree_sitter_fsharp() }),
         // Vendored WebAssembly-text grammar (compiled by build.rs; see vendor/wat).
         "wat" => Some(unsafe { tree_sitter_wat() }),
         _ => None,
     }
 }
 
+// Force the F# grammar crate to link so its C entry point is available below.
+use tree_sitter_fsharp as _;
+
 extern "C" {
     fn tree_sitter_wat() -> tree_sitter::Language;
+    fn tree_sitter_fsharp() -> tree_sitter::Language;
 }
 
 const REF_KINDS: [&str; 7] = [

@@ -195,6 +195,35 @@ describe("multi-language kernel", () => {
     expect(byId.get("types.js#Handler")).toBe("function");
   });
 
+  test("extracts C# types, members, inheritance, and usage", async () => {
+    const { graph } = await analyzeProject({
+      "App.cs":
+        "namespace Demo {\n  interface IShape { }\n  class Circle : IShape {\n    private int radius;\n    public int Area() { return Compute(); }\n    int Compute() { return 1; }\n  }\n  class Program { static void Main() { new Circle(); } }\n}\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("App.cs#Demo")).toBe("namespace");
+    expect(byId.get("App.cs#IShape")).toBe("interface");
+    expect(byId.get("App.cs#Circle")).toBe("class");
+    expect(byId.get("App.cs#radius")).toBe("field");
+    expect(byId.get("App.cs#Area")).toBe("method");
+    const hasEdge = (s: string, t: string, k: string) =>
+      graph.edges.some((e) => e.source === s && e.target === t && e.kind === k);
+    expect(hasEdge("App.cs#Circle", "App.cs#IShape", "extends")).toBe(true);
+    expect(hasEdge("App.cs#Area", "App.cs#Compute", "call")).toBe(true);
+    expect(hasEdge("App.cs#Main", "App.cs#Circle", "instantiates")).toBe(true);
+  });
+
+  test("extracts F# types and let-bound functions", async () => {
+    const { graph } = await analyzeProject({
+      "Shapes.fs":
+        "module Shapes\n\ntype Shape = { Radius: float }\n\nlet area r = 1.0\nlet compute r = 2.0\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("Shapes.fs#Shape")).toBe("type");
+    expect(byId.get("Shapes.fs#area")).toBe("function");
+    expect(byId.get("Shapes.fs#compute")).toBe("function");
+  });
+
   test("still analyzes TypeScript through the kernel", async () => {
     const { graph } = await analyzeProject({ "a.ts": "export function foo() {}\n" });
     expect(graph.nodes.some((n) => n.id === "a.ts#foo")).toBe(true);

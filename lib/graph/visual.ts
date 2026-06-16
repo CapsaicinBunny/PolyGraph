@@ -255,6 +255,8 @@ const LANG_BADGES: { test: RegExp; code: string; color: string }[] = [
   { test: /\.java$/i, code: "JV", color: "#e76f00" },
   { test: /\.(kt|kts)$/i, code: "KT", color: "#7f52ff" },
   { test: /\.(scala|sc)$/i, code: "SC", color: "#c22d40" },
+  { test: /\.cs$/i, code: "C#", color: "#68217a" },
+  { test: /\.fsx?$/i, code: "F#", color: "#378bba" },
   { test: /\.jsonc?$/i, code: "{}", color: "#a3a635" },
   { test: /\.wat$/i, code: "WA", color: "#654ff0" },
   { test: /\.vue$/i, code: "VU", color: "#42b883" },

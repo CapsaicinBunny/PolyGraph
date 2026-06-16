@@ -1,0 +1,6 @@
+id: fsharp
+extensions: [".fs", ".fsx"]
+grammar: fsharp
+imports:
+  style: fsharp
+queries: tags.scm
