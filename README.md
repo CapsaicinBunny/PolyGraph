@@ -29,8 +29,10 @@ component usage.
   (d3-force). The view auto-fits on change.
 - **Collapse to file level** by default; click a file to expand its classes, functions, and
   components. Edges into collapsed files aggregate to the file node automatically.
-- **Filter** by relationship type, **search** nodes by name, and inspect any node's incoming
-  and outgoing edges in a detail panel.
+- **Filter** by relationship type, **search** nodes by name, and inspect any node in a detail
+  panel — incoming/outgoing edges plus detected metadata: **UI vs feature**, **client vs
+  server** (`"use client"` / `"use server"`), and **runtime** (Node / Deno / Bun, inferred from
+  `node:`/builtin imports and `Bun`/`Deno`/`process` usage).
 - Runs entirely locally — files are read in your browser and analyzed by a Next.js API route.
   Nothing is persisted or sent anywhere else.
 

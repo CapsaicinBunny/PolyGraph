@@ -98,6 +98,42 @@ export function NodeDetailPanel({ graph, selectedId, onSelect, onClose }: NodeDe
       </Box>
 
       <Box>
+        <Text fontSize="xs" color="fg.muted" mb="1.5">
+          About
+        </Text>
+        <HStack gap="1.5" wrap="wrap">
+          {node.category && (
+            <Badge colorPalette={node.category === "ui" ? "green" : "blue"} variant="subtle">
+              {node.category === "ui" ? "UI" : "Feature"}
+            </Badge>
+          )}
+          {node.environment ? (
+            <Badge
+              colorPalette={node.environment === "client" ? "orange" : "teal"}
+              variant="subtle"
+            >
+              {node.environment === "client" ? "Client" : "Server"}
+            </Badge>
+          ) : (
+            <Badge colorPalette="gray" variant="subtle" title="No use client/use server directive">
+              Env: unspecified
+            </Badge>
+          )}
+          {node.runtimes?.length ? (
+            node.runtimes.map((rt) => (
+              <Badge key={rt} colorPalette="purple" variant="subtle">
+                {rt}
+              </Badge>
+            ))
+          ) : (
+            <Badge colorPalette="gray" variant="subtle">
+              runtime: agnostic
+            </Badge>
+          )}
+        </HStack>
+      </Box>
+
+      <Box>
         <Text fontSize="xs" color="fg.muted" mb="1">
           Outgoing ({outgoing.length})
         </Text>

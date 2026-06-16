@@ -3,10 +3,12 @@ import {
   fileNodeId,
   FILE_NODE_LINE,
   type GraphNode,
+  type NodeCategory,
   type NodeKind,
   type NodeRole,
   symbolNodeId,
 } from "../graph/types";
+import { fileFacets } from "./facets";
 import { toRelativePath } from "./project";
 import { classOrInterfaceRole, functionRole, variableRole } from "./roles";
 
@@ -36,6 +38,13 @@ function classifyFunction(name: string, body: Node): NodeKind {
 function collectFromFile(file: SourceFile, index: DeclIndex): void {
   const filePath = toRelativePath(file.getFilePath());
   const parentFile = fileNodeId(filePath);
+  const facets = fileFacets(file);
+
+  // Environment + runtime are file-level facts shared by every node in the file.
+  const fileFacetFields = {
+    ...(facets.environment ? { environment: facets.environment } : {}),
+    ...(facets.runtimes.length ? { runtimes: facets.runtimes } : {}),
+  };
 
   index.nodes.push({
     id: parentFile,
@@ -44,10 +53,14 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
     filePath,
     line: FILE_NODE_LINE,
     parentFile,
+    category: facets.hasJsx ? "ui" : "feature",
+    ...fileFacetFields,
   });
 
   const add = (decl: Node, name: string, kind: NodeKind, role?: NodeRole) => {
     const id = symbolNodeId(filePath, name);
+    const category: NodeCategory =
+      kind === "component" || role === "react-component" ? "ui" : "feature";
     index.nodes.push({
       id,
       kind,
@@ -55,7 +68,9 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
       filePath,
       line: decl.getStartLineNumber(),
       parentFile,
+      category,
       ...(role ? { role } : {}),
+      ...fileFacetFields,
     });
     index.declToId.set(decl, id);
   };

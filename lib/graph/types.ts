@@ -19,6 +19,15 @@ export type EdgeKind =
  */
 export type NodeRole = "react-component" | "ecs-component" | "ecs-system" | "ecs-entity";
 
+/** Where the code runs, from `"use client"` / `"use server"` directives. */
+export type Environment = "client" | "server";
+
+/** Detected JS runtime(s) a file targets, from its APIs and imports. */
+export type Runtime = "node" | "deno" | "bun";
+
+/** Coarse purpose: renders UI, or implements logic/data. */
+export type NodeCategory = "ui" | "feature";
+
 export interface GraphNode {
   /** Stable id: `${filePath}#${symbolName}` for symbols, or `${filePath}` for files. */
   id: string;
@@ -33,6 +42,12 @@ export interface GraphNode {
   parentFile: string;
   /** Detected architectural role, if any (ECS / React). */
   role?: NodeRole;
+  /** UI (renders something) vs feature (logic/data). */
+  category?: NodeCategory;
+  /** Client vs server, when a directive declares it. */
+  environment?: Environment;
+  /** JS runtimes the owning file targets (node / deno / bun). */
+  runtimes?: Runtime[];
 }
 
 export interface GraphEdge {
