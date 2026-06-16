@@ -83,14 +83,33 @@ fn map_node_kind(kind: &str) -> &'static str {
     match kind {
         "class" => "class",
         "interface" => "interface",
-        "struct" | "type" => "type",
+        "struct" => "struct",
+        "trait" => "trait",
         "enum" => "enum",
+        "type" => "type",
+        "module" => "module",
+        "macro" => "macro",
+        "constant" => "constant",
         "variable" => "variable",
+        "method" | "function" => "function",
         _ => "function",
     }
 }
 
-const CLASS_LIKE: [&str; 4] = ["class", "interface", "struct", "enum"];
+/// Kinds that become a node even when nested (types/containers), vs functions
+/// which emit only at the top level (so methods fold into their class).
+fn is_always_emit(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class" | "interface" | "struct" | "trait" | "enum" | "module"
+    )
+}
+
+/// Containers that own their members (a method folds into its class). Modules
+/// are emitted but NON-absorbing — items inside a `mod` stay separate nodes.
+fn is_absorbing(kind: &str) -> bool {
+    is_always_emit(kind) && kind != "module"
+}
 
 struct RawSymbol {
     id: String,
@@ -199,10 +218,13 @@ fn extract_file(file_path: &str, source: &str, parser: &mut Parser, query: &Quer
         }
     }
 
-    // node id -> index into defs
+    // node id -> index into defs, for ABSORBING defs only (classes own their
+    // methods; modules don't, so a function in a `mod` stays top-level).
     let mut def_index: HashMap<usize, usize> = HashMap::new();
-    for (i, (node, _, _, _)) in defs.iter().enumerate() {
-        def_index.insert(node.id(), i);
+    for (i, (node, kind, _, _)) in defs.iter().enumerate() {
+        if is_absorbing(kind) {
+            def_index.insert(node.id(), i);
+        }
     }
     let nearest_def_above = |node: Node| -> Option<usize> {
         let mut cur = node.parent();
@@ -221,7 +243,7 @@ fn extract_file(file_path: &str, source: &str, parser: &mut Parser, query: &Quer
     let mut symbols: Vec<RawSymbol> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for (node, kind, name, line) in &defs {
-        let emit = CLASS_LIKE.contains(&kind.as_str()) || nearest_def_above(*node).is_none();
+        let emit = is_always_emit(kind) || nearest_def_above(*node).is_none();
         if !emit {
             continue;
         }

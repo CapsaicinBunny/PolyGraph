@@ -4,11 +4,16 @@ export type NodeKind =
   | "file"
   | "class"
   | "interface"
+  | "struct"
+  | "trait"
   | "type"
   | "enum"
   | "function"
   | "component"
   | "variable"
+  | "constant"
+  | "module"
+  | "macro"
   | "external";
 
 /** Source family of an external (out-of-project) node. */

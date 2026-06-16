@@ -89,17 +89,27 @@ describe("multi-language kernel", () => {
     expect(hasEdge("App.kt#User", "App.kt#validate", "call")).toBe(true);
   });
 
-  test("extracts Rust structs/traits/functions, calls, and use imports", async () => {
+  test("extracts Rust structs/traits/aliases/consts/macros, calls, and use imports", async () => {
     const files = {
       "shapes.rs":
-        "pub trait Draw {}\npub struct Circle;\nimpl Draw for Circle {}\npub fn area() -> f64 { compute() }\nfn compute() -> f64 { 1.0 }\n",
+        'pub trait Draw {}\npub struct Circle;\npub enum Kind { A, B }\npub union U { a: u8 }\npub type Id = u32;\npub const MAX: u32 = 10;\nstatic GREETING: &str = "hi";\nmacro_rules! shout { () => {} }\npub mod inner { pub fn helper() {} }\nimpl Draw for Circle {}\npub fn area() -> f64 { compute() }\nfn compute() -> f64 { 1.0 }\n',
       "main.rs": "use crate::shapes::Circle;\nfn main() { area(); }\n",
     };
     const { graph } = await analyzeProject(files);
-    const ids = new Set(graph.nodes.map((n) => n.id));
-    expect(ids.has("shapes.rs#Draw")).toBe(true);
-    expect(ids.has("shapes.rs#Circle")).toBe(true);
-    expect(ids.has("shapes.rs#area")).toBe(true);
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    // Each Rust construct maps to its own distinct node kind.
+    expect(byId.get("shapes.rs#Circle")).toBe("struct");
+    expect(byId.get("shapes.rs#U")).toBe("struct");
+    expect(byId.get("shapes.rs#Kind")).toBe("enum");
+    expect(byId.get("shapes.rs#Draw")).toBe("trait");
+    expect(byId.get("shapes.rs#Id")).toBe("type");
+    expect(byId.get("shapes.rs#MAX")).toBe("constant");
+    expect(byId.get("shapes.rs#GREETING")).toBe("constant");
+    expect(byId.get("shapes.rs#shout")).toBe("macro");
+    expect(byId.get("shapes.rs#inner")).toBe("module");
+    expect(byId.get("shapes.rs#area")).toBe("function");
+    // a module is non-absorbing: items inside `mod inner` stay their own nodes
+    expect(byId.get("shapes.rs#helper")).toBe("function");
 
     const hasEdge = (s: string, t: string, k: string) =>
       graph.edges.some((e) => e.source === s && e.target === t && e.kind === k);
@@ -108,16 +118,18 @@ describe("multi-language kernel", () => {
     expect(hasEdge("shapes.rs#area", "shapes.rs#compute", "call")).toBe(true);
   });
 
-  test("extracts Go types and same-package calls", async () => {
+  test("extracts Go types, methods, consts, and same-package calls", async () => {
     const files = {
       "model.go":
-        "package model\ntype User struct { Name string }\ntype Store interface { Save() }\nfunc NewUser() *User { return validate() }\nfunc validate() *User { return nil }\n",
+        'package model\nconst Version = "v1"\ntype User struct { Name string }\ntype Store interface { Save() }\nfunc NewUser() *User { return validate() }\nfunc validate() *User { return nil }\nfunc (u User) Greet() string { return "hi" }\n',
     };
     const { graph } = await analyzeProject(files);
-    const ids = new Set(graph.nodes.map((n) => n.id));
-    expect(ids.has("model.go#User")).toBe(true);
-    expect(ids.has("model.go#Store")).toBe(true);
-    expect(ids.has("model.go#NewUser")).toBe(true);
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("model.go#User")).toBe("struct");
+    expect(byId.get("model.go#Store")).toBe("interface");
+    expect(byId.get("model.go#NewUser")).toBe("function");
+    expect(byId.get("model.go#Version")).toBe("constant"); // package-level const
+    expect(byId.get("model.go#Greet")).toBe("function"); // method
     // same-package call resolves with no import
     expect(
       graph.edges.some(

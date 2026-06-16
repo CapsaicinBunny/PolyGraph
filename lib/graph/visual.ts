@@ -13,11 +13,16 @@ export const NODE_STYLES: Record<NodeKind, KindStyle> = {
   file: { label: "File", palette: "gray", color: "#94a3b8" },
   class: { label: "Class", palette: "purple", color: "#a855f7" },
   interface: { label: "Interface", palette: "cyan", color: "#06b6d4" },
+  struct: { label: "Struct", palette: "purple", color: "#6366f1" },
+  trait: { label: "Trait", palette: "cyan", color: "#22d3ee" },
   type: { label: "Type", palette: "yellow", color: "#eab308" },
   enum: { label: "Enum", palette: "orange", color: "#f97316" },
   function: { label: "Function", palette: "blue", color: "#3b82f6" },
   component: { label: "Component", palette: "green", color: "#22c55e" },
   variable: { label: "Variable", palette: "teal", color: "#14b8a6" },
+  constant: { label: "Constant", palette: "green", color: "#84cc16" },
+  module: { label: "Module", palette: "orange", color: "#f59e0b" },
+  macro: { label: "Macro", palette: "pink", color: "#ec4899" },
   external: { label: "External", palette: "gray", color: "#94a3b8" },
 };
 
@@ -60,11 +65,16 @@ export const EDGE_STYLES: Record<ViewEdgeKind, KindStyle> = {
 export const FILTERABLE_NODE_KINDS: NodeKind[] = [
   "class",
   "interface",
+  "struct",
+  "trait",
   "type",
   "enum",
   "function",
   "component",
   "variable",
+  "constant",
+  "module",
+  "macro",
 ];
 
 /** Edge kinds the user can filter (excludes the synthetic "contains"). */
@@ -93,11 +103,16 @@ export const KIND_GLYPH: Record<NodeKind, string> = {
   file: "▣",
   class: "◆",
   interface: "◇",
+  struct: "▤",
+  trait: "✦",
   type: "𝓣",
   enum: "≣",
   function: "ƒ",
   component: "⬡",
   variable: "▪",
+  constant: "=",
+  module: "❏",
+  macro: "!",
   external: "↗",
 };
 
@@ -141,11 +156,16 @@ const KIND_SHAPE: Record<NodeKind, IconShape> = {
   file: "doc",
   class: "diamond",
   interface: "diamond-o",
+  struct: "square",
+  trait: "diamond-o",
   type: "rounded",
   enum: "bars",
   function: "circle",
   component: "hexagon",
   variable: "square",
+  constant: "circle",
+  module: "hexagon",
+  macro: "diamond",
   external: "arrow",
 };
 
