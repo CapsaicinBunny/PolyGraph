@@ -4,16 +4,27 @@ import { Box, Button, Heading, HStack, Input, SimpleGrid, Stack, Text } from "@c
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import { EDGE_STYLES, FILTERABLE_EDGE_KINDS, NODE_STYLES, ROLE_STYLES } from "@/lib/graph/visual";
 import type { NodeKind, NodeRole } from "@/lib/graph/types";
-import type { LayoutDirection } from "@/lib/layout";
+import { DIRECTIONAL_ALGORITHMS, type LayoutAlgorithm, type LayoutDirection } from "@/lib/layout";
 
 interface SidebarProps {
   search: string;
   onSearch: (value: string) => void;
   enabledEdgeKinds: Set<ViewEdgeKind>;
   onToggleEdgeKind: (kind: ViewEdgeKind) => void;
+  algorithm: LayoutAlgorithm;
+  onAlgorithm: (algorithm: LayoutAlgorithm) => void;
   direction: LayoutDirection;
   onDirection: (direction: LayoutDirection) => void;
 }
+
+const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
+  { value: "layered", label: "Layered", glyph: "▤" },
+  { value: "tree", label: "Tree", glyph: "⌄" },
+  { value: "radial", label: "Radial", glyph: "◎" },
+  { value: "circular", label: "Circular", glyph: "○" },
+  { value: "grid", label: "Grid", glyph: "▦" },
+  { value: "force", label: "Force", glyph: "✸" },
+];
 
 const DIRECTIONS: { value: LayoutDirection; label: string; glyph: string }[] = [
   { value: "TB", label: "Top down", glyph: "↓" },
@@ -31,9 +42,12 @@ export function Sidebar({
   onSearch,
   enabledEdgeKinds,
   onToggleEdgeKind,
+  algorithm,
+  onAlgorithm,
   direction,
   onDirection,
 }: SidebarProps) {
+  const directionEnabled = DIRECTIONAL_ALGORITHMS.includes(algorithm);
   return (
     <Stack
       w="260px"
@@ -62,6 +76,31 @@ export function Sidebar({
           Layout
         </Heading>
         <SimpleGrid columns={2} gap="1.5">
+          {ALGORITHMS.map((a) => {
+            const active = algorithm === a.value;
+            return (
+              <Button
+                key={a.value}
+                size="sm"
+                justifyContent="flex-start"
+                variant={active ? "subtle" : "ghost"}
+                colorPalette={active ? "blue" : "gray"}
+                opacity={active ? 1 : 0.7}
+                onClick={() => onAlgorithm(a.value)}
+              >
+                <Text fontWeight="bold">{a.glyph}</Text>
+                <Text ml="1.5" fontSize="xs">
+                  {a.label}
+                </Text>
+              </Button>
+            );
+          })}
+        </SimpleGrid>
+
+        <Text fontSize="xs" color="fg.muted" mt="3" mb="1.5">
+          Direction {directionEnabled ? "" : "(layered / tree only)"}
+        </Text>
+        <SimpleGrid columns={2} gap="1.5">
           {DIRECTIONS.map((d) => {
             const active = direction === d.value;
             return (
@@ -71,7 +110,8 @@ export function Sidebar({
                 justifyContent="flex-start"
                 variant={active ? "subtle" : "ghost"}
                 colorPalette={active ? "blue" : "gray"}
-                opacity={active ? 1 : 0.7}
+                opacity={directionEnabled ? (active ? 1 : 0.7) : 0.35}
+                disabled={!directionEnabled}
                 onClick={() => onDirection(d.value)}
               >
                 <Text fontWeight="bold">{d.glyph}</Text>

@@ -16,7 +16,12 @@ import "@xyflow/react/dist/style.css";
 import { buildView, type ViewEdgeKind } from "@/lib/aggregate";
 import type { GraphModel, NodeKind, NodeRole } from "@/lib/graph/types";
 import { EDGE_STYLES, nodeStyle } from "@/lib/graph/visual";
-import { type LayoutDirection, layoutView } from "@/lib/layout";
+import {
+  DIRECTIONAL_ALGORITHMS,
+  type LayoutAlgorithm,
+  type LayoutDirection,
+  layoutView,
+} from "@/lib/layout";
 import { GraphFlowNode } from "./nodes/GraphFlowNode";
 
 const nodeTypes = { graph: GraphFlowNode };
@@ -27,6 +32,7 @@ interface GraphCanvasProps {
   enabledEdgeKinds: Set<ViewEdgeKind>;
   search: string;
   selectedId: string | null;
+  algorithm: LayoutAlgorithm;
   direction: LayoutDirection;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
@@ -38,6 +44,7 @@ function GraphCanvasInner({
   enabledEdgeKinds,
   search,
   selectedId,
+  algorithm,
   direction,
   onSelect,
   onToggleExpand,
@@ -49,7 +56,12 @@ function GraphCanvasInner({
     const visibleEdges = view.edges.filter(
       (e) => e.kind === "contains" || enabledEdgeKinds.has(e.kind),
     );
-    const positions = layoutView({ nodes: view.nodes, edges: visibleEdges }, { direction });
+    const positions = layoutView(
+      { nodes: view.nodes, edges: visibleEdges },
+      { algorithm, direction },
+    );
+    // Handle anchors only track direction for the directional algorithms.
+    const handleDirection = DIRECTIONAL_ALGORITHMS.includes(algorithm) ? direction : "LR";
     const query = search.trim().toLowerCase();
     const searching = query.length > 0;
     const symbolCount = new Map<string, number>();
@@ -71,7 +83,7 @@ function GraphCanvasInner({
         expanded: expanded.has(n.id),
         matched: searching && n.label.toLowerCase().includes(query),
         searching,
-        direction,
+        direction: handleDirection,
       },
     }));
 
@@ -93,14 +105,14 @@ function GraphCanvasInner({
     });
 
     return { rfNodes, rfEdges };
-  }, [graph, expanded, enabledEdgeKinds, search, selectedId, direction]);
+  }, [graph, expanded, enabledEdgeKinds, search, selectedId, algorithm, direction]);
 
   // Re-fit the viewport after the layout changes (direction switch, expand/collapse,
   // or a freshly loaded graph). rAF lets React Flow measure the new node positions first.
   useEffect(() => {
     const id = requestAnimationFrame(() => fitView({ padding: 0.2, duration: 300 }));
     return () => cancelAnimationFrame(id);
-  }, [fitView, direction, expanded, graph]);
+  }, [fitView, algorithm, direction, expanded, graph]);
 
   return (
     <ReactFlow

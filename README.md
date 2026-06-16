@@ -24,8 +24,9 @@ component usage.
   `ecs-entity`, detected from naming (`*Component`/`*System`/`*Entity`), decorators
   (`@Component`/`@System`/`@Entity`), and data-oriented factories (`defineComponent`,
   `defineSystem`, `defineQuery`).
-- **Layout directions** — arrange the graph top-down, left-right, bottom-up, or right-left
-  (Mermaid-style); the view auto-fits on change.
+- **Layout algorithms** — Layered and Tree (dagre, with top-down / left-right / bottom-up /
+  right-left directions, Mermaid-style), plus Radial, Circular, Grid, and Force-directed
+  (d3-force). The view auto-fits on change.
 - **Collapse to file level** by default; click a file to expand its classes, functions, and
   components. Edges into collapsed files aggregate to the file node automatically.
 - **Filter** by relationship type, **search** nodes by name, and inspect any node's incoming
