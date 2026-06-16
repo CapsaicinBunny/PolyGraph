@@ -35,6 +35,16 @@ export function Explorer() {
     return map;
   }, [graph]);
 
+  const fileIds = useMemo(
+    () => (graph?.nodes ?? []).filter((n) => n.kind === "file").map((n) => n.id),
+    [graph],
+  );
+  const allExpanded = fileIds.length > 0 && fileIds.every((id) => expanded.has(id));
+
+  const handleToggleExpandAll = useCallback(() => {
+    setExpanded(allExpanded ? new Set() : new Set(fileIds));
+  }, [allExpanded, fileIds]);
+
   const handleResult = useCallback((res: AnalyzeResult, s: Stats) => {
     setResult(res);
     setStats(s);
@@ -101,7 +111,10 @@ export function Explorer() {
             </Badge>
           )}
         </HStack>
-        <Button ml="auto" size="sm" variant="outline" onClick={() => setResult(null)}>
+        <Button ml="auto" size="sm" variant="subtle" onClick={handleToggleExpandAll}>
+          {allExpanded ? "Collapse all" : "Expand all"}
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => setResult(null)}>
           Analyze another
         </Button>
       </HStack>
