@@ -1,16 +1,16 @@
 {
   "name": "vello-renderer",
-  "version": "0.1.0",
+  "type": "module",
   "description": "WebGPU vector renderer (Vello) for the TS Module Scanner graph",
+  "version": "0.1.0",
   "files": [
     "vello_renderer_bg.wasm",
     "vello_renderer.js",
     "vello_renderer.d.ts"
   ],
-  "type": "module",
+  "main": "vello_renderer.js",
+  "types": "vello_renderer.d.ts",
   "sideEffects": [
     "./snippets/*"
-  ],
-  "main": "vello_renderer.js",
-  "types": "vello_renderer.d.ts"
+  ]
 }
