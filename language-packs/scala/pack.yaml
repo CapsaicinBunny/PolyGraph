@@ -1,0 +1,7 @@
+id: scala
+extensions: [".scala", ".sc"]
+grammar: scala
+# by-name resolution (global unique-definer index); calls/extends resolve by name.
+imports:
+  style: scala
+queries: tags.scm

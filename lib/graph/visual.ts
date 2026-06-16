@@ -254,6 +254,7 @@ const LANG_BADGES: { test: RegExp; code: string; color: string }[] = [
   { test: /\.go$/i, code: "GO", color: "#00add8" },
   { test: /\.java$/i, code: "JV", color: "#e76f00" },
   { test: /\.(kt|kts)$/i, code: "KT", color: "#7f52ff" },
+  { test: /\.(scala|sc)$/i, code: "SC", color: "#c22d40" },
   { test: /\.vue$/i, code: "VU", color: "#42b883" },
   { test: /\.svelte$/i, code: "SV", color: "#ff3e00" },
 ];

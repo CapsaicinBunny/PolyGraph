@@ -65,6 +65,7 @@ fn language_for(grammar: &str) -> Option<tree_sitter::Language> {
         "kotlin" => Some(tree_sitter_kotlin::language()),
         "rust" => Some(tree_sitter_rust::language()),
         "go" => Some(tree_sitter_go::language()),
+        "scala" => Some(tree_sitter_scala::language()),
         _ => None,
     }
 }

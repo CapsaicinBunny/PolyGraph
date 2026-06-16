@@ -142,6 +142,26 @@ describe("multi-language kernel", () => {
     ).toBe(true);
   });
 
+  test("extracts Scala classes, objects, traits, and inheritance", async () => {
+    const files = {
+      "Shapes.scala":
+        "trait Drawable { def draw(): Unit }\nclass Circle(r: Double) extends Drawable {\n  def draw(): Unit = ()\n}\nobject Main\n",
+    };
+    const { graph } = await analyzeProject(files);
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("Shapes.scala#Drawable")).toBe("trait");
+    expect(byId.get("Shapes.scala#Circle")).toBe("class");
+    expect(byId.get("Shapes.scala#Main")).toBe("object");
+    expect(
+      graph.edges.some(
+        (e) =>
+          e.source === "Shapes.scala#Circle" &&
+          e.target === "Shapes.scala#Drawable" &&
+          e.kind === "extends",
+      ),
+    ).toBe(true);
+  });
+
   test("still analyzes TypeScript through the kernel", async () => {
     const { graph } = await analyzeProject({ "a.ts": "export function foo() {}\n" });
     expect(graph.nodes.some((n) => n.id === "a.ts#foo")).toBe(true);
