@@ -1,0 +1,6 @@
+id: c
+extensions: [".c", ".h"]
+grammar: c
+imports:
+  style: c
+queries: tags.scm

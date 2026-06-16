@@ -1,0 +1,6 @@
+id: swift
+extensions: [".swift"]
+grammar: swift
+imports:
+  style: swift
+queries: tags.scm

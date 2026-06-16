@@ -1,0 +1,6 @@
+id: cpp
+extensions: [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"]
+grammar: cpp
+imports:
+  style: cpp
+queries: tags.scm

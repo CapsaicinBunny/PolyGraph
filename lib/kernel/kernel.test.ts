@@ -224,6 +224,71 @@ describe("multi-language kernel", () => {
     expect(byId.get("Shapes.fs#compute")).toBe("function");
   });
 
+  test("extracts C functions, structs, and typedefs", async () => {
+    const { graph } = await analyzeProject({
+      "m.c":
+        "typedef struct {int x;} Pt;\nint add(int a){ return mul(a); }\nint mul(int a){ return a; }\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("m.c#Pt")).toBe("type");
+    expect(byId.get("m.c#add")).toBe("function");
+    expect(
+      graph.edges.some(
+        (e) => e.source === "m.c#add" && e.target === "m.c#mul" && e.kind === "call",
+      ),
+    ).toBe(true);
+  });
+
+  test("extracts C++ classes, namespaces, and functions", async () => {
+    const { graph } = await analyzeProject({
+      "m.cpp":
+        "namespace app { class Shape { public: int area(); }; struct P {}; }\nint go(){ return 1; }\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("m.cpp#app")).toBe("namespace");
+    expect(byId.get("m.cpp#Shape")).toBe("class");
+    expect(byId.get("m.cpp#P")).toBe("struct");
+    expect(byId.get("m.cpp#go")).toBe("function");
+  });
+
+  test("extracts Objective-C interfaces", async () => {
+    const { graph } = await analyzeProject({ "V.m": "@interface Foo : Bar\n@end\n" });
+    expect(graph.nodes.some((n) => n.id === "V.m#Foo" && n.kind === "class")).toBe(true);
+  });
+
+  test("extracts Swift classes/structs/enums/protocols/functions", async () => {
+    const { graph } = await analyzeProject({
+      "S.swift":
+        "class C {}\nstruct P {}\nenum E {}\nprotocol Pr {}\nfunc area() -> Int { return 1 }\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("S.swift#C")).toBe("class");
+    expect(byId.get("S.swift#P")).toBe("struct");
+    expect(byId.get("S.swift#E")).toBe("enum");
+    expect(byId.get("S.swift#Pr")).toBe("protocol");
+    expect(byId.get("S.swift#area")).toBe("function");
+  });
+
+  test("extracts Zig functions and declarations", async () => {
+    const { graph } = await analyzeProject({
+      "m.zig": "const Foo = struct { x: i32 };\npub fn add(a: i32) i32 { return a; }\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("m.zig#add")).toBe("function");
+    expect(byId.get("m.zig#Foo")).toBe("variable");
+  });
+
+  test("extracts Haskell data types, classes, and functions", async () => {
+    const { graph } = await analyzeProject({
+      "M.hs":
+        "module M where\ndata Shape = Circle\nclass Draw a where\narea :: Int -> Int\narea x = x\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("M.hs#Shape")).toBe("type");
+    expect(byId.get("M.hs#Draw")).toBe("interface");
+    expect(byId.get("M.hs#area")).toBe("function");
+  });
+
   test("still analyzes TypeScript through the kernel", async () => {
     const { graph } = await analyzeProject({ "a.ts": "export function foo() {}\n" });
     expect(graph.nodes.some((n) => n.id === "a.ts#foo")).toBe(true);

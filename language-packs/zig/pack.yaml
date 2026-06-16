@@ -1,0 +1,6 @@
+id: zig
+extensions: [".zig"]
+grammar: zig
+imports:
+  style: zig
+queries: tags.scm

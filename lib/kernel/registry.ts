@@ -18,6 +18,12 @@ const TREE_SITTER_PACKS = [
   "scala",
   "csharp",
   "fsharp",
+  "c",
+  "cpp",
+  "objc",
+  "swift",
+  "zig",
+  "haskell",
   "jsonc",
   "wasm",
 ];

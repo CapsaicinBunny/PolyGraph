@@ -71,6 +71,12 @@ fn language_for(grammar: &str) -> Option<tree_sitter::Language> {
         "json" => Some(tree_sitter_json::LANGUAGE.into()),
         "csharp" => Some(tree_sitter_c_sharp::LANGUAGE.into()),
         "fsharp" => Some(tree_sitter_fsharp::LANGUAGE_FSHARP.into()),
+        "c" => Some(tree_sitter_c::LANGUAGE.into()),
+        "cpp" => Some(tree_sitter_cpp::LANGUAGE.into()),
+        "objc" => Some(tree_sitter_objc::LANGUAGE.into()),
+        "swift" => Some(tree_sitter_swift::LANGUAGE.into()),
+        "zig" => Some(tree_sitter_zig::LANGUAGE.into()),
+        "haskell" => Some(tree_sitter_haskell::LANGUAGE.into()),
         // Vendored WebAssembly-text grammar (compiled by build.rs; see vendor/wat).
         "wat" => Some(unsafe { LanguageFn::from_raw(tree_sitter_wat) }.into()),
         _ => None,

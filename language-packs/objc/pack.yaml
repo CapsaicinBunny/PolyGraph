@@ -1,0 +1,6 @@
+id: objc
+extensions: [".m", ".mm"]
+grammar: objc
+imports:
+  style: objc
+queries: tags.scm

@@ -1,0 +1,6 @@
+id: haskell
+extensions: [".hs"]
+grammar: haskell
+imports:
+  style: haskell
+queries: tags.scm
