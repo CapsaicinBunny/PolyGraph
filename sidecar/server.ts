@@ -50,7 +50,7 @@ export function startServer(port = Number(process.env.POLYGRAPH_PORT) || 0): Run
       return json({ error: "Not found" }, 404);
     },
   });
-  return { port: server.port, stop: () => server.stop(true) };
+  return { port: server.port ?? port, stop: () => server.stop(true) };
 }
 
 // Binary entry point: start, then announce the port on stdout for the host.
