@@ -18,7 +18,6 @@ export class VelloCanvas {
         wasm.__wbg_vellocanvas_free(ptr, 0);
     }
     /**
-     * Initialize a WebGPU device + surface for the given canvas and create a Vello renderer.
      * @param {HTMLCanvasElement} canvas
      * @returns {Promise<VelloCanvas>}
      */
@@ -27,8 +26,30 @@ export class VelloCanvas {
         return ret;
     }
     /**
-     * POC render: a single rounded card with a border and left accent bar.
+     * Fit all nodes into the viewport; returns [x, y, scale] for the caller to keep.
+     * @returns {Float64Array}
      */
+    fit() {
+        const ret = wasm.vellocanvas_fit(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Return the id of the topmost node under a screen point, if any.
+     * @param {number} px
+     * @param {number} py
+     * @returns {string | undefined}
+     */
+    pick(px, py) {
+        const ret = wasm.vellocanvas_pick(this.__wbg_ptr, px, py);
+        let v1;
+        if (ret[0] !== 0) {
+            v1 = getStringFromWasm0(ret[0], ret[1]).slice();
+            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        }
+        return v1;
+    }
     render() {
         const ret = wasm.vellocanvas_render(this.__wbg_ptr);
         if (ret[1]) {
@@ -41,6 +62,42 @@ export class VelloCanvas {
      */
     resize(width, height) {
         wasm.vellocanvas_resize(this.__wbg_ptr, width, height);
+    }
+    /**
+     * @param {number} x
+     * @param {number} y
+     * @param {number} scale
+     */
+    set_camera(x, y, scale) {
+        wasm.vellocanvas_set_camera(this.__wbg_ptr, x, y, scale);
+    }
+    /**
+     * Replace the graph data (JSON: { nodes:[...], edges:[...] }).
+     * @param {string} json
+     */
+    set_data(json) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.vellocanvas_set_data(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {string} query
+     */
+    set_search(query) {
+        const ptr0 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.vellocanvas_set_search(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @param {string | null} [id]
+     */
+    set_selection(id) {
+        var ptr0 = isLikeNone(id) ? 0 : passStringToWasm0(id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        wasm.vellocanvas_set_selection(this.__wbg_ptr, ptr0, len0);
     }
 }
 if (Symbol.dispose) VelloCanvas.prototype[Symbol.dispose] = VelloCanvas.prototype.free;
@@ -951,12 +1008,12 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, getArrayU8FromWasm0(arg2, arg3), arg4, arg5);
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 121, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 200, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h1f61da4447a6259c);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 147, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 226, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h8d0a2bd66ba9dad6);
             return ret;
         },
@@ -1154,6 +1211,11 @@ function debugString(val) {
     return className;
 }
 
+function getArrayF64FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+}
+
 function getArrayU32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
@@ -1170,6 +1232,14 @@ function getDataViewMemory0() {
         cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
     }
     return cachedDataViewMemory0;
+}
+
+let cachedFloat64ArrayMemory0 = null;
+function getFloat64ArrayMemory0() {
+    if (cachedFloat64ArrayMemory0 === null || cachedFloat64ArrayMemory0.byteLength === 0) {
+        cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
+    }
+    return cachedFloat64ArrayMemory0;
 }
 
 function getStringFromWasm0(ptr, len) {
@@ -1311,6 +1381,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedFloat64ArrayMemory0 = null;
     cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();

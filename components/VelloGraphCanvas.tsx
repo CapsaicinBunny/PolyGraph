@@ -1,0 +1,278 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Box } from "@chakra-ui/react";
+import type { SceneFilters } from "@/lib/graph/scene";
+import type { GraphCanvasProps } from "./GraphCanvas";
+import { LayoutOverlay } from "./LayoutOverlay";
+import { useScene } from "./useScene";
+
+function hexToRgb(hex: string): [number, number, number] {
+  const v = Number.parseInt(hex.replace("#", ""), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+interface VelloHandle {
+  set_data: (json: string) => void;
+  set_camera: (x: number, y: number, scale: number) => void;
+  set_selection: (id: string | undefined) => void;
+  set_search: (q: string) => void;
+  fit: () => Float64Array | number[];
+  pick: (px: number, py: number) => string | undefined;
+  resize: (w: number, h: number) => void;
+  render: () => void;
+  free?: () => void;
+}
+
+export function VelloGraphCanvas(props: GraphCanvasProps) {
+  const {
+    graph,
+    expanded,
+    enabledEdgeKinds,
+    search,
+    selectedId,
+    algorithm,
+    direction,
+    showExternal,
+    enabledNodeKinds,
+    enabledCategories,
+    enabledEnvironments,
+    enabledRuntimes,
+    onSelect,
+    onToggleExpand,
+  } = props;
+
+  const filters: SceneFilters = useMemo(
+    () => ({
+      showExternal,
+      enabledNodeKinds,
+      enabledCategories,
+      enabledEnvironments,
+      enabledRuntimes,
+      enabledEdgeKinds,
+    }),
+    [
+      showExternal,
+      enabledNodeKinds,
+      enabledCategories,
+      enabledEnvironments,
+      enabledRuntimes,
+      enabledEdgeKinds,
+    ],
+  );
+
+  const { scene, layingOut } = useScene(graph, expanded, filters, algorithm, direction);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const vcRef = useRef<VelloHandle | null>(null);
+  const cam = useRef({ x: 0, y: 0, scale: 1 });
+  const dpr = useRef(1);
+  const isFile = useRef(new Map<string, boolean>());
+  const handlers = useRef({ onSelect, onToggleExpand });
+  handlers.current = { onSelect, onToggleExpand };
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // The JSON payload Vello consumes. Built from the positioned scene.
+  const payload = useMemo(() => {
+    const center = new Map<string, [number, number]>();
+    const map = new Map<string, boolean>();
+    for (const n of scene.nodes) {
+      center.set(n.id, [n.x + n.width / 2, n.y + n.height / 2]);
+      map.set(n.id, n.isFile);
+    }
+    isFile.current = map;
+    const nodes = scene.nodes.map((n) => ({
+      id: n.id,
+      x: n.x,
+      y: n.y,
+      w: n.width,
+      h: n.height,
+      color: hexToRgb(n.color),
+      label: n.label,
+      glyph: n.glyph,
+      badge: n.isFile && n.symbolCount > 0 ? `+${n.symbolCount}` : "",
+      external: n.isExternal,
+    }));
+    const edges = scene.edges
+      .filter((e) => e.kind !== "contains")
+      .map((e) => {
+        const a = center.get(e.source);
+        const b = center.get(e.target);
+        if (!a || !b) return null;
+        return { x1: a[0], y1: a[1], x2: b[0], y2: b[1], color: hexToRgb(e.color), dashed: e.dashed };
+      })
+      .filter(Boolean);
+    return JSON.stringify({ nodes, edges });
+  }, [scene]);
+
+  // One-time Vello/WebGPU setup + camera interaction.
+  useEffect(() => {
+    const el = containerRef.current;
+    const canvas = canvasRef.current;
+    if (!el || !canvas) return;
+    let destroyed = false;
+    let raf = 0;
+
+    const renderSoon = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        vcRef.current?.render();
+      });
+    };
+
+    const sizeCanvas = () => {
+      const ratio = window.devicePixelRatio || 1;
+      dpr.current = ratio;
+      canvas.width = Math.max(1, Math.floor(el.clientWidth * ratio));
+      canvas.height = Math.max(1, Math.floor(el.clientHeight * ratio));
+    };
+
+    let dragging = false;
+    let last = { x: 0, y: 0 };
+    let moved = 0;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const px = (e.clientX - rect.left) * dpr.current;
+      const py = (e.clientY - rect.top) * dpr.current;
+      const c = cam.current;
+      const next = Math.min(4, Math.max(0.02, c.scale * Math.exp(-e.deltaY * 0.0015)));
+      c.x = px - ((px - c.x) / c.scale) * next;
+      c.y = py - ((py - c.y) / c.scale) * next;
+      c.scale = next;
+      vcRef.current?.set_camera(c.x, c.y, c.scale);
+      renderSoon();
+    };
+    const onDown = (e: PointerEvent) => {
+      dragging = true;
+      moved = 0;
+      last = { x: e.clientX, y: e.clientY };
+      el.setPointerCapture(e.pointerId);
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      const dx = e.clientX - last.x;
+      const dy = e.clientY - last.y;
+      cam.current.x += dx * dpr.current;
+      cam.current.y += dy * dpr.current;
+      last = { x: e.clientX, y: e.clientY };
+      moved += Math.abs(dx) + Math.abs(dy);
+      vcRef.current?.set_camera(cam.current.x, cam.current.y, cam.current.scale);
+      renderSoon();
+    };
+    const onUp = (e: PointerEvent) => {
+      dragging = false;
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      if (moved > 4 || !vcRef.current) return;
+      const rect = el.getBoundingClientRect();
+      const id = vcRef.current.pick(
+        (e.clientX - rect.left) * dpr.current,
+        (e.clientY - rect.top) * dpr.current,
+      );
+      if (id) {
+        if (isFile.current.get(id)) handlers.current.onToggleExpand(id);
+        handlers.current.onSelect(id);
+      }
+    };
+
+    const ro = new ResizeObserver(() => {
+      if (!vcRef.current) return;
+      sizeCanvas();
+      vcRef.current.resize(canvas.width, canvas.height);
+      renderSoon();
+    });
+
+    void (async () => {
+      try {
+        if (!("gpu" in navigator)) {
+          setError("WebGPU is not available in this browser (need Chrome/Edge).");
+          return;
+        }
+        sizeCanvas();
+        const mod = await import("../vello-renderer/pkg/vello_renderer.js");
+        await mod.default();
+        if (destroyed) return;
+        vcRef.current = (await mod.VelloCanvas.create(canvas)) as unknown as VelloHandle;
+        if (destroyed) {
+          vcRef.current.free?.();
+          vcRef.current = null;
+          return;
+        }
+        el.addEventListener("wheel", onWheel, { passive: false });
+        el.addEventListener("pointerdown", onDown);
+        el.addEventListener("pointermove", onMove);
+        el.addEventListener("pointerup", onUp);
+        ro.observe(el);
+        setReady(true);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+
+    return () => {
+      destroyed = true;
+      if (raf) cancelAnimationFrame(raf);
+      ro.disconnect();
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      vcRef.current?.free?.();
+      vcRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Feed data + fit when the scene geometry changes.
+  useEffect(() => {
+    const vc = vcRef.current;
+    if (!ready || !vc) return;
+    vc.set_data(payload);
+    const fit = vc.fit();
+    cam.current = { x: fit[0], y: fit[1], scale: fit[2] };
+    vc.set_selection(selectedId ?? undefined);
+    vc.set_search(search);
+    vc.render();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, payload]);
+
+  // Selection / search are cheap — just update + redraw.
+  useEffect(() => {
+    const vc = vcRef.current;
+    if (!ready || !vc) return;
+    vc.set_selection(selectedId ?? undefined);
+    vc.set_search(search);
+    vc.render();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, selectedId, search]);
+
+  return (
+    <Box position="absolute" inset="0" ref={containerRef} overflow="hidden">
+      <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+      {layingOut && <LayoutOverlay />}
+      {error && (
+        <Box
+          position="absolute"
+          top="3"
+          left="3"
+          bg="red.subtle"
+          color="red.fg"
+          fontSize="xs"
+          px="3"
+          py="1.5"
+          rounded="md"
+        >
+          {error}
+        </Box>
+      )}
+    </Box>
+  );
+}

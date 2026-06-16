@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { Badge, Box, Button, Flex, Heading, HStack, Text } from "@chakra-ui/react";
+import dynamic from "next/dynamic";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import type {
   AnalyzeResult,
@@ -12,10 +13,15 @@ import type {
 } from "@/lib/graph/types";
 import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "@/lib/graph/visual";
 import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
-import { GraphCanvas } from "./GraphCanvas";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 import { Sidebar } from "./Sidebar";
 import { UploadDropzone } from "./UploadDropzone";
+
+// Vello renders via WebGPU (browser-only), so load it client-side.
+const VelloGraphCanvas = dynamic(
+  () => import("./VelloGraphCanvas").then((m) => m.VelloGraphCanvas),
+  { ssr: false },
+);
 
 const ALL_ENVIRONMENTS: Environment[] = ["client", "server"];
 const ALL_RUNTIMES: Runtime[] = ["node", "deno", "bun"];
@@ -211,7 +217,7 @@ export function Explorer() {
           onDirection={setDirection}
         />
         <Box flex="1" minW="0" position="relative">
-          <GraphCanvas
+          <VelloGraphCanvas
             graph={graph}
             expanded={expanded}
             enabledEdgeKinds={enabledEdgeKinds}

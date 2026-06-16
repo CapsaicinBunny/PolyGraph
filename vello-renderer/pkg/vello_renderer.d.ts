@@ -5,15 +5,24 @@ export class VelloCanvas {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Initialize a WebGPU device + surface for the given canvas and create a Vello renderer.
-     */
     static create(canvas: HTMLCanvasElement): Promise<VelloCanvas>;
     /**
-     * POC render: a single rounded card with a border and left accent bar.
+     * Fit all nodes into the viewport; returns [x, y, scale] for the caller to keep.
      */
+    fit(): Float64Array;
+    /**
+     * Return the id of the topmost node under a screen point, if any.
+     */
+    pick(px: number, py: number): string | undefined;
     render(): void;
     resize(width: number, height: number): void;
+    set_camera(x: number, y: number, scale: number): void;
+    /**
+     * Replace the graph data (JSON: { nodes:[...], edges:[...] }).
+     */
+    set_data(json: string): void;
+    set_search(query: string): void;
+    set_selection(id?: string | null): void;
 }
 
 export function start(): void;
@@ -25,8 +34,14 @@ export interface InitOutput {
     readonly __wbg_vellocanvas_free: (a: number, b: number) => void;
     readonly start: () => void;
     readonly vellocanvas_create: (a: any) => any;
+    readonly vellocanvas_fit: (a: number) => [number, number];
+    readonly vellocanvas_pick: (a: number, b: number, c: number) => [number, number];
     readonly vellocanvas_render: (a: number) => [number, number];
     readonly vellocanvas_resize: (a: number, b: number, c: number) => void;
+    readonly vellocanvas_set_camera: (a: number, b: number, c: number, d: number) => void;
+    readonly vellocanvas_set_data: (a: number, b: number, c: number) => [number, number];
+    readonly vellocanvas_set_search: (a: number, b: number, c: number) => void;
+    readonly vellocanvas_set_selection: (a: number, b: number, c: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h8d0a2bd66ba9dad6: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h26b056603e6c5143: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h1f61da4447a6259c: (a: number, b: number, c: any) => void;
