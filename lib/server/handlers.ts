@@ -60,6 +60,10 @@ export async function runAnalyze(files: SourceFileMap | undefined): Promise<Hand
     const { graph, errors } = await analyzeProject(files);
     return { ok: true, value: { graph, errors } };
   } catch (err) {
-    return { ok: false, status: 500, error: err instanceof Error ? err.message : "Analysis failed" };
+    return {
+      ok: false,
+      status: 500,
+      error: err instanceof Error ? err.message : "Analysis failed",
+    };
   }
 }

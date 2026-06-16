@@ -15,6 +15,7 @@ import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "@/lib/graph/visual
 import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 import { Sidebar } from "./Sidebar";
+import { ThemeToggle } from "./ThemeToggle";
 import { UploadDropzone } from "./UploadDropzone";
 
 // Vello renders via WebGPU (browser-only), so load it client-side.
@@ -193,8 +194,8 @@ export function Explorer() {
             </Badge>
           )}
         </HStack>
+        <ThemeToggle ml="auto" />
         <Button
-          ml="auto"
           size="sm"
           variant={showExternal ? "subtle" : "ghost"}
           colorPalette={showExternal ? "purple" : "gray"}

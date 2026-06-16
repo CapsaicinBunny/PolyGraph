@@ -16,7 +16,10 @@ test("uses POLYGRAPH_CORE when set", () => {
 
 test("falls back to the repo-relative default", () => {
   delete process.env.POLYGRAPH_CORE;
-  expect(resolveCorePath()).toBe(
-    join(process.cwd(), "analyzer-core", "analyzer-core.node"),
-  );
+  expect(resolveCorePath()).toBe(join(process.cwd(), "analyzer-core", "analyzer-core.node"));
+});
+
+test("treats an empty POLYGRAPH_CORE as unset", () => {
+  process.env.POLYGRAPH_CORE = "";
+  expect(resolveCorePath()).toBe(join(process.cwd(), "analyzer-core", "analyzer-core.node"));
 });

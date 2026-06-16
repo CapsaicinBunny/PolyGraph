@@ -1,0 +1,16 @@
+# Normalize line endings to LF for all text files so tooling (oxfmt, oxlint)
+# behaves identically across Windows, macOS, Linux, and CI runners. Without
+# this, GitHub's windows-latest checks out with autocrlf=true (CRLF), which the
+# LF-based formatter then flags as misformatted.
+* text=auto eol=lf
+
+# Binary artifacts must never be line-ending converted (conversion corrupts them).
+*.node binary
+*.wasm binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.gif binary
+*.woff binary
+*.woff2 binary

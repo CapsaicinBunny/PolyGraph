@@ -1,7 +1,7 @@
 {
   "name": "vello-renderer",
   "type": "module",
-  "description": "WebGPU vector renderer (Vello) for the TS Module Scanner graph",
+  "description": "WebGPU vector renderer (Vello) for the PolyGraph node graph",
   "version": "0.1.0",
   "files": [
     "vello_renderer_bg.wasm",
