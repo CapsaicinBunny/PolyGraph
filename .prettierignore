@@ -1,0 +1,4 @@
+# Process artifacts (brainstorm/plan/spec docs). oxfmt reflows fenced code
+# blocks inside these and corrupts hand-aligned layout samples, so keep the
+# formatter out of them.
+docs/superpowers/
