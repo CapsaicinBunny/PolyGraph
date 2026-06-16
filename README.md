@@ -49,14 +49,14 @@ instantiation, and JSX component usage.
   panel — incoming/outgoing edges plus detected metadata: **UI vs feature**, **client vs
   server** (`"use client"` / `"use server"`), and **runtime** (Node / Deno / Bun, inferred from
   `node:`/builtin imports and `Bun`/`Deno`/`process` usage).
-- Runs entirely locally — files are read in your browser and analyzed by a Next.js API route.
-  Nothing is persisted or sent anywhere else.
+- Runs entirely locally — the folder is read directly from disk by a Bun analysis sidecar
+  (`sidecar/server.ts`) over loopback. Nothing is persisted or sent anywhere else.
 
 ## Stack
 
 | Concern       | Choice                                                                      |
 | ------------- | --------------------------------------------------------------------------- |
-| Framework     | Next.js (App Router)                                                        |
+| Framework     | Next.js (App Router) + Bun analysis sidecar (`sidecar/server.ts`)           |
 | Runtime / PM  | Bun                                                                         |
 | UI            | Chakra UI v3                                                                |
 | Graph         | Vello (Rust→WASM, WebGPU) vector renderer + dagre layout                    |
@@ -67,19 +67,19 @@ instantiation, and JSX component usage.
 
 ```bash
 bun install
-bun run dev      # http://localhost:3000
+bun run dev      # Next.js dev server → http://localhost:3003  +  sidecar → http://localhost:4319
 ```
 
 Open the app, paste an absolute folder path into **Scan a folder on this machine**, and
-explore. The local server reads that folder directly from disk — nothing is uploaded or copied.
+explore. The sidecar reads that folder directly from disk — nothing is uploaded or copied.
 (An in-browser folder picker is also available as a fallback.)
 
 ## Scripts
 
 ```bash
-bun run dev          # start the dev server
-bun run build        # production build
-bun run start        # serve the production build
+bun run dev          # start Next dev server (port 3003) + sidecar (port 4319)
+bun run build        # production build → static export in out/
+bun run start        # serve the static export locally (out/)
 bun test             # run the analyzer + view unit tests
 bun run lint         # oxlint
 bun run format       # oxfmt
@@ -92,11 +92,11 @@ see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Two ways to feed it code:
 
-- **Scan a path (default).** You give it an absolute folder path; `/api/scan` walks that
-  directory on the server's filesystem (`lib/server/scan-dir.ts`), skipping `node_modules`,
+- **Scan a path (default).** You give it an absolute folder path; the sidecar's `/scan`
+  endpoint walks that directory on disk (`lib/server/scan-dir.ts`), skipping `node_modules`,
   build output, and large files, into a `{ path: source }` map. Nothing leaves your machine.
 - **In-browser picker (fallback).** The browser reads the chosen folder's files into the same
-  map and POSTs it to `/api/analyze`.
+  map and POSTs it to the sidecar's `/analyze` endpoint.
 
 Either way, the map is fed to the **language kernel** (`analyzeProject()`, `lib/kernel/`), which
 buckets files by extension and hands each to a provider that emits a shared `GraphModel`:
@@ -132,6 +132,7 @@ analyzer-core/        native Rust (napi-rs) tree-sitter analysis core
 vello-renderer/       Rust→WASM WebGPU vector renderer
 app/
   page.tsx            renders the Explorer
-  api/analyze/route.ts analysis endpoint (Node.js runtime)
+sidecar/
+  server.ts           Bun analysis sidecar (loopback endpoints /scan and /analyze)
 components/           Explorer, VelloGraphCanvas, Sidebar, NodeDetailPanel, UploadDropzone
 ```

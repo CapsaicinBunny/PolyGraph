@@ -9,7 +9,7 @@
     "dev:sidecar": "bun run sidecar/server.ts",
     "build": "next build",
     "build:sidecar": "bun build --compile sidecar/server.ts --outfile dist/polygraph-sidecar",
-    "start": "next start",
+    "start": "bunx serve out",
     "typecheck": "tsgo --noEmit",
     "lint": "oxlint --type-aware",
     "lint:fix": "oxlint --type-aware --fix",
