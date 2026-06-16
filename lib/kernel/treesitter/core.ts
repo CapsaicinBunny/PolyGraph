@@ -19,7 +19,9 @@ export interface AnalyzerCore {
  * it resolves relative to the working directory for local dev and tests.
  */
 export function resolveCorePath(): string {
-  return process.env.POLYGRAPH_CORE ?? join(process.cwd(), "analyzer-core", "analyzer-core.node");
+  // `||` (not `??`): an empty POLYGRAPH_CORE is treated as unset rather than a
+  // bad addon path that would make dlopen throw cryptically.
+  return process.env.POLYGRAPH_CORE || join(process.cwd(), "analyzer-core", "analyzer-core.node");
 }
 
 let cached: AnalyzerCore | null = null;

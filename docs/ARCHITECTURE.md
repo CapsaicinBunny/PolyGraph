@@ -7,7 +7,7 @@ composition, instantiation, JSX renders). It runs entirely locally.
 ## Pipeline
 
 ```
-folder ─▶ scan (server fs) ─▶ kernel ─▶ providers ─▶ GraphModel
+folder ─▶ sidecar (server fs) ─▶ kernel ─▶ providers ─▶ GraphModel
                                                         │
                               aggregate (collapse/expand view)
                                                         │
