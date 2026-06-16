@@ -5,7 +5,9 @@
 use serde::Deserialize;
 use skrifa::instance::{LocationRef, Size};
 use skrifa::{FontRef, MetadataProvider};
-use vello::kurbo::{Affine, BezPath, Circle, CubicBez, Point, RoundedRect, Stroke};
+use vello::kurbo::{
+    Affine, BezPath, Circle, CubicBez, Point, Rect, RoundedRect, RoundedRectRadii, Stroke,
+};
 use vello::peniko::{Blob, Color, Fill, FontData};
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
@@ -260,21 +262,33 @@ impl VelloCanvas {
             }
             let accent = Color::from_rgb8(n.color[0], n.color[1], n.color[2]);
             let selected = Some(&n.id) == self.selected.as_ref();
-            let card = RoundedRect::new(n.x, n.y, n.x + n.w, n.y + n.h, 6.0);
+            let r = n.x + n.w;
+            let b = n.y + n.h;
+
+            // Card with a crisp colored left edge: fill the whole rounded rect in the
+            // accent, then cover everything but a 4px strip with the body fill (its
+            // left corners square so the accent keeps the card's rounded corners).
+            let card = RoundedRect::new(n.x, n.y, r, b, 6.0);
+            self.scene.fill(Fill::NonZero, camera, accent, None, &card);
+            let body = RoundedRect::from_rect(
+                Rect::new(n.x + 4.0, n.y, r, b),
+                RoundedRectRadii {
+                    top_left: 0.0,
+                    top_right: 6.0,
+                    bottom_right: 6.0,
+                    bottom_left: 0.0,
+                },
+            );
             self.scene
-                .fill(Fill::NonZero, camera, CARD_FILL, None, &card);
+                .fill(Fill::NonZero, camera, CARD_FILL, None, &body);
             let border = if selected { SELECT } else { CARD_BORDER };
             let stroke_w = if selected { 1.8 } else { 1.0 };
             self.scene
                 .stroke(&Stroke::new(stroke_w), camera, border, None, &card);
-            // Left accent bar (color-codes the node kind/role/source family).
-            let bar = RoundedRect::new(n.x, n.y, n.x + 4.0, n.y + n.h, 2.0);
-            self.scene.fill(Fill::NonZero, camera, accent, None, &bar);
 
             // Search-match outline.
             if searching && n.label.to_lowercase().contains(&self.search) {
-                let hl =
-                    RoundedRect::new(n.x - 2.0, n.y - 2.0, n.x + n.w + 2.0, n.y + n.h + 2.0, 7.0);
+                let hl = RoundedRect::new(n.x - 2.0, n.y - 2.0, r + 2.0, b + 2.0, 7.0);
                 self.scene
                     .stroke(&Stroke::new(2.0), camera, MATCH, None, &hl);
             }
@@ -283,21 +297,33 @@ impl VelloCanvas {
                 continue;
             }
 
-            // Vector icon (in the accent color) — replaces the unrenderable glyph chars.
+            // Icon chip (Chakra-style): a rounded square tinted with the accent color,
+            // holding the kind's vector icon.
+            let mid_y = n.y + n.h / 2.0;
+            let chip_x = n.x + 11.0;
+            let chip = RoundedRect::new(
+                chip_x - 11.0,
+                mid_y - 11.0,
+                chip_x + 11.0,
+                mid_y + 11.0,
+                5.0,
+            );
+            self.scene
+                .fill(Fill::NonZero, camera, tint(n.color), None, &chip);
             draw_icon(
                 &mut self.scene,
                 camera,
                 &n.shape,
-                n.x + 16.0,
-                n.y + n.h / 2.0,
+                chip_x,
+                mid_y,
                 ICON_R,
                 accent,
             );
 
             // Filename label (dark), vertically centered, clipped to the card width.
-            let baseline = n.y + n.h / 2.0 + 4.0;
-            let label_x = n.x + 28.0;
-            let max_w = n.w - 38.0;
+            let baseline = mid_y + 4.0;
+            let label_x = n.x + 30.0;
+            let max_w = n.w - 40.0;
             let mut gx = label_x;
             let glyphs: Vec<Glyph> = n
                 .label
@@ -442,6 +468,12 @@ fn clip_segment(
         }
     }
     Some((x0 + t0 * dx, y0 + t0 * dy, x0 + t1 * dx, y0 + t1 * dy))
+}
+
+/// A light tint of an accent color (mixed toward white) for the icon chip background.
+fn tint(c: [u8; 3]) -> Color {
+    let mix = |v: u8| ((v as f32) * 0.18 + 255.0 * 0.82) as u8;
+    Color::from_rgb8(mix(c[0]), mix(c[1]), mix(c[2]))
 }
 
 /// Draw a small vector icon centered at (cx, cy) with half-size `r`, in `color`.
