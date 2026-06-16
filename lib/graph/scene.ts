@@ -104,7 +104,6 @@ function ser<T>(set: Set<T>): string {
 /**
  * Build the geometry-free scene (filter -> view -> styled nodes/edges) plus the layout
  * input + signature. Pure and synchronous; the layout itself runs separately (worker).
- * Shared by both the React Flow and Pixi renderers so they behave identically.
  */
 export function buildSceneStructure(
   graph: GraphModel,

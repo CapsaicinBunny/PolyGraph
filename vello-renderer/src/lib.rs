@@ -1,4 +1,4 @@
-// Vello (Rust→WASM, WebGPU) vector renderer for the TS Module Scanner graph.
+// Vello (Rust→WASM, WebGPU) vector renderer for the PolyGraph node graph.
 // Renders cards + edges + GPU vector text, with a camera (pan/zoom), picking, and
 // selection/search highlighting. Everything is vector and crisp at any zoom.
 
@@ -15,7 +15,7 @@ use web_sys::HtmlCanvasElement;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/Inter-Regular.ttf");
 
-// Light cards on a charcoal canvas (matches the original React Flow look).
+// Light cards on a charcoal canvas.
 const CARD_FILL: Color = Color::from_rgb8(248, 250, 252);
 const CARD_BORDER: Color = Color::from_rgb8(226, 232, 240);
 const SELECT: Color = Color::from_rgb8(37, 99, 235);
@@ -246,7 +246,7 @@ impl VelloCanvas {
             };
             let dx = sx2 - sx1;
             let dy = sy2 - sy1;
-            // Smooth S-curve: pull control points along the dominant axis (like React Flow).
+            // Smooth S-curve: pull control points along the dominant axis.
             let (c1, c2) = if dx.abs() >= dy.abs() {
                 let mid = sx1 + dx * 0.5;
                 (Point::new(mid, sy1), Point::new(mid, sy2))

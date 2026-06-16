@@ -2,7 +2,7 @@
 name = "analyzer-core"
 version = "0.1.0"
 edition = "2021"
-description = "Native (napi-rs) tree-sitter analysis core for the TS Module Scanner kernel"
+description = "Native (napi-rs) tree-sitter analysis core for the PolyGraph kernel"
 
 [lib]
 crate-type = ["cdylib"]

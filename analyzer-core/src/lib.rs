@@ -1,11 +1,10 @@
-// Native tree-sitter analysis core for the TS Module Scanner kernel.
+// Native tree-sitter analysis core for the PolyGraph kernel.
 //
-// Parses a bucket of same-language source files, runs the pack's tree-sitter
-// query (the .scm authored on the JS side), extracts definitions / references /
-// imports using the kernel's standard capture convention, then resolves
-// references by name + imports into the universal graph IR. Returns the graph
-// fragment as JSON. This replaces the web-tree-sitter (WASM) path with native
-// tree-sitter for speed and to drop the grammar-ABI/version fragility.
+// Parses a bucket of same-language source files with native tree-sitter, runs
+// the pack's query (the .scm authored on the JS side), extracts definitions /
+// references / imports using the kernel's standard capture convention, then
+// resolves references by name + imports into the universal graph IR. Returns the
+// graph fragment as JSON. Grammars are linked in directly (see `language_for`).
 
 use std::collections::{HashMap, HashSet};
 

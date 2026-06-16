@@ -1,4 +1,4 @@
-; Python language pack for the TS Module Scanner kernel.
+; Python language pack for the PolyGraph kernel.
 ; Capture convention understood by the extractor:
 ;   @definition.<kind> + @name    -> a symbol node
 ;   @reference.<rel> + @name       -> a call / extends edge (resolved by name)

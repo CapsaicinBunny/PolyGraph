@@ -2,7 +2,7 @@
 name = "vello-renderer"
 version = "0.1.0"
 edition = "2021"
-description = "WebGPU vector renderer (Vello) for the TS Module Scanner graph"
+description = "WebGPU vector renderer (Vello) for the PolyGraph node graph"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -85,6 +85,9 @@ bun run format       # oxfmt
 
 ## How it works
 
+For the full design — kernel, providers, the native Rust core, language packs, and the renderer —
+see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 Two ways to feed it code:
 
 - **Scan a path (default).** You give it an absolute folder path; `/api/scan` walks that

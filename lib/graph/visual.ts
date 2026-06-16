@@ -5,7 +5,7 @@ export interface KindStyle {
   label: string;
   /** Chakra color palette name. */
   palette: string;
-  /** Hex used for raw SVG / React Flow handles where a palette token can't apply. */
+  /** Raw hex, used by the Vello renderer and anywhere a Chakra palette token can't apply. */
   color: string;
 }
 

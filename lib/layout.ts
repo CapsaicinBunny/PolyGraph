@@ -50,7 +50,7 @@ export interface LayoutOptions {
 
 type Positions = Map<string, XYPosition>;
 
-/** Convert a center point to React Flow's top-left convention for a node. */
+/** Convert a layout center point to the top-left position the scene expects. */
 function topLeft(node: { id: string; kind: string }, cx: number, cy: number): [string, XYPosition] {
   const size = nodeSize(node.kind);
   return [node.id, { x: cx - size.width / 2, y: cy - size.height / 2 }];
@@ -254,7 +254,7 @@ export function layoutViewCached(
 
 /**
  * Compute node positions for a view using the chosen algorithm. Returns top-left
- * positions (React Flow's convention) keyed by node id. Deterministic for a given input.
+ * positions keyed by node id. Deterministic for a given input.
  */
 export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Positions {
   const { algorithm = "layered", direction = "LR" } = options;
