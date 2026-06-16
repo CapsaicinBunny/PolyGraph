@@ -1,4 +1,4 @@
-import type { NodeKind } from "./types";
+import type { NodeKind, NodeRole } from "./types";
 import type { ViewEdgeKind } from "../aggregate";
 
 export interface KindStyle {
@@ -15,6 +15,15 @@ export const NODE_STYLES: Record<NodeKind, KindStyle> = {
   interface: { label: "Interface", palette: "cyan", color: "#06b6d4" },
   function: { label: "Function", palette: "blue", color: "#3b82f6" },
   component: { label: "Component", palette: "green", color: "#22c55e" },
+  variable: { label: "Variable", palette: "teal", color: "#14b8a6" },
+};
+
+/** Architectural roles detected by paradigm scanning. Color overrides kind when present. */
+export const ROLE_STYLES: Record<NodeRole, KindStyle> = {
+  "react-component": { label: "React component", palette: "green", color: "#22c55e" },
+  "ecs-component": { label: "ECS component", palette: "orange", color: "#f97316" },
+  "ecs-system": { label: "ECS system", palette: "pink", color: "#ec4899" },
+  "ecs-entity": { label: "ECS entity", palette: "yellow", color: "#eab308" },
 };
 
 export const EDGE_STYLES: Record<ViewEdgeKind, KindStyle> = {
@@ -23,6 +32,9 @@ export const EDGE_STYLES: Record<ViewEdgeKind, KindStyle> = {
   extends: { label: "Extends", palette: "purple", color: "#a855f7" },
   implements: { label: "Implements", palette: "cyan", color: "#06b6d4" },
   renders: { label: "Renders", palette: "green", color: "#22c55e" },
+  instantiates: { label: "Instantiates", palette: "orange", color: "#f97316" },
+  has: { label: "Has-a", palette: "teal", color: "#14b8a6" },
+  injects: { label: "Injects", palette: "pink", color: "#ec4899" },
   contains: { label: "Contains", palette: "gray", color: "#475569" },
 };
 
@@ -33,4 +45,12 @@ export const FILTERABLE_EDGE_KINDS: ViewEdgeKind[] = [
   "extends",
   "implements",
   "renders",
+  "instantiates",
+  "has",
+  "injects",
 ];
+
+/** Effective display style for a node: its role style if detected, else its kind style. */
+export function nodeStyle(kind: NodeKind, role?: NodeRole): KindStyle {
+  return role ? ROLE_STYLES[role] : NODE_STYLES[kind];
+}

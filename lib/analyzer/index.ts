@@ -8,6 +8,7 @@ import type {
 } from "../graph/types";
 import { analyzeCalls } from "./calls";
 import { analyzeComponents } from "./components";
+import { analyzeComposition } from "./composition";
 import { analyzeImports } from "./imports";
 import { analyzeInheritance } from "./inheritance";
 import { buildDeclIndex } from "./nodes";
@@ -61,6 +62,7 @@ export function analyzeSources(files: SourceFileMap): AnalyzeResult {
     ...analyzeCalls(project, index),
     ...analyzeInheritance(project, index),
     ...analyzeComponents(project, index),
+    ...analyzeComposition(project, index),
   ];
 
   const nodes = dedupeNodes(index.nodes);

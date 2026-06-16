@@ -3,12 +3,13 @@
 import { Badge, Box, HStack, Text } from "@chakra-ui/react";
 import { Handle, type NodeProps, Position } from "@xyflow/react";
 import type { LayoutDirection } from "@/lib/layout";
-import type { NodeKind } from "@/lib/graph/types";
-import { NODE_STYLES } from "@/lib/graph/visual";
+import type { NodeKind, NodeRole } from "@/lib/graph/types";
+import { nodeStyle } from "@/lib/graph/visual";
 
 export interface GraphFlowNodeData {
   label: string;
   kind: NodeKind;
+  role?: NodeRole;
   symbolCount: number;
   expanded: boolean;
   matched: boolean;
@@ -23,6 +24,14 @@ const KIND_GLYPH: Record<NodeKind, string> = {
   interface: "◇",
   function: "ƒ",
   component: "⬡",
+  variable: "▪",
+};
+
+const ROLE_GLYPH: Record<NodeRole, string> = {
+  "react-component": "⬡",
+  "ecs-component": "◈",
+  "ecs-system": "⚙",
+  "ecs-entity": "◉",
 };
 
 // Where edges enter (target) and leave (source) a node, per flow direction.
@@ -35,10 +44,11 @@ const HANDLES: Record<LayoutDirection, { target: Position; source: Position }> =
 
 export function GraphFlowNode({ data, selected }: NodeProps) {
   const d = data as GraphFlowNodeData;
-  const style = NODE_STYLES[d.kind];
+  const style = nodeStyle(d.kind, d.role);
   const isFile = d.kind === "file";
   const dimmed = d.searching && !d.matched;
   const handles = HANDLES[d.direction] ?? HANDLES.LR;
+  const glyph = d.role ? ROLE_GLYPH[d.role] : KIND_GLYPH[d.kind];
 
   return (
     <Box
@@ -65,7 +75,7 @@ export function GraphFlowNode({ data, selected }: NodeProps) {
       />
       <HStack gap="2" align="center">
         <Text color={`${style.palette}.400`} fontSize="sm" fontWeight="bold" lineHeight="1">
-          {KIND_GLYPH[d.kind]}
+          {glyph}
         </Text>
         <Text
           fontWeight={isFile ? "semibold" : "medium"}

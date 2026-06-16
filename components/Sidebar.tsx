@@ -2,8 +2,8 @@
 
 import { Box, Button, Heading, HStack, Input, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import type { ViewEdgeKind } from "@/lib/aggregate";
-import { EDGE_STYLES, FILTERABLE_EDGE_KINDS, NODE_STYLES } from "@/lib/graph/visual";
-import type { NodeKind } from "@/lib/graph/types";
+import { EDGE_STYLES, FILTERABLE_EDGE_KINDS, NODE_STYLES, ROLE_STYLES } from "@/lib/graph/visual";
+import type { NodeKind, NodeRole } from "@/lib/graph/types";
 import type { LayoutDirection } from "@/lib/layout";
 
 interface SidebarProps {
@@ -120,6 +120,22 @@ export function Sidebar({
               <Dot color={NODE_STYLES[kind].color} />
               <Text fontSize="sm" color="fg.muted">
                 {NODE_STYLES[kind].label}
+              </Text>
+            </HStack>
+          ))}
+        </Stack>
+      </Box>
+
+      <Box>
+        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
+          Detected roles
+        </Heading>
+        <Stack gap="2">
+          {(Object.keys(ROLE_STYLES) as NodeRole[]).map((role) => (
+            <HStack key={role} gap="2">
+              <Dot color={ROLE_STYLES[role].color} />
+              <Text fontSize="sm" color="fg.muted">
+                {ROLE_STYLES[role].label}
               </Text>
             </HStack>
           ))}

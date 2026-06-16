@@ -4,9 +4,11 @@ import {
   FILE_NODE_LINE,
   type GraphNode,
   type NodeKind,
+  type NodeRole,
   symbolNodeId,
 } from "../graph/types";
 import { toRelativePath } from "./project";
+import { classOrInterfaceRole, functionRole, variableRole } from "./roles";
 
 export interface DeclIndex {
   nodes: GraphNode[];
@@ -44,7 +46,7 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
     parentFile,
   });
 
-  const add = (decl: Node, name: string, kind: NodeKind) => {
+  const add = (decl: Node, name: string, kind: NodeKind, role?: NodeRole) => {
     const id = symbolNodeId(filePath, name);
     index.nodes.push({
       id,
@@ -53,32 +55,43 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
       filePath,
       line: decl.getStartLineNumber(),
       parentFile,
+      ...(role ? { role } : {}),
     });
     index.declToId.set(decl, id);
   };
 
   for (const cls of file.getClasses()) {
     const name = cls.getName();
-    if (name) add(cls, name, "class");
+    if (name) add(cls, name, "class", classOrInterfaceRole(cls, name));
   }
 
   for (const iface of file.getInterfaces()) {
-    add(iface, iface.getName(), "interface");
+    const name = iface.getName();
+    add(iface, name, "interface", classOrInterfaceRole(iface, name));
   }
 
   for (const fn of file.getFunctions()) {
     const name = fn.getName();
-    if (name) add(fn, name, classifyFunction(name, fn));
+    if (!name) continue;
+    const kind = classifyFunction(name, fn);
+    // A JSX-returning PascalCase function is a React component; otherwise tag any ECS role.
+    add(fn, name, kind, kind === "component" ? "react-component" : functionRole(name));
   }
 
-  // const Foo = () => ... / const bar = function () {}
   for (const varDecl of file.getVariableDeclarations()) {
     const init = varDecl.getInitializer();
     if (!init) continue;
+    const name = varDecl.getName();
+
     if (Node.isArrowFunction(init) || Node.isFunctionExpression(init)) {
-      const name = varDecl.getName();
-      add(varDecl, name, classifyFunction(name, init));
+      const kind = classifyFunction(name, init);
+      add(varDecl, name, kind, kind === "component" ? "react-component" : functionRole(name));
+      continue;
     }
+
+    // Data-oriented ECS: `const Position = defineComponent({...})`, etc.
+    const role = variableRole(init, name);
+    if (role) add(varDecl, name, "variable", role);
   }
 }
 

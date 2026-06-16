@@ -1,8 +1,23 @@
 // Shared graph model — used by both the server-side analyzer and the client UI.
 
-export type NodeKind = "file" | "class" | "interface" | "function" | "component";
+export type NodeKind = "file" | "class" | "interface" | "function" | "component" | "variable";
 
-export type EdgeKind = "import" | "call" | "extends" | "implements" | "renders";
+export type EdgeKind =
+  | "import"
+  | "call"
+  | "extends"
+  | "implements"
+  | "renders"
+  | "instantiates"
+  | "has"
+  | "injects";
+
+/**
+ * A detected architectural role, orthogonal to the structural `kind`. Found by
+ * scanning for paradigm signals (JSX, ECS naming/decorators/factories), so a
+ * codebase's architecture surfaces without any configuration.
+ */
+export type NodeRole = "react-component" | "ecs-component" | "ecs-system" | "ecs-entity";
 
 export interface GraphNode {
   /** Stable id: `${filePath}#${symbolName}` for symbols, or `${filePath}` for files. */
@@ -16,6 +31,8 @@ export interface GraphNode {
   line: number;
   /** Owning file node id, used for collapse/expand. Equals `id` for file nodes. */
   parentFile: string;
+  /** Detected architectural role, if any (ECS / React). */
+  role?: NodeRole;
 }
 
 export interface GraphEdge {

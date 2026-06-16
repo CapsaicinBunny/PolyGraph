@@ -48,10 +48,12 @@ export function analyzeCalls(project: Project, index: DeclIndex): GraphEdge[] {
       const target = resolveTarget(ident, index);
       if (!target || target === source) continue;
 
-      const id = edgeId(source, target, "call");
+      // `new X()` is an instantiation, not a plain call.
+      const kind = Node.isNewExpression(callLike) ? "instantiates" : "call";
+      const id = edgeId(source, target, kind);
       if (seen.has(id)) continue;
       seen.add(id);
-      edges.push({ id, source, target, kind: "call" });
+      edges.push({ id, source, target, kind });
     }
   }
 

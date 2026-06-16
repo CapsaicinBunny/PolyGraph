@@ -9,12 +9,23 @@ component usage.
 
 ## Features
 
-- **Four relationship types**
+- **Relationship types** (drawn automatically, no configuration)
   - `import` — module dependency edges between files
   - `call` — **type-resolved** function/method call edges (resolved via the TypeScript
     compiler, so two functions named `handle` link to the correct definition)
+  - `instantiates` — `new X()` construction edges
   - `extends` / `implements` — class & interface inheritance
+  - `has` — composition: a typed field/property referencing another class or interface
+    (resolved through arrays and generics)
+  - `injects` — dependency injection: constructor parameter types
   - `renders` — which React component renders which (JSX usage)
+- **Paradigm role detection** — scans for architecture across paradigms and tags nodes with a
+  role (colored + badged): `react-component`, and ECS `ecs-component` / `ecs-system` /
+  `ecs-entity`, detected from naming (`*Component`/`*System`/`*Entity`), decorators
+  (`@Component`/`@System`/`@Entity`), and data-oriented factories (`defineComponent`,
+  `defineSystem`, `defineQuery`).
+- **Layout directions** — arrange the graph top-down, left-right, bottom-up, or right-left
+  (Mermaid-style); the view auto-fits on change.
 - **Collapse to file level** by default; click a file to expand its classes, functions, and
   components. Edges into collapsed files aggregate to the file node automatically.
 - **Filter** by relationship type, **search** nodes by name, and inspect any node's incoming

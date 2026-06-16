@@ -14,8 +14,8 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { buildView, type ViewEdgeKind } from "@/lib/aggregate";
-import type { GraphModel, NodeKind } from "@/lib/graph/types";
-import { EDGE_STYLES, NODE_STYLES } from "@/lib/graph/visual";
+import type { GraphModel, NodeKind, NodeRole } from "@/lib/graph/types";
+import { EDGE_STYLES, nodeStyle } from "@/lib/graph/visual";
 import { type LayoutDirection, layoutView } from "@/lib/layout";
 import { GraphFlowNode } from "./nodes/GraphFlowNode";
 
@@ -66,6 +66,7 @@ function GraphCanvasInner({
       data: {
         label: n.label,
         kind: n.kind,
+        role: n.role,
         symbolCount: symbolCount.get(n.id) ?? 0,
         expanded: expanded.has(n.id),
         matched: searching && n.label.toLowerCase().includes(query),
@@ -121,7 +122,10 @@ function GraphCanvasInner({
       <MiniMap
         pannable
         zoomable
-        nodeColor={(n) => NODE_STYLES[(n.data as { kind: NodeKind }).kind].color}
+        nodeColor={(n) => {
+          const d = n.data as { kind: NodeKind; role?: NodeRole };
+          return nodeStyle(d.kind, d.role).color;
+        }}
         maskColor="rgba(0,0,0,0.4)"
         style={{ background: "var(--chakra-colors-bg-panel)" }}
       />

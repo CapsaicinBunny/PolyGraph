@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { Badge, Box, CloseButton, Heading, HStack, Stack, Text } from "@chakra-ui/react";
 import type { GraphEdge, GraphModel } from "@/lib/graph/types";
-import { EDGE_STYLES, NODE_STYLES } from "@/lib/graph/visual";
+import { EDGE_STYLES, NODE_STYLES, ROLE_STYLES } from "@/lib/graph/visual";
 
 interface NodeDetailPanelProps {
   graph: GraphModel;
@@ -32,7 +32,7 @@ export function NodeDetailPanel({ graph, selectedId, onSelect, onClose }: NodeDe
   }, [graph.edges, selectedId]);
 
   if (!node) return null;
-  const style = NODE_STYLES[node.kind];
+  const kindStyle = NODE_STYLES[node.kind];
 
   const EdgeRow = ({ rel, direction }: { rel: Related; direction: "out" | "in" }) => {
     const other = nodeById.get(rel.otherId);
@@ -70,9 +70,16 @@ export function NodeDetailPanel({ graph, selectedId, onSelect, onClose }: NodeDe
     >
       <HStack justify="space-between" align="start">
         <Stack gap="1">
-          <Badge colorPalette={style.palette} variant="surface" w="fit-content">
-            {style.label}
-          </Badge>
+          <HStack gap="1">
+            <Badge colorPalette={kindStyle.palette} variant="surface" w="fit-content">
+              {kindStyle.label}
+            </Badge>
+            {node.role && (
+              <Badge colorPalette={ROLE_STYLES[node.role].palette} variant="solid" w="fit-content">
+                {ROLE_STYLES[node.role].label}
+              </Badge>
+            )}
+          </HStack>
           <Heading size="md" wordBreak="break-word">
             {node.label}
           </Heading>
