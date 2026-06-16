@@ -1,3 +1,4 @@
+![Project Logo](./public/polygraph-icon.svg)
 # PolyGraph
 
 An interactive dependency-graph analyzer for codebases across **~25 languages** — TypeScript/
