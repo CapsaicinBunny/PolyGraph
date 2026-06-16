@@ -162,6 +162,18 @@ describe("multi-language kernel", () => {
     ).toBe(true);
   });
 
+  test("extracts JSON/JSONC top-level keys as properties", async () => {
+    const { graph } = await analyzeProject({
+      "package.json": '{ "name": "demo", "scripts": { "build": "x" }, "dependencies": {} }\n',
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("package.json#name")).toBe("property");
+    expect(byId.get("package.json#scripts")).toBe("property");
+    expect(byId.get("package.json#dependencies")).toBe("property");
+    // nested keys (e.g. "build") are not surfaced — only top-level
+    expect(byId.has("package.json#build")).toBe(false);
+  });
+
   test("still analyzes TypeScript through the kernel", async () => {
     const { graph } = await analyzeProject({ "a.ts": "export function foo() {}\n" });
     expect(graph.nodes.some((n) => n.id === "a.ts#foo")).toBe(true);

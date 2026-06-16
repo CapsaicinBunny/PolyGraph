@@ -1,0 +1,7 @@
+id: jsonc
+extensions: [".json", ".jsonc"]
+# tree-sitter-json parses JSON (and tolerates JSONC comments as error nodes).
+grammar: json
+imports:
+  style: jsonc
+queries: tags.scm
