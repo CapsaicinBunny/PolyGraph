@@ -4,7 +4,7 @@ import { Badge, Box, HStack, Text } from "@chakra-ui/react";
 import { Handle, type NodeProps, Position } from "@xyflow/react";
 import type { LayoutDirection } from "@/lib/layout";
 import type { ExternalKind, NodeKind, NodeRole } from "@/lib/graph/types";
-import { nodeStyle } from "@/lib/graph/visual";
+import { glyphFor, nodeStyle } from "@/lib/graph/visual";
 
 export interface GraphFlowNodeData {
   label: string;
@@ -18,32 +18,6 @@ export interface GraphFlowNodeData {
   direction: LayoutDirection;
   [key: string]: unknown;
 }
-
-const KIND_GLYPH: Record<NodeKind, string> = {
-  file: "▣",
-  class: "◆",
-  interface: "◇",
-  type: "𝓣",
-  enum: "≣",
-  function: "ƒ",
-  component: "⬡",
-  variable: "▪",
-  external: "↗",
-};
-
-const ROLE_GLYPH: Record<NodeRole, string> = {
-  "react-component": "⬡",
-  "vue-component": "▽",
-  "svelte-component": "◤",
-  "angular-component": "Ⓐ",
-  "angular-service": "⚙",
-  "angular-module": "▦",
-  "angular-directive": "✦",
-  "angular-pipe": "▸",
-  "ecs-component": "◈",
-  "ecs-system": "⚙",
-  "ecs-entity": "◉",
-};
 
 // Where edges enter (target) and leave (source) a node, per flow direction.
 const HANDLES: Record<LayoutDirection, { target: Position; source: Position }> = {
@@ -60,7 +34,7 @@ export function GraphFlowNode({ data, selected }: NodeProps) {
   const isExternal = d.kind === "external";
   const dimmed = d.searching && !d.matched;
   const handles = HANDLES[d.direction] ?? HANDLES.LR;
-  const glyph = isExternal ? KIND_GLYPH.external : d.role ? ROLE_GLYPH[d.role] : KIND_GLYPH[d.kind];
+  const glyph = glyphFor(d.kind, d.role);
 
   return (
     <Box

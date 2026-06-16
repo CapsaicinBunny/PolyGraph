@@ -7,11 +7,19 @@ import {
   forceSimulation,
   type SimulationNodeDatum,
 } from "d3-force";
-import type { GraphView } from "./aggregate";
 
 export interface XYPosition {
   x: number;
   y: number;
+}
+
+/**
+ * Minimal layout input — just what the algorithms read. A full GraphView is
+ * assignable to this, and it's small enough to post to a Web Worker.
+ */
+export interface LayoutInput {
+  nodes: { id: string; kind: string }[];
+  edges: { source: string; target: string }[];
 }
 
 export interface NodeSize {
@@ -49,7 +57,7 @@ function topLeft(node: { id: string; kind: string }, cx: number, cy: number): [s
 }
 
 function dagreLayout(
-  view: GraphView,
+  view: LayoutInput,
   direction: LayoutDirection,
   ranker: "network-simplex" | "tight-tree" | "longest-path",
 ): Positions {
@@ -86,7 +94,7 @@ function dagreLayout(
 }
 
 /** Concentric rings by graph distance from root (in-degree 0) nodes. */
-function radialLayout(view: GraphView): Positions {
+function radialLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   if (view.nodes.length === 0) return positions;
 
@@ -141,7 +149,7 @@ function radialLayout(view: GraphView): Positions {
 }
 
 /** All nodes evenly spaced on a single circle. */
-function circularLayout(view: GraphView): Positions {
+function circularLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   const n = view.nodes.length;
   if (n === 0) return positions;
@@ -154,7 +162,7 @@ function circularLayout(view: GraphView): Positions {
 }
 
 /** Simple row-major grid. */
-function gridLayout(view: GraphView): Positions {
+function gridLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   const n = view.nodes.length;
   if (n === 0) return positions;
@@ -174,7 +182,7 @@ interface SimNode extends SimulationNodeDatum {
 }
 
 /** Force-directed layout via a fixed number of synchronous d3-force ticks. */
-function forceLayout(view: GraphView): Positions {
+function forceLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   if (view.nodes.length === 0) return positions;
 
@@ -212,24 +220,35 @@ function forceLayout(view: GraphView): Positions {
 const LAYOUT_CACHE_MAX = 24;
 const layoutCache = new Map<string, Positions>();
 
-/** layoutView, memoized by an externally supplied signature that uniquely identifies the view. */
-export function layoutViewCached(
-  signature: string,
-  view: GraphView,
-  options: LayoutOptions = {},
-): Positions {
+/** Look up a previously computed layout by signature (LRU refresh). */
+export function layoutCacheGet(signature: string): Positions | undefined {
   const cached = layoutCache.get(signature);
   if (cached) {
-    layoutCache.delete(signature); // refresh recency
+    layoutCache.delete(signature);
     layoutCache.set(signature, cached);
-    return cached;
   }
-  const positions = layoutView(view, options);
+  return cached;
+}
+
+/** Store a computed layout, evicting the oldest entry past the cap. */
+export function layoutCacheSet(signature: string, positions: Positions): void {
   layoutCache.set(signature, positions);
   if (layoutCache.size > LAYOUT_CACHE_MAX) {
     const oldest = layoutCache.keys().next().value;
     if (oldest !== undefined) layoutCache.delete(oldest);
   }
+}
+
+/** layoutView, memoized by an externally supplied signature that uniquely identifies the view. */
+export function layoutViewCached(
+  signature: string,
+  view: LayoutInput,
+  options: LayoutOptions = {},
+): Positions {
+  const cached = layoutCacheGet(signature);
+  if (cached) return cached;
+  const positions = layoutView(view, options);
+  layoutCacheSet(signature, positions);
   return positions;
 }
 
@@ -237,7 +256,7 @@ export function layoutViewCached(
  * Compute node positions for a view using the chosen algorithm. Returns top-left
  * positions (React Flow's convention) keyed by node id. Deterministic for a given input.
  */
-export function layoutView(view: GraphView, options: LayoutOptions = {}): Positions {
+export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Positions {
   const { algorithm = "layered", direction = "LR" } = options;
   switch (algorithm) {
     case "tree":

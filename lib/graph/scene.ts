@@ -2,7 +2,8 @@ import { buildView, type ViewEdgeKind } from "../aggregate";
 import {
   type LayoutAlgorithm,
   type LayoutDirection,
-  layoutViewCached,
+  type LayoutInput,
+  type LayoutOptions,
   nodeSize,
   type XYPosition,
 } from "../layout";
@@ -15,7 +16,7 @@ import type {
   NodeRole,
   Runtime,
 } from "./types";
-import { EDGE_STYLES, nodeStyle } from "./visual";
+import { EDGE_STYLES, glyphFor, nodeStyle } from "./visual";
 
 export interface SceneFilters {
   showExternal: boolean;
@@ -28,6 +29,7 @@ export interface SceneFilters {
 
 export interface SceneNode {
   id: string;
+  /** Top-left position; 0,0 until a layout is applied. */
   x: number;
   y: number;
   width: number;
@@ -36,6 +38,7 @@ export interface SceneNode {
   role?: NodeRole;
   externalKind?: ExternalKind;
   label: string;
+  glyph: string;
   /** Accent color (border / glyph), from role/external/kind. */
   color: string;
   symbolCount: number;
@@ -51,6 +54,15 @@ export interface SceneEdge {
   color: string;
   dashed: boolean;
   toExternal: boolean;
+}
+
+/** Geometry-free scene: nodes (unpositioned) + edges + the inputs to compute a layout. */
+export interface SceneStructure {
+  nodes: SceneNode[];
+  edges: SceneEdge[];
+  signature: string;
+  layoutInput: LayoutInput;
+  options: LayoutOptions;
 }
 
 export interface Scene {
@@ -78,16 +90,17 @@ function ser<T>(set: Set<T>): string {
 }
 
 /**
- * Build a positioned, styled scene from the graph + filters + layout. Pure and shared
- * by both the React Flow and the Pixi (GPU) renderers. Layout is cached.
+ * Build the geometry-free scene (filter -> view -> styled nodes/edges) plus the layout
+ * input + signature. Pure and synchronous; the layout itself runs separately (worker).
+ * Shared by both the React Flow and Pixi renderers so they behave identically.
  */
-export function buildScene(
+export function buildSceneStructure(
   graph: GraphModel,
   expanded: Set<string>,
   filters: SceneFilters,
   algorithm: LayoutAlgorithm,
   direction: LayoutDirection,
-): Scene {
+): SceneStructure {
   const {
     showExternal,
     enabledNodeKinds,
@@ -126,14 +139,6 @@ export function buildScene(
     ser(enabledRuntimes),
     ser(enabledEdgeKinds),
   ].join("|");
-  const positions = layoutViewCached(
-    signature,
-    { nodes: view.nodes, edges: visibleEdges },
-    {
-      algorithm,
-      direction,
-    },
-  );
 
   const symbolCount = new Map<string, number>();
   for (const n of graph.nodes) {
@@ -148,17 +153,17 @@ export function buildScene(
 
   const nodes: SceneNode[] = view.nodes.map((n) => {
     const size = nodeSize(n.kind);
-    const pos = positions.get(n.id) ?? { x: 0, y: 0 };
     return {
       id: n.id,
-      x: pos.x,
-      y: pos.y,
+      x: 0,
+      y: 0,
       width: size.width,
       height: size.height,
       kind: n.kind,
       role: n.role,
       externalKind: n.externalKind,
       label: n.label,
+      glyph: glyphFor(n.kind, n.role),
       color: nodeStyle(n.kind, n.role, n.externalKind).color,
       symbolCount: symbolCount.get(n.id) ?? 0,
       isFile: n.kind === "file",
@@ -168,17 +173,37 @@ export function buildScene(
 
   const edges: SceneEdge[] = visibleEdges.map((e) => {
     const toExternal = externalColor.get(e.target);
-    const color = toExternal ?? EDGE_STYLES[e.kind].color;
     return {
       id: e.id,
       source: e.source,
       target: e.target,
       kind: e.kind,
-      color,
+      color: toExternal ?? EDGE_STYLES[e.kind].color,
       dashed: e.kind === "contains",
       toExternal: toExternal !== undefined,
     };
   });
 
-  return { nodes, edges, positions };
+  return {
+    nodes,
+    edges,
+    signature,
+    layoutInput: {
+      nodes: view.nodes.map((n) => ({ id: n.id, kind: n.kind })),
+      edges: visibleEdges.map((e) => ({ source: e.source, target: e.target })),
+    },
+    options: { algorithm, direction },
+  };
+}
+
+/** Apply computed positions to a structure, producing a renderable scene. */
+export function applyPositions(
+  structure: SceneStructure,
+  positions: Map<string, XYPosition>,
+): Scene {
+  const nodes = structure.nodes.map((n) => {
+    const p = positions.get(n.id);
+    return p ? { ...n, x: p.x, y: p.y } : n;
+  });
+  return { nodes, edges: structure.edges, positions };
 }

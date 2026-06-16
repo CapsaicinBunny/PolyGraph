@@ -3,12 +3,15 @@
 import { useEffect, useMemo, useRef } from "react";
 import { Box } from "@chakra-ui/react";
 import { Application, Container, Graphics, Text } from "pixi.js";
-import { buildScene, type Scene, type SceneFilters } from "@/lib/graph/scene";
+import type { Scene, SceneFilters } from "@/lib/graph/scene";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
 import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
+import { LayoutOverlay } from "./LayoutOverlay";
+import { useScene } from "./useScene";
 
 const PANEL_FILL = 0x1c1f26;
+const BORDER = 0x3b414c;
 const LABEL_MIN_SCALE = 0.45; // below this zoom, labels are hidden (overview mode)
 const MAX_LABELS = 400; // cap label objects for performance
 const LABEL_COLOR = "#e2e8f0";
@@ -94,10 +97,7 @@ export function PixiGraphCanvas(props: PixiGraphCanvasProps) {
     ],
   );
 
-  const scene = useMemo(
-    () => buildScene(graph, expanded, filters, algorithm, direction),
-    [graph, expanded, filters, algorithm, direction],
-  );
+  const { scene, layingOut } = useScene(graph, expanded, filters, algorithm, direction);
 
   // --- drawing helpers (read live refs/scene; no React deps) ---
   const drawScene = () => {
@@ -119,10 +119,14 @@ export function PixiGraphCanvas(props: PixiGraphCanvasProps) {
 
     r.nodesG.clear();
     for (const n of s.nodes) {
+      const accent = hexToNum(n.color);
+      // Card: dark panel + subtle border (matches the React Flow node).
       r.nodesG
         .roundRect(n.x, n.y, n.width, n.height, 6)
         .fill({ color: PANEL_FILL, alpha: 1 })
-        .stroke({ width: n.isFile ? 2 : 1.5, color: hexToNum(n.color), alpha: 1 });
+        .stroke({ width: 1, color: BORDER, alpha: 1 });
+      // Colored left accent bar.
+      r.nodesG.roundRect(n.x, n.y, 4, n.height, 2).fill({ color: accent, alpha: 1 });
     }
     drawHighlight();
   };
@@ -188,8 +192,9 @@ export function PixiGraphCanvas(props: PixiGraphCanvasProps) {
         labelPool[used] = text;
         labelLayer.addChild(text);
       }
-      text.text = n.symbolCount > 0 && n.isFile ? `${n.label} +${n.symbolCount}` : n.label;
-      text.position.set(n.x + 8, n.y + n.height / 2 - 7);
+      const badge = n.isFile && n.symbolCount > 0 ? `  +${n.symbolCount}` : "";
+      text.text = `${n.glyph}  ${n.label}${badge}`;
+      text.position.set(n.x + 12, n.y + n.height / 2 - 7);
       text.visible = true;
       used++;
     }
@@ -366,5 +371,10 @@ export function PixiGraphCanvas(props: PixiGraphCanvasProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, search]);
 
-  return <Box ref={containerRef} position="absolute" inset="0" overflow="hidden" />;
+  return (
+    <>
+      <Box ref={containerRef} position="absolute" inset="0" overflow="hidden" />
+      {layingOut && <LayoutOverlay />}
+    </>
+  );
 }

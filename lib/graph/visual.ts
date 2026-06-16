@@ -88,3 +88,36 @@ export function nodeStyle(kind: NodeKind, role?: NodeRole, externalKind?: Extern
   if (role) return ROLE_STYLES[role];
   return NODE_STYLES[kind];
 }
+
+export const KIND_GLYPH: Record<NodeKind, string> = {
+  file: "▣",
+  class: "◆",
+  interface: "◇",
+  type: "𝓣",
+  enum: "≣",
+  function: "ƒ",
+  component: "⬡",
+  variable: "▪",
+  external: "↗",
+};
+
+export const ROLE_GLYPH: Record<NodeRole, string> = {
+  "react-component": "⬡",
+  "vue-component": "▽",
+  "svelte-component": "◤",
+  "angular-component": "Ⓐ",
+  "angular-service": "⚙",
+  "angular-module": "▦",
+  "angular-directive": "✦",
+  "angular-pipe": "▸",
+  "ecs-component": "◈",
+  "ecs-system": "⚙",
+  "ecs-entity": "◉",
+};
+
+/** The glyph to show for a node: external arrow, else role glyph, else kind glyph. */
+export function glyphFor(kind: NodeKind, role?: NodeRole): string {
+  if (kind === "external") return KIND_GLYPH.external;
+  if (role) return ROLE_GLYPH[role];
+  return KIND_GLYPH[kind];
+}

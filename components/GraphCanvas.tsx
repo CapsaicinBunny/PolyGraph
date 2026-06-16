@@ -14,7 +14,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { ViewEdgeKind } from "@/lib/aggregate";
-import { buildScene, type SceneFilters } from "@/lib/graph/scene";
+import type { SceneFilters } from "@/lib/graph/scene";
 import type {
   Environment,
   ExternalKind,
@@ -26,15 +26,16 @@ import type {
 } from "@/lib/graph/types";
 import { nodeStyle } from "@/lib/graph/visual";
 import { DIRECTIONAL_ALGORITHMS, type LayoutAlgorithm, type LayoutDirection } from "@/lib/layout";
+import { LayoutOverlay } from "./LayoutOverlay";
 import { GraphFlowNode } from "./nodes/GraphFlowNode";
+import { useScene } from "./useScene";
 
 const nodeTypes = { graph: GraphFlowNode };
 
-// Scale guards: above these counts the cost outweighs the benefit, so we drop them.
-const ANIMATE_EDGE_LIMIT = 250; // animated edges cause a repaint storm at scale
-const MINIMAP_NODE_LIMIT = 600; // the minimap re-draws every node
+const ANIMATE_EDGE_LIMIT = 250;
+const MINIMAP_NODE_LIMIT = 600;
 
-interface GraphCanvasProps {
+export interface GraphCanvasProps {
   graph: GraphModel;
   expanded: Set<string>;
   enabledEdgeKinds: Set<ViewEdgeKind>;
@@ -88,13 +89,11 @@ function GraphCanvasInner({
     ],
   );
 
-  // Expensive layer: scene (filter -> view -> cached layout) + edge styling. Recomputes
-  // only on geometry changes, NOT on selection/search.
-  const base = useMemo(() => {
-    const scene = buildScene(graph, expanded, filters, algorithm, direction);
-    const handleDirection = DIRECTIONAL_ALGORITHMS.includes(algorithm) ? direction : "LR";
+  const { scene, layingOut } = useScene(graph, expanded, filters, algorithm, direction);
+
+  const rfEdges = useMemo(() => {
     const animate = scene.edges.length <= ANIMATE_EDGE_LIMIT;
-    const rfEdges: Edge[] = scene.edges.map((e) => ({
+    return scene.edges.map<Edge>((e) => ({
       id: e.id,
       source: e.source,
       target: e.target,
@@ -106,16 +105,14 @@ function GraphCanvasInner({
       },
       markerEnd: e.dashed ? undefined : { type: MarkerType.ArrowClosed, color: e.color },
     }));
-    return { sceneNodes: scene.nodes, rfEdges, handleDirection };
-  }, [graph, expanded, filters, algorithm, direction]);
+  }, [scene]);
 
-  const showMiniMap = base.sceneNodes.length <= MINIMAP_NODE_LIMIT;
+  const handleDirection = DIRECTIONAL_ALGORITHMS.includes(algorithm) ? direction : "LR";
 
-  // Cheap layer: per-node styling for selection/search — a plain array map, no layout.
   const rfNodes = useMemo(() => {
     const query = search.trim().toLowerCase();
     const searching = query.length > 0;
-    return base.sceneNodes.map<Node>((n) => ({
+    return scene.nodes.map<Node>((n) => ({
       id: n.id,
       type: "graph",
       position: { x: n.x, y: n.y },
@@ -129,47 +126,52 @@ function GraphCanvasInner({
         expanded: expanded.has(n.id),
         matched: searching && n.label.toLowerCase().includes(query),
         searching,
-        direction: base.handleDirection,
+        direction: handleDirection,
       },
     }));
-  }, [base, selectedId, search, expanded]);
+  }, [scene, selectedId, search, expanded, handleDirection]);
+
+  const showMiniMap = scene.nodes.length <= MINIMAP_NODE_LIMIT;
 
   useEffect(() => {
     const id = requestAnimationFrame(() => fitView({ padding: 0.2, duration: 300 }));
     return () => cancelAnimationFrame(id);
-  }, [fitView, algorithm, direction, expanded, graph]);
+  }, [fitView, scene]);
 
   return (
-    <ReactFlow
-      nodes={rfNodes}
-      edges={base.rfEdges}
-      nodeTypes={nodeTypes}
-      fitView
-      minZoom={0.02}
-      maxZoom={2}
-      onlyRenderVisibleElements
-      proOptions={{ hideAttribution: true }}
-      onNodeClick={(_, node) => {
-        const kind = (node.data as { kind: NodeKind }).kind;
-        if (kind === "file") onToggleExpand(node.id);
-        onSelect(node.id);
-      }}
-    >
-      <Background gap={22} size={1} color="rgba(148, 163, 184, 0.10)" />
-      <Controls showInteractive={false} />
-      {showMiniMap && (
-        <MiniMap
-          pannable
-          zoomable
-          nodeColor={(n) => {
-            const d = n.data as { kind: NodeKind; role?: NodeRole; externalKind?: ExternalKind };
-            return nodeStyle(d.kind, d.role, d.externalKind).color;
-          }}
-          maskColor="rgba(0,0,0,0.4)"
-          style={{ background: "var(--chakra-colors-bg-panel)" }}
-        />
-      )}
-    </ReactFlow>
+    <>
+      <ReactFlow
+        nodes={rfNodes}
+        edges={rfEdges}
+        nodeTypes={nodeTypes}
+        fitView
+        minZoom={0.02}
+        maxZoom={2}
+        onlyRenderVisibleElements
+        proOptions={{ hideAttribution: true }}
+        onNodeClick={(_, node) => {
+          const kind = (node.data as { kind: NodeKind }).kind;
+          if (kind === "file") onToggleExpand(node.id);
+          onSelect(node.id);
+        }}
+      >
+        <Background gap={22} size={1} color="rgba(148, 163, 184, 0.10)" />
+        <Controls showInteractive={false} />
+        {showMiniMap && (
+          <MiniMap
+            pannable
+            zoomable
+            nodeColor={(n) => {
+              const d = n.data as { kind: NodeKind; role?: NodeRole; externalKind?: ExternalKind };
+              return nodeStyle(d.kind, d.role, d.externalKind).color;
+            }}
+            maskColor="rgba(0,0,0,0.4)"
+            style={{ background: "var(--chakra-colors-bg-panel)" }}
+          />
+        )}
+      </ReactFlow>
+      {layingOut && <LayoutOverlay />}
+    </>
   );
 }
 
