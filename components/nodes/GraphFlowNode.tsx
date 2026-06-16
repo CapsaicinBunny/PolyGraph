@@ -23,6 +23,8 @@ const KIND_GLYPH: Record<NodeKind, string> = {
   file: "▣",
   class: "◆",
   interface: "◇",
+  type: "𝓣",
+  enum: "≣",
   function: "ƒ",
   component: "⬡",
   variable: "▪",

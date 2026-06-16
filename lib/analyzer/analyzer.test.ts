@@ -44,6 +44,23 @@ describe("declaration nodes", () => {
   });
 });
 
+describe("more declaration kinds", () => {
+  test("collects type aliases, enums, and exported variables (skips internal consts)", () => {
+    const { graph } = analyzeSources({
+      "m.ts": `
+        export type ID = string;
+        export enum Color { Red, Green }
+        export const TABLE = { a: 1 };
+        const internalOnly = 5;
+      `,
+    });
+    expect(nodeKind(graph, "m.ts#ID")).toBe("type");
+    expect(nodeKind(graph, "m.ts#Color")).toBe("enum");
+    expect(nodeKind(graph, "m.ts#TABLE")).toBe("variable");
+    expect(graph.nodes.some((n) => n.id === "m.ts#internalOnly")).toBe(false);
+  });
+});
+
 describe("import edges", () => {
   test("links files that import each other; external module is a distinct external node", () => {
     const { graph } = analyzeSources({

@@ -13,6 +13,8 @@ export const NODE_STYLES: Record<NodeKind, KindStyle> = {
   file: { label: "File", palette: "gray", color: "#94a3b8" },
   class: { label: "Class", palette: "purple", color: "#a855f7" },
   interface: { label: "Interface", palette: "cyan", color: "#06b6d4" },
+  type: { label: "Type", palette: "yellow", color: "#eab308" },
+  enum: { label: "Enum", palette: "orange", color: "#f97316" },
   function: { label: "Function", palette: "blue", color: "#3b82f6" },
   component: { label: "Component", palette: "green", color: "#22c55e" },
   variable: { label: "Variable", palette: "teal", color: "#14b8a6" },
@@ -36,14 +38,14 @@ export const ROLE_STYLES: Record<NodeRole, KindStyle> = {
 };
 
 export const EDGE_STYLES: Record<ViewEdgeKind, KindStyle> = {
-  import: { label: "Import", palette: "gray", color: "#64748b" },
-  call: { label: "Call", palette: "blue", color: "#3b82f6" },
-  extends: { label: "Extends", palette: "purple", color: "#a855f7" },
-  implements: { label: "Implements", palette: "cyan", color: "#06b6d4" },
-  renders: { label: "Renders", palette: "green", color: "#22c55e" },
-  instantiates: { label: "Instantiates", palette: "orange", color: "#f97316" },
-  has: { label: "Has-a", palette: "teal", color: "#14b8a6" },
-  injects: { label: "Injects", palette: "pink", color: "#ec4899" },
+  import: { label: "Import", palette: "gray", color: "#94a3b8" },
+  call: { label: "Call", palette: "blue", color: "#60a5fa" },
+  extends: { label: "Extends", palette: "purple", color: "#c084fc" },
+  implements: { label: "Implements", palette: "cyan", color: "#22d3ee" },
+  renders: { label: "Renders", palette: "green", color: "#4ade80" },
+  instantiates: { label: "Instantiates", palette: "orange", color: "#fb923c" },
+  has: { label: "Has-a", palette: "teal", color: "#2dd4bf" },
+  injects: { label: "Injects", palette: "pink", color: "#f472b6" },
   contains: { label: "Contains", palette: "gray", color: "#475569" },
 };
 

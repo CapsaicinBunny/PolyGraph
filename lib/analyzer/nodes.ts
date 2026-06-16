@@ -85,6 +85,15 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
     add(iface, name, "interface", classOrInterfaceRole(iface, name));
   }
 
+  for (const alias of file.getTypeAliases()) {
+    const name = alias.getName();
+    add(alias, name, "type", classOrInterfaceRole(alias, name));
+  }
+
+  for (const en of file.getEnums()) {
+    add(en, en.getName(), "enum");
+  }
+
   for (const fn of file.getFunctions()) {
     const name = fn.getName();
     if (!name) continue;
@@ -104,9 +113,10 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
       continue;
     }
 
-    // Data-oriented ECS: `const Position = defineComponent({...})`, etc.
+    // Data-oriented ECS (`const Position = defineComponent({...})`), or any exported
+    // top-level value worth showing as a node.
     const role = variableRole(init, name);
-    if (role) add(varDecl, name, "variable", role);
+    if (role || varDecl.isExported()) add(varDecl, name, "variable", role);
   }
 }
 

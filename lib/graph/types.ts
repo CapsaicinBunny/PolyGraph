@@ -4,6 +4,8 @@ export type NodeKind =
   | "file"
   | "class"
   | "interface"
+  | "type"
+  | "enum"
   | "function"
   | "component"
   | "variable"

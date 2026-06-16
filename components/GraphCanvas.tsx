@@ -121,10 +121,11 @@ function GraphCanvasInner({
         id: e.id,
         source: e.source,
         target: e.target,
-        animated: e.kind === "call" && !toExternal,
+        // Animate every relationship edge (flows source -> target); skip structural containment.
+        animated: e.kind !== "contains",
         style: {
           stroke: color,
-          strokeWidth: 1.5,
+          strokeWidth: dashed ? 1.5 : 2,
           strokeDasharray: toExternal ? "5 3" : dashed ? "4 4" : undefined,
         },
         markerEnd: dashed ? undefined : { type: MarkerType.ArrowClosed, color },
