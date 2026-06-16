@@ -31,7 +31,14 @@ export const EXTERNAL_STYLES: Record<ExternalKind, KindStyle> = {
 
 /** Architectural roles detected by paradigm scanning. Color overrides kind when present. */
 export const ROLE_STYLES: Record<NodeRole, KindStyle> = {
-  "react-component": { label: "React component", palette: "green", color: "#22c55e" },
+  "react-component": { label: "React component", palette: "cyan", color: "#22d3ee" },
+  "vue-component": { label: "Vue component", palette: "green", color: "#42b883" },
+  "svelte-component": { label: "Svelte component", palette: "orange", color: "#ff3e00" },
+  "angular-component": { label: "Angular component", palette: "red", color: "#dd0031" },
+  "angular-service": { label: "Angular service", palette: "red", color: "#f0506e" },
+  "angular-module": { label: "Angular module", palette: "red", color: "#b52e31" },
+  "angular-directive": { label: "Angular directive", palette: "red", color: "#e2533a" },
+  "angular-pipe": { label: "Angular pipe", palette: "red", color: "#c026d3" },
   "ecs-component": { label: "ECS component", palette: "orange", color: "#f97316" },
   "ecs-system": { label: "ECS system", palette: "pink", color: "#ec4899" },
   "ecs-entity": { label: "ECS entity", palette: "yellow", color: "#eab308" },

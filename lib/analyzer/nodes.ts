@@ -10,7 +10,13 @@ import {
 } from "../graph/types";
 import { fileFacets } from "./facets";
 import { toRelativePath } from "./project";
-import { classOrInterfaceRole, functionRole, variableRole } from "./roles";
+import {
+  classOrInterfaceRole,
+  detectFramework,
+  fileRole,
+  functionRole,
+  variableRole,
+} from "./roles";
 
 export interface DeclIndex {
   nodes: GraphNode[];
@@ -39,6 +45,8 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
   const filePath = toRelativePath(file.getFilePath());
   const parentFile = fileNodeId(filePath);
   const facets = fileFacets(file);
+  const framework = detectFramework(file);
+  const fileComponentRole = fileRole(framework);
 
   // Environment + runtime are file-level facts shared by every node in the file.
   const fileFacetFields = {
@@ -53,14 +61,15 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
     filePath,
     line: FILE_NODE_LINE,
     parentFile,
-    category: facets.hasJsx ? "ui" : "feature",
+    category: facets.hasJsx || fileComponentRole ? "ui" : "feature",
+    ...(fileComponentRole ? { role: fileComponentRole } : {}),
     ...fileFacetFields,
   });
 
   const add = (decl: Node, name: string, kind: NodeKind, role?: NodeRole) => {
     const id = symbolNodeId(filePath, name);
     const category: NodeCategory =
-      kind === "component" || role === "react-component" ? "ui" : "feature";
+      kind === "component" || (role?.endsWith("-component") ?? false) ? "ui" : "feature";
     index.nodes.push({
       id,
       kind,
@@ -77,17 +86,17 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
 
   for (const cls of file.getClasses()) {
     const name = cls.getName();
-    if (name) add(cls, name, "class", classOrInterfaceRole(cls, name));
+    if (name) add(cls, name, "class", classOrInterfaceRole(cls, name, framework));
   }
 
   for (const iface of file.getInterfaces()) {
     const name = iface.getName();
-    add(iface, name, "interface", classOrInterfaceRole(iface, name));
+    add(iface, name, "interface", classOrInterfaceRole(iface, name, framework));
   }
 
   for (const alias of file.getTypeAliases()) {
     const name = alias.getName();
-    add(alias, name, "type", classOrInterfaceRole(alias, name));
+    add(alias, name, "type", classOrInterfaceRole(alias, name, framework));
   }
 
   for (const en of file.getEnums()) {
@@ -98,8 +107,8 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
     const name = fn.getName();
     if (!name) continue;
     const kind = classifyFunction(name, fn);
-    // A JSX-returning PascalCase function is a React component; otherwise tag any ECS role.
-    add(fn, name, kind, kind === "component" ? "react-component" : functionRole(name));
+    // A JSX-returning PascalCase function is a React component; otherwise tag any framework role.
+    add(fn, name, kind, kind === "component" ? "react-component" : functionRole(name, framework));
   }
 
   for (const varDecl of file.getVariableDeclarations()) {
@@ -109,13 +118,18 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
 
     if (Node.isArrowFunction(init) || Node.isFunctionExpression(init)) {
       const kind = classifyFunction(name, init);
-      add(varDecl, name, kind, kind === "component" ? "react-component" : functionRole(name));
+      add(
+        varDecl,
+        name,
+        kind,
+        kind === "component" ? "react-component" : functionRole(name, framework),
+      );
       continue;
     }
 
-    // Data-oriented ECS (`const Position = defineComponent({...})`), or any exported
+    // Framework factory (`defineComponent(...)`) / data-oriented ECS, or any exported
     // top-level value worth showing as a node.
-    const role = variableRole(init, name);
+    const role = variableRole(init, name, framework);
     if (role || varDecl.isExported()) add(varDecl, name, "variable", role);
   }
 }

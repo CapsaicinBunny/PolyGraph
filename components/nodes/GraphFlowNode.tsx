@@ -33,6 +33,13 @@ const KIND_GLYPH: Record<NodeKind, string> = {
 
 const ROLE_GLYPH: Record<NodeRole, string> = {
   "react-component": "⬡",
+  "vue-component": "▽",
+  "svelte-component": "◤",
+  "angular-component": "Ⓐ",
+  "angular-service": "⚙",
+  "angular-module": "▦",
+  "angular-directive": "✦",
+  "angular-pipe": "▸",
   "ecs-component": "◈",
   "ecs-system": "⚙",
   "ecs-entity": "◉",

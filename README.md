@@ -19,11 +19,14 @@ component usage.
     (resolved through arrays and generics)
   - `injects` — dependency injection: constructor parameter types
   - `renders` — which React component renders which (JSX usage)
-- **Paradigm role detection** — scans for architecture across paradigms and tags nodes with a
-  role (colored + badged): `react-component`, and ECS `ecs-component` / `ecs-system` /
-  `ecs-entity`, detected from naming (`*Component`/`*System`/`*Entity`), decorators
-  (`@Component`/`@System`/`@Entity`), and data-oriented factories (`defineComponent`,
-  `defineSystem`, `defineQuery`).
+- **Multi-framework + paradigm role detection** — scans for architecture and tags nodes with a
+  role (colored + badged), disambiguated by the file's extension and imports:
+  - **React** components (JSX)
+  - **Vue** — `.vue` SFCs (the embedded `<script>` is analyzed) and `defineComponent`
+  - **Svelte** — `.svelte` components
+  - **Angular** — `@Component` / `@Directive` / `@Pipe` / `@Injectable` / `@NgModule`
+  - **ECS** — `ecs-component` / `ecs-system` / `ecs-entity` from naming (`*Component`/`*System`/
+    `*Entity`), lowercase decorators, and `defineSystem` / `defineQuery` (in a bitECS context)
 - **External dependencies** (toggle in the toolbar, off by default) — imported npm packages,
   Node builtins, and `Bun` / `Deno` / `process` API usage appear as dashed external nodes,
   color-coded by source family (npm / Node / Deno / Bun); edges into them are tinted to match.

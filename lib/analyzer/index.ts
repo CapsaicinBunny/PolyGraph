@@ -47,9 +47,16 @@ export function analyzeSources(files: SourceFileMap, options: AnalyzeOptions = {
   const errors: AnalyzeError[] = [];
   const project = createInMemoryProject(files);
 
-  // Surface parse errors per file without aborting the whole analysis.
+  // Surface parse errors per file without aborting the whole analysis. Some files
+  // (e.g. extracted .vue/.svelte scripts under a non-TS extension) can make the TS
+  // diagnostics pass throw, so guard each file independently.
   for (const file of project.getSourceFiles()) {
-    const diagnostics = file.getPreEmitDiagnostics?.() ?? [];
+    let diagnostics: ReturnType<typeof file.getPreEmitDiagnostics> = [];
+    try {
+      diagnostics = file.getPreEmitDiagnostics?.() ?? [];
+    } catch {
+      continue;
+    }
     for (const d of diagnostics) {
       // Only report genuine syntax errors (category 1), not type errors.
       if (d.getCategory() === 1 && d.getCode() >= 1000 && d.getCode() < 2000) {

@@ -1,7 +1,7 @@
 // Shared file-selection rules, used by both the in-browser reader and the
 // server-side directory scanner so they include/exclude exactly the same files.
 
-export const SOURCE_EXT = /\.(tsx?|jsx?|mts|cts|mjs|cjs)$/i;
+export const SOURCE_EXT = /\.(tsx?|jsx?|mts|cts|mjs|cjs|vue|svelte)$/i;
 
 // Matches an ignored directory segment anywhere in a path (either separator).
 export const IGNORE_DIR =

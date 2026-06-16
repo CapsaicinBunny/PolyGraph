@@ -37,7 +37,18 @@ export type EdgeKind =
  * scanning for paradigm signals (JSX, ECS naming/decorators/factories), so a
  * codebase's architecture surfaces without any configuration.
  */
-export type NodeRole = "react-component" | "ecs-component" | "ecs-system" | "ecs-entity";
+export type NodeRole =
+  | "react-component"
+  | "vue-component"
+  | "svelte-component"
+  | "angular-component"
+  | "angular-service"
+  | "angular-module"
+  | "angular-directive"
+  | "angular-pipe"
+  | "ecs-component"
+  | "ecs-system"
+  | "ecs-entity";
 
 /** Where the code runs, from `"use client"` / `"use server"` directives. */
 export type Environment = "client" | "server";

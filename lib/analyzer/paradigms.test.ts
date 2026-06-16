@@ -61,27 +61,25 @@ describe("paradigm role detection", () => {
     expect(roleOf(graph, "ecs.ts#PlayerEntity")).toBe("ecs-entity");
   });
 
-  test("data-oriented ECS factories create role-tagged variable nodes", () => {
+  test("data-oriented ECS factories create role-tagged variable nodes (bitecs context)", () => {
     const { graph } = analyzeSources({
       "world.ts": `
-        declare function defineComponent(s: unknown): unknown;
-        declare function defineSystem(f: unknown): unknown;
+        import { defineComponent, defineSystem } from "bitecs";
         export const Velocity = defineComponent({ x: "f32" });
         export const Movement = defineSystem(() => {});
       `,
     });
     expect(kindOf(graph, "world.ts#Velocity")).toBe("variable");
+    // bitecs import => defineComponent is an ECS component, not Vue.
     expect(roleOf(graph, "world.ts#Velocity")).toBe("ecs-component");
     expect(roleOf(graph, "world.ts#Movement")).toBe("ecs-system");
-    // The camelCase factory functions themselves must NOT be mis-tagged.
-    expect(roleOf(graph, "world.ts#defineComponent")).toBeUndefined();
   });
 
-  test("decorator-based ECS is detected", () => {
+  test("lowercase @component decorator is ECS", () => {
     const { graph } = analyzeSources({
       "deco.ts": `
-        function Component() { return (t: unknown) => t; }
-        @Component()
+        function component() { return (t: unknown) => t; }
+        @component()
         export class Health {}
       `,
     });
@@ -93,5 +91,52 @@ describe("paradigm role detection", () => {
       "App.tsx": `export function App() { return <div />; }`,
     });
     expect(roleOf(graph, "App.tsx#App")).toBe("react-component");
+  });
+});
+
+describe("multi-framework detection", () => {
+  test("Angular decorators map to angular roles", () => {
+    const { graph } = analyzeSources({
+      "app.ts": `
+        import { Component, Injectable, NgModule } from "@angular/core";
+        @Component({ selector: "app" }) export class AppComponent {}
+        @Injectable() export class DataService {}
+        @NgModule({}) export class AppModule {}
+      `,
+    });
+    expect(roleOf(graph, "app.ts#AppComponent")).toBe("angular-component");
+    expect(roleOf(graph, "app.ts#DataService")).toBe("angular-service");
+    expect(roleOf(graph, "app.ts#AppModule")).toBe("angular-module");
+  });
+
+  test("defineComponent in a Vue file is a Vue component", () => {
+    const { graph } = analyzeSources({
+      "Hello.ts": `
+        import { defineComponent } from "vue";
+        export const Hello = defineComponent({ name: "Hello" });
+      `,
+    });
+    expect(roleOf(graph, "Hello.ts#Hello")).toBe("vue-component");
+  });
+
+  test(".vue single-file component: file is a Vue component and its <script> is analyzed", () => {
+    const { graph } = analyzeSources({
+      "Counter.vue": `<template><button @click="inc">{{ n }}</button></template>
+<script setup lang="ts">
+import { ref } from "vue";
+const n = ref(0);
+function inc() { n.value++; }
+</script>`,
+    });
+    expect(roleOf(graph, "Counter.vue")).toBe("vue-component");
+    // The embedded script is parsed as TS, so inner declarations become nodes.
+    expect(kindOf(graph, "Counter.vue#inc")).toBe("function");
+  });
+
+  test(".svelte file is a Svelte component", () => {
+    const { graph } = analyzeSources({
+      "Box.svelte": `<script lang="ts">export let label: string;</script><div>{label}</div>`,
+    });
+    expect(roleOf(graph, "Box.svelte")).toBe("svelte-component");
   });
 });

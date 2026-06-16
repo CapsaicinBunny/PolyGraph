@@ -35,10 +35,28 @@ export function createInMemoryProject(files: SourceFileMap): Project {
 
   for (const [path, text] of Object.entries(files)) {
     const normalized = path.startsWith("/") ? path : `/${path}`;
-    project.createSourceFile(normalized, text, { overwrite: true });
+    const isSfc = /\.(vue|svelte)$/i.test(path);
+    // .vue / .svelte are not TS — analyze the embedded <script> block(s) as TS.
+    const content = isSfc ? extractScript(text) : text;
+    project.createSourceFile(normalized, content, {
+      overwrite: true,
+      ...(isSfc ? { scriptKind: ts.ScriptKind.TS } : {}),
+    });
   }
 
   return project;
+}
+
+/** Concatenate the contents of every `<script>` block in a Vue/Svelte single-file component. */
+function extractScript(sfc: string): string {
+  const blocks: string[] = [];
+  const re = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null = re.exec(sfc);
+  while (match) {
+    blocks.push(match[1]);
+    match = re.exec(sfc);
+  }
+  return blocks.join("\n");
 }
 
 /**
