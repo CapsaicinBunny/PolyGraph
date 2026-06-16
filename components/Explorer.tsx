@@ -165,13 +165,7 @@ export function Explorer() {
 
   if (!result || !graph) {
     return (
-      <Box h="100vh" bg="bg" overflow="auto">
-        <Box pt="16" textAlign="center">
-          <Heading size="2xl">TS Module Scanner</Heading>
-          <Text color="fg.muted" mt="2">
-            Visualize modules, classes, functions, components, and what calls what.
-          </Text>
-        </Box>
+      <Box minH="100vh" bg="bg" overflow="auto">
         <UploadDropzone onResult={handleResult} />
       </Box>
     );

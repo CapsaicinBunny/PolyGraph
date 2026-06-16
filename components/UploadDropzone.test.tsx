@@ -6,14 +6,15 @@ import { UploadDropzone } from "./UploadDropzone";
 afterEach(cleanup);
 
 describe("UploadDropzone", () => {
-  test("renders the empty-state prompt and folder picker", () => {
+  test("renders the hero, scan action, and folder dropzone", () => {
     render(
       <Provider>
         <UploadDropzone onResult={() => {}} />
       </Provider>,
     );
 
+    expect(screen.getByRole("heading", { name: "TS Module Scanner" })).toBeDefined();
+    expect(screen.getByRole("button", { name: /scan/i })).toBeDefined();
     expect(screen.getByText("Drop a project folder")).toBeDefined();
-    expect(screen.getByRole("button", { name: /choose folder/i })).toBeDefined();
   });
 });

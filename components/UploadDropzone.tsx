@@ -1,7 +1,20 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Box, Button, Heading, HStack, Input, Progress, Stack, Text } from "@chakra-ui/react";
+import {
+  Badge,
+  Box,
+  Button,
+  Container,
+  Flex,
+  Heading,
+  HStack,
+  Input,
+  InputGroup,
+  Progress,
+  Stack,
+  Text,
+} from "@chakra-ui/react";
 import { readSourceFiles } from "@/lib/client/read-files";
 import type { AnalyzeResult, SourceFileMap } from "@/lib/graph/types";
 
@@ -10,6 +23,46 @@ interface UploadDropzoneProps {
 }
 
 type Phase = "idle" | "scanning" | "reading" | "analyzing";
+
+// What the scanner detects — shown as a teaser row under the hero.
+const CAPABILITIES: { label: string; palette: string }[] = [
+  { label: "Imports", palette: "gray" },
+  { label: "Calls", palette: "blue" },
+  { label: "Inheritance", palette: "purple" },
+  { label: "Composition", palette: "teal" },
+  { label: "React / Vue / Svelte / Angular", palette: "green" },
+  { label: "ECS", palette: "orange" },
+];
+
+const SUPPORTED = [".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte"];
+
+function GraphMark() {
+  return (
+    <svg viewBox="0 0 48 48" width="56" height="56" aria-hidden="true">
+      <g strokeWidth="2.5" strokeLinecap="round">
+        <line x1="15" y1="16" x2="31" y2="13" stroke="#64748b" />
+        <line x1="16" y1="18" x2="22" y2="33" stroke="#3b82f6" />
+        <line x1="33" y1="15" x2="34" y2="31" stroke="#a855f7" />
+        <line x1="24" y1="35" x2="33" y2="33" stroke="#22c55e" />
+      </g>
+      <circle cx="14" cy="16" r="5" fill="#94a3b8" />
+      <circle cx="33" cy="13" r="5" fill="#a855f7" />
+      <circle cx="23" cy="34" r="5" fill="#3b82f6" />
+      <circle cx="35" cy="32" r="5" fill="#22c55e" />
+    </svg>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style={{ opacity: 0.7 }}>
+      <path
+        fill="currentColor"
+        d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"
+      />
+    </svg>
+  );
+}
 
 function ProgressBar({
   phase,
@@ -31,10 +84,7 @@ function ProgressBar({
 
   return (
     <Progress.Root
-      // Determinate while reading files in-browser; indeterminate stripes otherwise.
       value={reading ? pct : null}
-      w="full"
-      maxW="sm"
       size="sm"
       colorPalette="blue"
       striped={!reading}
@@ -163,104 +213,212 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
     );
     if (Object.keys(files).length === 0) {
       setPhase("idle");
-      setError("No .ts / .tsx / .js / .jsx files found in that folder.");
+      setError("No source files found in that folder.");
       return;
     }
     await analyze(files, skipped);
   }
 
   return (
-    <Stack w="full" maxW="640px" mx="auto" mt="16" gap="6">
-      {/* Primary: scan a path on this machine */}
-      <Box p="6" borderWidth="1px" borderColor="border.emphasized" rounded="2xl" bg="bg.panel">
-        <Stack gap="3">
-          <Heading size="md">Scan a folder on this machine</Heading>
-          <Text color="fg.muted" fontSize="sm">
-            Enter an absolute folder path. It's read directly from disk by the local server —
-            nothing is uploaded or copied. node_modules and build output are skipped.
-          </Text>
-          <HStack gap="2">
-            <Input
-              placeholder="C:\\path\\to\\your\\project"
-              value={path}
-              disabled={busy}
-              fontFamily="mono"
-              onChange={(e) => setPath(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !busy) void scan(path);
-              }}
-            />
-            <Button colorPalette="blue" disabled={busy} onClick={() => void scan(path)}>
-              Scan
-            </Button>
-          </HStack>
-          {busy && phase === "scanning" && (
-            <ProgressBar phase={phase} progress={progress} fileCount={fileCount} />
-          )}
+    <Container maxW="2xl" py={{ base: "10", md: "16" }}>
+      <Stack gap="8">
+        {/* Hero */}
+        <Stack gap="4" align="center" textAlign="center">
+          <Box
+            color="fg"
+            p="3"
+            rounded="2xl"
+            bg="bg.subtle"
+            borderWidth="1px"
+            borderColor="border.emphasized"
+            shadow="sm"
+          >
+            <GraphMark />
+          </Box>
+          <Stack gap="1.5" align="center">
+            <Heading size={{ base: "xl", md: "2xl" }} letterSpacing="tight">
+              TS Module Scanner
+            </Heading>
+            <Text color="fg.muted" maxW="lg">
+              Map a TypeScript / JavaScript codebase into an interactive graph — modules, classes,
+              functions, components, and what calls what.
+            </Text>
+          </Stack>
+          <Flex wrap="wrap" justify="center" gap="2" pt="1">
+            {CAPABILITIES.map((c) => (
+              <Badge
+                key={c.label}
+                variant="subtle"
+                colorPalette={c.palette}
+                rounded="full"
+                px="2.5"
+              >
+                {c.label}
+              </Badge>
+            ))}
+          </Flex>
         </Stack>
-      </Box>
 
-      <HStack color="fg.subtle" fontSize="xs">
-        <Box flex="1" h="1px" bg="border" />
-        <Text>or use the in-browser picker</Text>
-        <Box flex="1" h="1px" bg="border" />
-      </HStack>
+        {/* Primary: scan a path on this machine */}
+        <Box
+          p={{ base: "5", md: "6" }}
+          borderWidth="1px"
+          borderColor="border.emphasized"
+          rounded="2xl"
+          bg="bg.panel"
+          shadow="sm"
+        >
+          <Stack gap="4">
+            <Stack gap="1">
+              <Heading size="md">Scan a folder</Heading>
+              <Text color="fg.muted" fontSize="sm">
+                Enter an absolute path. It's read directly from disk by the local server — nothing
+                is uploaded or copied;{" "}
+                <Text as="span" color="fg.subtle">
+                  node_modules
+                </Text>{" "}
+                and build output are skipped.
+              </Text>
+            </Stack>
 
-      {/* Fallback: pick/drop a folder; files are read in the browser */}
-      <Box
-        p="8"
-        borderWidth="2px"
-        borderStyle="dashed"
-        borderColor={dragging ? "blue.400" : "border.emphasized"}
-        rounded="2xl"
-        bg={dragging ? "blue.subtle" : "bg.panel"}
-        transition="all 0.15s"
-        textAlign="center"
-        onDragOver={(e) => {
-          e.preventDefault();
-          if (!busy) setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={async (e) => {
-          e.preventDefault();
-          setDragging(false);
-          if (busy) return;
-          const files = await filesFromDataTransfer(e.dataTransfer);
-          await handleFileList(files);
-        }}
-      >
-        <Stack gap="4" align="center">
-          <Text fontSize="4xl">📂</Text>
-          <Heading size="sm">Drop a project folder</Heading>
+            <Stack direction={{ base: "column", sm: "row" }} gap="2.5">
+              <InputGroup flex="1" startElement={<FolderIcon />}>
+                <Input
+                  placeholder="C:\\path\\to\\your\\project"
+                  value={path}
+                  disabled={busy}
+                  fontFamily="mono"
+                  size="lg"
+                  aria-label="Folder path to scan"
+                  onChange={(e) => setPath(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !busy) void scan(path);
+                  }}
+                />
+              </InputGroup>
+              <Button
+                colorPalette="blue"
+                size="lg"
+                px="8"
+                loading={phase === "scanning"}
+                loadingText="Scanning"
+                disabled={busy}
+                onClick={() => void scan(path)}
+              >
+                Scan
+              </Button>
+            </Stack>
+          </Stack>
+        </Box>
 
+        <HStack color="fg.subtle" fontSize="xs" gap="3">
+          <Box flex="1" h="1px" bg="border" />
+          <Text>or pick a folder in your browser</Text>
+          <Box flex="1" h="1px" bg="border" />
+        </HStack>
+
+        {/* Fallback: pick/drop a folder; files are read in the browser */}
+        <Box
+          role="button"
+          tabIndex={busy ? -1 : 0}
+          aria-disabled={busy}
+          w="full"
+          textAlign="center"
+          p={{ base: "8", md: "10" }}
+          borderWidth="2px"
+          borderStyle="dashed"
+          borderColor={dragging ? "blue.400" : "border.emphasized"}
+          rounded="2xl"
+          bg={dragging ? "blue.subtle" : "transparent"}
+          transition="all 0.15s"
+          cursor={busy ? "default" : "pointer"}
+          _hover={busy ? undefined : { borderColor: "blue.400", bg: "bg.subtle" }}
+          onClick={() => {
+            if (!busy) inputRef.current?.click();
+          }}
+          onKeyDown={(e) => {
+            if (!busy && (e.key === "Enter" || e.key === " ")) {
+              e.preventDefault();
+              inputRef.current?.click();
+            }
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            if (!busy) setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={async (e) => {
+            e.preventDefault();
+            setDragging(false);
+            if (busy) return;
+            const files = await filesFromDataTransfer(e.dataTransfer);
+            await handleFileList(files);
+          }}
+        >
           {busy && phase !== "scanning" ? (
-            <ProgressBar phase={phase} progress={progress} fileCount={fileCount} />
+            <Box maxW="sm" mx="auto">
+              <ProgressBar phase={phase} progress={progress} fileCount={fileCount} />
+            </Box>
           ) : (
-            <Button variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}>
-              Choose folder
-            </Button>
+            <Stack gap="2" align="center">
+              <Text fontSize="3xl">📂</Text>
+              <Text fontWeight="semibold" fontSize="md">
+                Drop a project folder
+              </Text>
+              <Text fontSize="xs" color="fg.subtle">
+                or click to browse
+              </Text>
+              <Flex wrap="wrap" justify="center" gap="1" pt="1" maxW="sm">
+                {SUPPORTED.map((ext) => (
+                  <Badge
+                    key={ext}
+                    size="sm"
+                    variant="outline"
+                    colorPalette="gray"
+                    fontFamily="mono"
+                  >
+                    {ext}
+                  </Badge>
+                ))}
+              </Flex>
+            </Stack>
           )}
-        </Stack>
-      </Box>
+        </Box>
 
-      {error && (
-        <Text color="red.400" fontSize="sm" textAlign="center">
-          {error}
+        {error && (
+          <Box
+            role="alert"
+            bg="red.subtle"
+            color="red.fg"
+            borderWidth="1px"
+            borderColor="red.emphasized"
+            rounded="lg"
+            px="4"
+            py="2.5"
+            fontSize="sm"
+            textAlign="center"
+          >
+            {error}
+          </Box>
+        )}
+
+        <Text fontSize="xs" color="fg.subtle" textAlign="center">
+          Runs entirely on your machine. Nothing is uploaded.
         </Text>
-      )}
 
-      <input
-        ref={inputRef}
-        type="file"
-        // @ts-expect-error non-standard but widely supported directory picker attributes
-        webkitdirectory=""
-        directory=""
-        multiple
-        style={{ display: "none" }}
-        onChange={(e) => {
-          if (e.target.files) void handleFileList(e.target.files);
-        }}
-      />
-    </Stack>
+        <input
+          ref={inputRef}
+          type="file"
+          // @ts-expect-error non-standard but widely supported directory picker attributes
+          webkitdirectory=""
+          directory=""
+          multiple
+          style={{ display: "none" }}
+          onChange={(e) => {
+            if (e.target.files) void handleFileList(e.target.files);
+          }}
+        />
+      </Stack>
+    </Container>
   );
 }
