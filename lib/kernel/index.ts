@@ -52,9 +52,21 @@ export async function analyzeProject(
 
   const ctx = { packages: options.packages };
   const results = await Promise.all(
-    [...buckets.entries()].map(([provider, bucket]) =>
-      Promise.resolve(provider.analyze(bucket, ctx)),
-    ),
+    [...buckets.entries()].map(async ([provider, bucket]) => {
+      try {
+        return await provider.analyze(bucket, ctx);
+      } catch (e) {
+        // A single provider failing (e.g. a malformed pack query) must not sink
+        // the rest of the analysis — surface it as an error and move on.
+        return {
+          nodes: [],
+          edges: [],
+          errors: [
+            { filePath: `<${provider.id}>`, message: e instanceof Error ? e.message : String(e) },
+          ],
+        };
+      }
+    }),
   );
 
   const nodes: GraphNode[] = [];

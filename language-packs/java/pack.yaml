@@ -1,0 +1,8 @@
+id: java
+extensions: [".java"]
+# tree-sitter-wasms / native grammar name (tree-sitter-java)
+grammar: java
+imports:
+  # resolve imports by simple class name to the file that defines it
+  style: jvm
+queries: tags.scm

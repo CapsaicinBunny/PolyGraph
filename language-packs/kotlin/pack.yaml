@@ -1,0 +1,7 @@
+id: kotlin
+extensions: [".kt", ".kts"]
+# native grammar name (tree-sitter-kotlin)
+grammar: kotlin
+imports:
+  style: jvm
+queries: tags.scm

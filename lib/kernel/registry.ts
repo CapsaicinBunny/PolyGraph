@@ -9,7 +9,7 @@ import type { LanguageProvider } from "./provider";
 import { createTreeSitterProvider } from "./treesitter";
 
 /** Declarative packs to load, by language-packs/<id> folder name. */
-const TREE_SITTER_PACKS = ["python"];
+const TREE_SITTER_PACKS = ["python", "java", "kotlin"];
 
 let cached: Promise<LanguageProvider[]> | null = null;
 

@@ -61,9 +61,21 @@ fn edge_id(s: &str, t: &str, kind: &str) -> String {
 fn language_for(grammar: &str) -> Option<tree_sitter::Language> {
     match grammar {
         "python" => Some(tree_sitter_python::language()),
+        "java" => Some(tree_sitter_java::language()),
+        "kotlin" => Some(tree_sitter_kotlin::language()),
         _ => None,
     }
 }
+
+const REF_KINDS: [&str; 7] = [
+    "call",
+    "extends",
+    "implements",
+    "instantiates",
+    "renders",
+    "has",
+    "injects",
+];
 
 fn map_node_kind(kind: &str) -> &'static str {
     match kind {
@@ -327,13 +339,48 @@ fn build_graph(per_file: &HashMap<String, FileExtract>, import_style: &str) -> O
         symbols_by_file.insert(file.as_str(), name_to_id);
     }
 
+    // JVM-style resolution (Java/Kotlin): imports map by simple class name and
+    // same-package refs have no import, so build a global unique-definer index
+    // (symbol name -> the single file that defines it, None if ambiguous).
+    let jvm = import_style == "jvm";
+    let mut definer: HashMap<&str, Option<&str>> = HashMap::new();
+    if jvm {
+        for file in &files {
+            for s in &per_file[*file].symbols {
+                definer
+                    .entry(s.name.as_str())
+                    .and_modify(|e| {
+                        if *e != Some(file.as_str()) {
+                            *e = None;
+                        }
+                    })
+                    .or_insert(Some(file.as_str()));
+            }
+        }
+    }
+    let definer_file = |name: &str| -> Option<&str> {
+        match definer.get(name) {
+            Some(Some(f)) => Some(*f),
+            _ => None,
+        }
+    };
+
     // Import edges + local-name -> source-file bindings for cross-file refs.
     let mut imported: HashMap<&str, HashMap<&str, String>> = HashMap::new();
     for file in &files {
         let fid = file_node_id(file);
         let mut binds: HashMap<&str, String> = HashMap::new();
         for imp in &per_file[*file].imports {
-            if let Some(target) = resolve_module(import_style, &imp.module, file, &file_set) {
+            let (target, bind_name): (Option<String>, Option<&str>) = if jvm {
+                let simple = imp.module.rsplit('.').next().unwrap_or(imp.module.as_str());
+                (definer_file(simple).map(str::to_string), Some(simple))
+            } else {
+                (
+                    resolve_module(import_style, &imp.module, file, &file_set),
+                    imp.name.as_deref(),
+                )
+            };
+            if let Some(target) = target {
                 let tid = file_node_id(&target);
                 edges.push(OutEdge {
                     id: edge_id(&fid, &tid, "import"),
@@ -341,8 +388,8 @@ fn build_graph(per_file: &HashMap<String, FileExtract>, import_style: &str) -> O
                     target: tid,
                     kind: "import".into(),
                 });
-                if let Some(n) = &imp.name {
-                    binds.insert(n.as_str(), target);
+                if let Some(n) = bind_name {
+                    binds.insert(n, target);
                 }
             }
         }
@@ -353,19 +400,22 @@ fn build_graph(per_file: &HashMap<String, FileExtract>, import_style: &str) -> O
         let local = &symbols_by_file[file.as_str()];
         let binds = &imported[file.as_str()];
         for r in &per_file[*file].refs {
-            if !matches!(r.relation.as_str(), "call" | "extends" | "implements") {
+            if !REF_KINDS.contains(&r.relation.as_str()) {
                 continue;
             }
+            let resolve_in = |tf: &str| -> String {
+                symbols_by_file
+                    .get(tf)
+                    .and_then(|m| m.get(r.name.as_str()))
+                    .map(|id| (*id).to_string())
+                    .unwrap_or_else(|| file_node_id(tf))
+            };
             let target: Option<String> = if let Some(id) = local.get(r.name.as_str()) {
                 Some((*id).to_string())
             } else if let Some(tf) = binds.get(r.name.as_str()) {
-                Some(
-                    symbols_by_file
-                        .get(tf.as_str())
-                        .and_then(|m| m.get(r.name.as_str()))
-                        .map(|id| (*id).to_string())
-                        .unwrap_or_else(|| file_node_id(tf)),
-                )
+                Some(resolve_in(tf))
+            } else if jvm {
+                definer_file(r.name.as_str()).map(resolve_in)
             } else {
                 None
             };
