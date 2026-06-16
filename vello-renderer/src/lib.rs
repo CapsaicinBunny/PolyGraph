@@ -5,9 +5,7 @@
 use serde::Deserialize;
 use skrifa::instance::{LocationRef, Size};
 use skrifa::{FontRef, MetadataProvider};
-use vello::kurbo::{
-    Affine, BezPath, Circle, CubicBez, Point, Rect, RoundedRect, RoundedRectRadii, Stroke,
-};
+use vello::kurbo::{Affine, BezPath, Circle, CubicBez, Point, RoundedRect, Stroke};
 use vello::peniko::{Blob, Color, Fill, FontData};
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
@@ -19,7 +17,7 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/Inter-Regular.ttf");
 
 // Light cards on a charcoal canvas (matches the original React Flow look).
 const CARD_FILL: Color = Color::from_rgb8(248, 250, 252);
-const CARD_BORDER: Color = Color::from_rgb8(203, 213, 225);
+const CARD_BORDER: Color = Color::from_rgb8(226, 232, 240);
 const SELECT: Color = Color::from_rgb8(37, 99, 235);
 const MATCH: Color = Color::from_rgb8(234, 179, 8);
 const LABEL: Color = Color::from_rgb8(30, 41, 59);
@@ -265,20 +263,13 @@ impl VelloCanvas {
             let r = n.x + n.w;
             let b = n.y + n.h;
 
-            // Card with a crisp colored left edge: fill the whole rounded rect in the
-            // accent, then cover everything but a 4px strip with the body fill (its
-            // left corners square so the accent keeps the card's rounded corners).
-            let card = RoundedRect::new(n.x, n.y, r, b, 6.0);
+            // Clean rounded card with a thin colored left edge. Fill the whole card in
+            // the accent, then overlay the body inset 3px on the left (same radius, so
+            // it stays inside the card — the accent shows only as a hairline edge that
+            // follows the rounded corners, no artifacts).
+            let card = RoundedRect::new(n.x, n.y, r, b, 10.0);
             self.scene.fill(Fill::NonZero, camera, accent, None, &card);
-            let body = RoundedRect::from_rect(
-                Rect::new(n.x + 4.0, n.y, r, b),
-                RoundedRectRadii {
-                    top_left: 0.0,
-                    top_right: 6.0,
-                    bottom_right: 6.0,
-                    bottom_left: 0.0,
-                },
-            );
+            let body = RoundedRect::new(n.x + 3.0, n.y, r, b, 10.0);
             self.scene
                 .fill(Fill::NonZero, camera, CARD_FILL, None, &body);
             let border = if selected { SELECT } else { CARD_BORDER };
@@ -288,7 +279,7 @@ impl VelloCanvas {
 
             // Search-match outline.
             if searching && n.label.to_lowercase().contains(&self.search) {
-                let hl = RoundedRect::new(n.x - 2.0, n.y - 2.0, r + 2.0, b + 2.0, 7.0);
+                let hl = RoundedRect::new(n.x - 2.0, n.y - 2.0, r + 2.0, b + 2.0, 11.0);
                 self.scene
                     .stroke(&Stroke::new(2.0), camera, MATCH, None, &hl);
             }
@@ -300,13 +291,13 @@ impl VelloCanvas {
             // Icon chip (Chakra-style): a rounded square tinted with the accent color,
             // holding the kind's vector icon.
             let mid_y = n.y + n.h / 2.0;
-            let chip_x = n.x + 11.0;
+            let chip_cx = n.x + 19.0;
             let chip = RoundedRect::new(
-                chip_x - 11.0,
+                chip_cx - 11.0,
                 mid_y - 11.0,
-                chip_x + 11.0,
+                chip_cx + 11.0,
                 mid_y + 11.0,
-                5.0,
+                6.0,
             );
             self.scene
                 .fill(Fill::NonZero, camera, tint(n.color), None, &chip);
@@ -314,7 +305,7 @@ impl VelloCanvas {
                 &mut self.scene,
                 camera,
                 &n.shape,
-                chip_x,
+                chip_cx,
                 mid_y,
                 ICON_R,
                 accent,
@@ -322,8 +313,8 @@ impl VelloCanvas {
 
             // Filename label (dark), vertically centered, clipped to the card width.
             let baseline = mid_y + 4.0;
-            let label_x = n.x + 30.0;
-            let max_w = n.w - 40.0;
+            let label_x = n.x + 38.0;
+            let max_w = n.w - 48.0;
             let mut gx = label_x;
             let glyphs: Vec<Glyph> = n
                 .label
