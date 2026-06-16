@@ -1,0 +1,7 @@
+id: python
+extensions: [".py"]
+# tree-sitter-wasms grammar name (tree-sitter-python.wasm)
+grammar: python
+imports:
+  style: python
+queries: tags.scm

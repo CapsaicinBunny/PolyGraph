@@ -1,8 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { analyzeSources } from "@/lib/analyzer";
 import type { SourceFileMap } from "@/lib/graph/types";
+import { analyzeProject } from "@/lib/kernel";
 
-// ts-morph needs the Node.js runtime (filesystem/compiler APIs), not the edge runtime.
+// ts-morph + tree-sitter need the Node.js runtime (fs / compiler / wasm), not edge.
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const result = analyzeSources(files);
+    const result = await analyzeProject(files);
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Analysis failed";
