@@ -26,8 +26,10 @@ const PixiGraphCanvas = dynamic(() => import("./PixiGraphCanvas").then((m) => m.
 const ALL_ENVIRONMENTS: Environment[] = ["client", "server"];
 const ALL_RUNTIMES: Runtime[] = ["node", "deno", "bun"];
 const ALL_CATEGORIES: NodeCategory[] = ["ui", "feature"];
-// Above this node count, default to the GPU (Pixi) renderer.
-const GPU_AUTO_THRESHOLD = 1200;
+// Default to the GPU (Pixi) renderer only when the collapsed (file-level) view itself
+// is very large. The default view shows file nodes, so we size on file count — symbol
+// nodes stay hidden until you expand, and React Flow (crisp vector) handles ~1000 fine.
+const GPU_AUTO_FILE_THRESHOLD = 1500;
 
 interface Stats {
   fileCount: number;
@@ -59,8 +61,6 @@ export function Explorer() {
   const [rendererOverride, setRendererOverride] = useState<"flow" | "gpu" | null>(null);
 
   const graph = result?.graph ?? null;
-  const renderer =
-    rendererOverride ?? ((graph?.nodes.length ?? 0) > GPU_AUTO_THRESHOLD ? "gpu" : "flow");
 
   const parentOf = useMemo(() => {
     const map = new Map<string, string>();
@@ -72,6 +72,9 @@ export function Explorer() {
     () => (graph?.nodes ?? []).filter((n) => n.kind === "file").map((n) => n.id),
     [graph],
   );
+
+  // The default view renders file nodes, so size the renderer choice on the file count.
+  const renderer = rendererOverride ?? (fileIds.length > GPU_AUTO_FILE_THRESHOLD ? "gpu" : "flow");
   const allExpanded = fileIds.length > 0 && fileIds.every((id) => expanded.has(id));
 
   const handleToggleExpandAll = useCallback(() => {
