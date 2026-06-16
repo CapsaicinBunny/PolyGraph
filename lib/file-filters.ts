@@ -2,7 +2,7 @@
 // server-side directory scanner so they include/exclude exactly the same files.
 
 export const SOURCE_EXT =
-  /\.(tsx?|jsx?|mts|cts|mjs|cjs|vue|svelte|py|java|kts?|rs|go|scala|sc|cs|fsx?|c|h|cpp|cc|cxx|hpp|hh|hxx|mm?|swift|zig|hs|jsonc?|wat)$/i;
+  /\.(tsx?|jsx?|mts|cts|mjs|cjs|vue|svelte|py|java|kts?|rs|go|scala|sc|cs|fsx?|c|h|cpp|cc|cxx|hpp|hh|hxx|mm?|ml|swift|zig|hs|rb|php|sh|bash|lua|dart|jl|r|nix|jsonc?|wat)$/i;
 
 // Matches an ignored directory segment anywhere in a path (either separator).
 export const IGNORE_DIR =

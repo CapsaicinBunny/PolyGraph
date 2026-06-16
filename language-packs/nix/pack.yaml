@@ -1,0 +1,6 @@
+id: nix
+extensions: [".nix"]
+grammar: nix
+imports:
+  style: nix
+queries: tags.scm

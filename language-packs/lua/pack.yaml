@@ -1,0 +1,6 @@
+id: lua
+extensions: [".lua"]
+grammar: lua
+imports:
+  style: lua
+queries: tags.scm

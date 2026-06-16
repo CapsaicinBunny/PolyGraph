@@ -7,3 +7,6 @@
 (protocol_declaration name: (type_identifier) @name) @definition.protocol
 (function_declaration name: (simple_identifier) @name) @definition.function
 (call_expression (simple_identifier) @name) @reference.call
+
+; --- inheritance / protocol conformance ---
+(class_declaration (inheritance_specifier inherits_from: (user_type) @name)) @reference.extends

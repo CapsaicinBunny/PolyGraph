@@ -275,7 +275,7 @@ describe("multi-language kernel", () => {
     });
     const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
     expect(byId.get("m.zig#add")).toBe("function");
-    expect(byId.get("m.zig#Foo")).toBe("variable");
+    expect(byId.get("m.zig#Foo")).toBe("struct");
   });
 
   test("extracts Haskell data types, classes, and functions", async () => {
@@ -287,6 +287,47 @@ describe("multi-language kernel", () => {
     expect(byId.get("M.hs#Shape")).toBe("type");
     expect(byId.get("M.hs#Draw")).toBe("interface");
     expect(byId.get("M.hs#area")).toBe("function");
+  });
+
+  test("extracts Ruby/PHP/Bash/Lua/Dart definitions", async () => {
+    const { graph } = await analyzeProject({
+      "a.rb": "class Animal\n  def speak; end\nend\nclass Dog < Animal\nend\n",
+      "a.php": "<?php\nnamespace App;\ninterface I {}\nclass C implements I { function m(){} }\n",
+      "a.sh": "build() { compile; }\ncompile() { echo hi; }\n",
+      "a.lua": "function add(x) return x end\n",
+      "a.dart": "class A {}\nenum E { x }\nint go() => 1;\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("a.rb#Animal")).toBe("class");
+    expect(byId.get("a.rb#speak")).toBe("method");
+    expect(byId.get("a.php#App")).toBe("namespace");
+    expect(byId.get("a.php#I")).toBe("interface");
+    expect(byId.get("a.php#m")).toBe("method");
+    expect(byId.get("a.sh#build")).toBe("function");
+    expect(byId.get("a.lua#add")).toBe("function");
+    expect(byId.get("a.dart#A")).toBe("class");
+    expect(byId.get("a.dart#E")).toBe("enum");
+    expect(
+      graph.edges.some(
+        (e) => e.source === "a.rb#Dog" && e.target === "a.rb#Animal" && e.kind === "extends",
+      ),
+    ).toBe(true);
+  });
+
+  test("extracts Julia/R/Nix/OCaml definitions", async () => {
+    const { graph } = await analyzeProject({
+      "a.jl": "module M\nstruct Point end\nfunction area(r) end\nend\n",
+      "a.r": "area <- function(r) { r }\n",
+      "a.nix": "{ foo = 1; bar = 2; }\n",
+      "a.ml": "module M = struct end\ntype shape = Circle\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("a.jl#M")).toBe("module");
+    expect(byId.get("a.jl#Point")).toBe("struct");
+    expect(byId.get("a.jl#area")).toBe("function");
+    expect(byId.get("a.r#area")).toBe("function");
+    expect(byId.get("a.nix#foo")).toBe("property");
+    expect(byId.get("a.ml#shape")).toBe("type");
   });
 
   test("still analyzes TypeScript through the kernel", async () => {

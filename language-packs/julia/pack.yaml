@@ -1,0 +1,6 @@
+id: julia
+extensions: [".jl"]
+grammar: julia
+imports:
+  style: julia
+queries: tags.scm

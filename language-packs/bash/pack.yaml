@@ -1,0 +1,6 @@
+id: bash
+extensions: [".sh", ".bash"]
+grammar: bash
+imports:
+  style: bash
+queries: tags.scm

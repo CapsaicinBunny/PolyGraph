@@ -1,0 +1,6 @@
+id: dart
+extensions: [".dart"]
+grammar: dart
+imports:
+  style: dart
+queries: tags.scm

@@ -1,0 +1,6 @@
+id: ocaml
+extensions: [".ml"]
+grammar: ocaml
+imports:
+  style: ocaml
+queries: tags.scm

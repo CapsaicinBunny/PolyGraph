@@ -1,0 +1,6 @@
+id: php
+extensions: [".php"]
+grammar: php
+imports:
+  style: php
+queries: tags.scm

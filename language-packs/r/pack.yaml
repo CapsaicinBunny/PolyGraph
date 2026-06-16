@@ -1,0 +1,6 @@
+id: r
+extensions: [".r"]
+grammar: r
+imports:
+  style: r
+queries: tags.scm

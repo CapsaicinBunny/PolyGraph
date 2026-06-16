@@ -1,0 +1,6 @@
+id: ruby
+extensions: [".rb"]
+grammar: ruby
+imports:
+  style: ruby
+queries: tags.scm

@@ -6,6 +6,10 @@
 (enum_specifier name: (type_identifier) @name) @definition.enum
 (type_definition declarator: (type_identifier) @name) @definition.type
 (namespace_definition name: (namespace_identifier) @name) @definition.namespace
+
+; --- inheritance (base classes) ---
+(class_specifier (base_class_clause (type_identifier) @name)) @reference.extends
+(struct_specifier (base_class_clause (type_identifier) @name)) @reference.extends
 (function_definition
   declarator: (function_declarator
     declarator: [(identifier) (field_identifier)] @name)) @definition.function
