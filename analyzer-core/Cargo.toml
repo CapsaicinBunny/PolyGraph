@@ -23,6 +23,7 @@ tree-sitter-json = "0.21"
 
 [build-dependencies]
 napi-build = "2"
+cc = "1"
 
 [profile.release]
 opt-level = 3

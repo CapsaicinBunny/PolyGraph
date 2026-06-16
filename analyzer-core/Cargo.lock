@@ -15,6 +15,7 @@ dependencies = [
 name = "analyzer-core"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "napi",
  "napi-build",
  "napi-derive",

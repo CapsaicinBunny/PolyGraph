@@ -67,8 +67,14 @@ fn language_for(grammar: &str) -> Option<tree_sitter::Language> {
         "go" => Some(tree_sitter_go::language()),
         "scala" => Some(tree_sitter_scala::language()),
         "json" => Some(tree_sitter_json::language()),
+        // Vendored WebAssembly-text grammar (compiled by build.rs; see vendor/wat).
+        "wat" => Some(unsafe { tree_sitter_wat() }),
         _ => None,
     }
+}
+
+extern "C" {
+    fn tree_sitter_wat() -> tree_sitter::Language;
 }
 
 const REF_KINDS: [&str; 7] = [

@@ -174,6 +174,17 @@ describe("multi-language kernel", () => {
     expect(byId.has("package.json#build")).toBe(false);
   });
 
+  test("extracts WebAssembly (.wat) functions, globals, and types", async () => {
+    const { graph } = await analyzeProject({
+      "math.wat":
+        "(module\n  (type $t (func))\n  (global $count (mut i32) (i32.const 0))\n  (func $add (result i32) i32.const 0)\n)\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("math.wat#$add")).toBe("function");
+    expect(byId.get("math.wat#$count")).toBe("variable");
+    expect(byId.get("math.wat#$t")).toBe("type");
+  });
+
   test("still analyzes TypeScript through the kernel", async () => {
     const { graph } = await analyzeProject({ "a.ts": "export function foo() {}\n" });
     expect(graph.nodes.some((n) => n.id === "a.ts#foo")).toBe(true);

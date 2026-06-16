@@ -1,0 +1,7 @@
+id: wasm
+extensions: [".wat"]
+# vendored WebAssembly-text grammar (analyzer-core/vendor/wat)
+grammar: wat
+imports:
+  style: wasm
+queries: tags.scm
