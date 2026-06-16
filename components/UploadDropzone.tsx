@@ -31,9 +31,9 @@ const CAPABILITIES: { label: string; palette: string }[] = [
   { label: "Imports", palette: "gray" },
   { label: "Calls", palette: "blue" },
   { label: "Inheritance", palette: "purple" },
+  { label: "Implements", palette: "cyan" },
   { label: "Composition", palette: "teal" },
-  { label: "React / Vue / Svelte / Angular", palette: "green" },
-  { label: "ECS", palette: "orange" },
+  { label: "Instantiation", palette: "orange" },
 ];
 
 // A representative slice of the ~25 supported languages, shown on the dropzone.
