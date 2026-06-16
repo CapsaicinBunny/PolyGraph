@@ -1,8 +1,10 @@
-// Phase 1 proof-of-concept: initialize Vello on a WebGPU <canvas> with explicit
-// wgpu setup (clearer diagnostics than the bundled RenderContext) and render a card.
+// Phase 1 proof-of-concept (Vello 0.9 / wgpu 29): initialize Vello on a WebGPU
+// <canvas> and render a vector card. Vello renders into an intermediate texture,
+// which is then blitted to the surface.
 
 use vello::kurbo::{Affine, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
+use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
 use vello::{AaConfig, AaSupport, Renderer, RendererOptions, Scene};
 use wasm_bindgen::prelude::*;
@@ -15,10 +17,8 @@ pub fn start() {
 
 #[wasm_bindgen]
 pub struct VelloCanvas {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
+    context: RenderContext,
+    surface: RenderSurface<'static>,
     renderer: Renderer,
     scene: Scene,
 }
@@ -30,130 +30,93 @@ impl VelloCanvas {
         let width = canvas.width().max(1);
         let height = canvas.height().max(1);
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::BROWSER_WEBGPU,
-            ..Default::default()
-        });
-
-        let surface = instance
-            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-            .map_err(|e| JsValue::from_str(&format!("create_surface failed: {e}")))?;
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await;
-        let adapter = match adapter {
-            Some(a) => a,
-            None => {
-                let any = instance
-                    .request_adapter(&wgpu::RequestAdapterOptions::default())
-                    .await;
-                let hint = if any.is_some() {
-                    "an adapter exists but none is compatible with the canvas surface"
-                } else {
-                    "navigator.gpu.requestAdapter() returned null — WebGPU may be disabled or the GPU blocklisted (try chrome://flags/#enable-unsafe-webgpu, or check chrome://gpu)"
-                };
-                return Err(JsValue::from_str(&format!("no WebGPU adapter: {hint}")));
-            }
-        };
-
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("vello-device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_defaults()
-                        .using_resolution(adapter.limits()),
-                    memory_hints: wgpu::MemoryHints::default(),
-                },
-                None,
+        let mut context = RenderContext::new();
+        let surface = context
+            .create_surface(
+                wgpu::SurfaceTarget::Canvas(canvas),
+                width,
+                height,
+                wgpu::PresentMode::AutoVsync,
             )
             .await
-            .map_err(|e| JsValue::from_str(&format!("request_device failed: {e}")))?;
+            .map_err(|e| JsValue::from_str(&format!("create_surface failed: {e}")))?;
 
-        let caps = surface.get_capabilities(&adapter);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| !f.is_srgb())
-            .unwrap_or(caps.formats[0]);
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width,
-            height,
-            present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-        };
-        surface.configure(&device, &config);
-
+        let device = &context.devices[surface.dev_id].device;
         let renderer = Renderer::new(
-            &device,
+            device,
             RendererOptions {
-                surface_format: Some(format),
                 use_cpu: false,
                 antialiasing_support: AaSupport::area_only(),
                 num_init_threads: None,
+                pipeline_cache: None,
             },
         )
         .map_err(|e| JsValue::from_str(&format!("Renderer::new failed: {e}")))?;
 
         Ok(VelloCanvas {
-            device,
-            queue,
+            context,
             surface,
-            config,
             renderer,
             scene: Scene::new(),
         })
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.surface.configure(&self.device, &self.config);
+        self.context
+            .resize_surface(&mut self.surface, width.max(1), height.max(1));
     }
 
-    /// POC render: clear + a single rounded card with a border and left accent bar.
+    /// POC render: a single rounded card with a border and left accent bar.
     pub fn render(&mut self) -> Result<(), JsValue> {
         self.scene.reset();
 
         let card = RoundedRect::new(40.0, 40.0, 240.0, 96.0, 8.0);
         self.scene
-            .fill(Fill::NonZero, Affine::IDENTITY, Color::rgb8(28, 31, 38), None, &card);
-        self.scene
-            .stroke(&Stroke::new(1.5), Affine::IDENTITY, Color::rgb8(96, 165, 250), None, &card);
+            .fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(28, 31, 38), None, &card);
+        self.scene.stroke(
+            &Stroke::new(1.5),
+            Affine::IDENTITY,
+            Color::from_rgb8(96, 165, 250),
+            None,
+            &card,
+        );
         let accent = RoundedRect::new(40.0, 40.0, 46.0, 96.0, 3.0);
-        self.scene
-            .fill(Fill::NonZero, Affine::IDENTITY, Color::rgb8(96, 165, 250), None, &accent);
+        self.scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(96, 165, 250),
+            None,
+            &accent,
+        );
 
-        let frame = self
-            .surface
-            .get_current_texture()
-            .map_err(|e| JsValue::from_str(&format!("get_current_texture failed: {e}")))?;
-
+        let device_handle = &self.context.devices[self.surface.dev_id];
         self.renderer
-            .render_to_surface(
-                &self.device,
-                &self.queue,
+            .render_to_texture(
+                &device_handle.device,
+                &device_handle.queue,
                 &self.scene,
-                &frame,
+                &self.surface.target_view,
                 &vello::RenderParams {
-                    base_color: Color::rgb8(21, 23, 28),
-                    width: self.config.width,
-                    height: self.config.height,
+                    base_color: Color::from_rgb8(21, 23, 28),
+                    width: self.surface.config.width,
+                    height: self.surface.config.height,
                     antialiasing_method: AaConfig::Area,
                 },
             )
             .map_err(|e| JsValue::from_str(&format!("render failed: {e}")))?;
 
+        let frame = match self.surface.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            other => return Err(JsValue::from_str(&format!("surface unavailable: {other:?}"))),
+        };
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = device_handle
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vello-blit") });
+        self.surface
+            .blitter
+            .copy(&device_handle.device, &mut encoder, &self.surface.target_view, &view);
+        device_handle.queue.submit([encoder.finish()]);
         frame.present();
         Ok(())
     }

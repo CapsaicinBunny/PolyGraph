@@ -8,10 +8,9 @@ description = "WebGPU vector renderer (Vello) for the TS Module Scanner graph"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-vello = "0.3"
-# Enable wgpu's WebGPU backend for wasm (off by default) — Vello is compute-based,
-# so there's no WebGL fallback; without this, request_adapter finds no device.
-wgpu = { version = "22", features = ["webgpu"] }
+# Vello 0.9 uses a current wgpu (WebGPU enabled by default) that matches today's
+# Chrome/Dawn — older wgpu sent the removed `maxInterStageShaderComponents` limit.
+vello = "0.9"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

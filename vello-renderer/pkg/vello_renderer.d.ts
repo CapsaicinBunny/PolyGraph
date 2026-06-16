@@ -10,7 +10,7 @@ export class VelloCanvas {
      */
     static create(canvas: HTMLCanvasElement): Promise<VelloCanvas>;
     /**
-     * POC render: clear + a single rounded card with a border and left accent bar.
+     * POC render: a single rounded card with a border and left accent bar.
      */
     render(): void;
     resize(width: number, height: number): void;
@@ -29,8 +29,7 @@ export interface InitOutput {
     readonly vellocanvas_resize: (a: number, b: number, c: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h8d0a2bd66ba9dad6: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h26b056603e6c5143: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h189c8dab150afcd2: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h189c8dab150afcd2_2: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h1f61da4447a6259c: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
