@@ -1,0 +1,6 @@
+id: sql
+extensions: [".sql"]
+grammar: sql
+imports:
+  style: sql
+queries: tags.scm

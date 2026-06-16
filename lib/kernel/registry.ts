@@ -33,6 +33,7 @@ const TREE_SITTER_PACKS = [
   "r",
   "nix",
   "ocaml",
+  "sql",
   "jsonc",
   "wasm",
 ];

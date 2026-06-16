@@ -330,6 +330,19 @@ describe("multi-language kernel", () => {
     expect(byId.get("a.ml#shape")).toBe("type");
   });
 
+  test("extracts SQL tables, columns, views, and functions", async () => {
+    const { graph } = await analyzeProject({
+      "schema.sql":
+        "CREATE TABLE users (\n  id INT,\n  name VARCHAR(50)\n);\nCREATE VIEW active AS SELECT * FROM users;\nCREATE FUNCTION addone(a INT) RETURNS INT AS $$ SELECT a $$ LANGUAGE sql;\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("schema.sql#users")).toBe("struct");
+    expect(byId.get("schema.sql#id")).toBe("field");
+    expect(byId.get("schema.sql#name")).toBe("field");
+    expect(byId.get("schema.sql#active")).toBe("struct");
+    expect(byId.get("schema.sql#addone")).toBe("function");
+  });
+
   test("still analyzes TypeScript through the kernel", async () => {
     const { graph } = await analyzeProject({ "a.ts": "export function foo() {}\n" });
     expect(graph.nodes.some((n) => n.id === "a.ts#foo")).toBe(true);

@@ -86,6 +86,7 @@ fn language_for(grammar: &str) -> Option<tree_sitter::Language> {
         "julia" => Some(tree_sitter_julia::LANGUAGE.into()),
         "r" => Some(tree_sitter_r::LANGUAGE.into()),
         "nix" => Some(tree_sitter_nix::LANGUAGE.into()),
+        "sql" => Some(tree_sitter_sequel::LANGUAGE.into()),
         // Vendored WebAssembly-text grammar (compiled by build.rs; see vendor/wat).
         "wat" => Some(unsafe { LanguageFn::from_raw(tree_sitter_wat) }.into()),
         _ => None,

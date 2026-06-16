@@ -272,6 +272,7 @@ const LANG_BADGES: { test: RegExp; code: string; color: string }[] = [
   { test: /\.ml$/i, code: "ML", color: "#ec6813" },
   { test: /\.nix$/i, code: "NX", color: "#7e7eff" },
   { test: /\.r$/i, code: "R", color: "#276dc3" },
+  { test: /\.sql$/i, code: "SQ", color: "#e38c00" },
   { test: /\.jsonc?$/i, code: "{}", color: "#a3a635" },
   { test: /\.wat$/i, code: "WA", color: "#654ff0" },
   { test: /\.vue$/i, code: "VU", color: "#42b883" },
