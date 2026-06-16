@@ -18,6 +18,7 @@ import {
   Text,
 } from "@chakra-ui/react";
 import { readSourceFiles } from "@/lib/client/read-files";
+import { apiBase } from "@/lib/client/api";
 import type { AnalyzeResult, SourceFileMap } from "@/lib/graph/types";
 
 interface UploadDropzoneProps {
@@ -161,7 +162,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
     setError(null);
     setPhase("scanning");
     try {
-      const res = await fetch("/api/scan", {
+      const res = await fetch(`${apiBase()}/scan`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ path: trimmed }),
@@ -206,7 +207,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
     }
 
     try {
-      const res = await fetch("/api/analyze", {
+      const res = await fetch(`${apiBase()}/analyze`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
