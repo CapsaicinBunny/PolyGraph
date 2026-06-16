@@ -30,7 +30,7 @@ next-env.d.ts
 /analyzer-core/target
 /dist/
 
-# tauri build artifacts (the sidecar binary + native build are produced per-OS)
+# tauri build artifacts: target/ + binaries/ are produced per-OS; gen/ is generated
 /src-tauri/target/
 /src-tauri/gen/
 /src-tauri/binaries/

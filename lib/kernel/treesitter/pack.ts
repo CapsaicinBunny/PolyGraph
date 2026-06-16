@@ -27,10 +27,11 @@ interface PackMeta {
   queries?: string;
 }
 
-// POLYGRAPH_PACKS lets a packaged build (Tauri) point at the bundled
-// language-packs resource dir; otherwise resolve relative to the working
-// directory for local dev and tests.
-function packsDir(): string {
+// POLYGRAPH_PACKS lets a packaged build (the Bun sidecar binary / Tauri app)
+// point at the bundled language-packs resource dir; otherwise resolve relative
+// to the working directory for local dev and tests. `||` (not `??`) so an empty
+// value falls through to the default rather than yielding a broken path.
+export function packsDir(): string {
   return process.env.POLYGRAPH_PACKS || join(process.cwd(), "language-packs");
 }
 

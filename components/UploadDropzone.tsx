@@ -159,11 +159,17 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
   const [tauri, setTauri] = useState(false);
   useEffect(() => setTauri(isTauri()), []);
 
-  // Native folder picker (desktop only): returns a real absolute path, which the
-  // sidecar reads directly from disk.
+  // Native folder picker (desktop only): returns a real absolute path that is sent
+  // to the sidecar's /scan endpoint, which reads the folder from disk.
   async function pickFolder() {
+    let open: typeof import("@tauri-apps/plugin-dialog").open;
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      ({ open } = await import("@tauri-apps/plugin-dialog"));
+    } catch {
+      setError("The folder picker is unavailable here — type the path above instead.");
+      return;
+    }
+    try {
       const dir = await open({
         directory: true,
         multiple: false,

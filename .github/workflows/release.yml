@@ -1,7 +1,7 @@
 name: Release
 
 # Cross-platform desktop build. Gated to the release branch / version tags so it
-# doesn't run on every push (the light ci.yml covers PR-style checks).
+# doesn't run on every push (ci.yml runs typecheck/lint/test on the release branch).
 on:
   push:
     branches: [release]
@@ -24,6 +24,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
       - name: Install Linux build dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -43,7 +47,7 @@ jobs:
         run: bun run tauri:sidecar
 
       - name: Build the Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@action-v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
