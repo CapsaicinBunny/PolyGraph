@@ -185,6 +185,16 @@ describe("multi-language kernel", () => {
     expect(byId.get("math.wat#$t")).toBe("type");
   });
 
+  test("surfaces JSDoc @typedef / @callback as nodes in plain JS", async () => {
+    const { graph } = await analyzeProject({
+      "types.js":
+        "/**\n * @typedef {Object} Point\n * @property {number} x\n */\n\n/**\n * @callback Handler\n * @param {Point} p\n */\n\nexport function noop() {}\n",
+    });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("types.js#Point")).toBe("type");
+    expect(byId.get("types.js#Handler")).toBe("function");
+  });
+
   test("still analyzes TypeScript through the kernel", async () => {
     const { graph } = await analyzeProject({ "a.ts": "export function foo() {}\n" });
     expect(graph.nodes.some((n) => n.id === "a.ts#foo")).toBe(true);

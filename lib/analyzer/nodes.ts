@@ -132,6 +132,17 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
     const role = variableRole(init, name, framework);
     if (role || varDecl.isExported()) add(varDecl, name, "variable", role);
   }
+
+  // JSDoc type definitions — `@typedef` (a type) and `@callback` (a function
+  // type). These are how plain-JS code declares types without TS syntax.
+  for (const tag of file.getDescendantsOfKind(SyntaxKind.JSDocTypedefTag)) {
+    const name = tag.compilerNode.name?.getText();
+    if (name) add(tag, name, "type");
+  }
+  for (const tag of file.getDescendantsOfKind(SyntaxKind.JSDocCallbackTag)) {
+    const name = tag.compilerNode.name?.getText();
+    if (name) add(tag, name, "function");
+  }
 }
 
 /** Build the node set and declaration index for every source file in the project. */
