@@ -14,7 +14,15 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { buildView, type ViewEdgeKind } from "@/lib/aggregate";
-import type { ExternalKind, GraphModel, NodeCategory, NodeKind, NodeRole } from "@/lib/graph/types";
+import type {
+  Environment,
+  ExternalKind,
+  GraphModel,
+  NodeCategory,
+  NodeKind,
+  NodeRole,
+  Runtime,
+} from "@/lib/graph/types";
 import { EDGE_STYLES, nodeStyle } from "@/lib/graph/visual";
 import {
   DIRECTIONAL_ALGORITHMS,
@@ -37,6 +45,8 @@ interface GraphCanvasProps {
   showExternal: boolean;
   enabledNodeKinds: Set<NodeKind>;
   enabledCategories: Set<NodeCategory>;
+  enabledEnvironments: Set<Environment>;
+  enabledRuntimes: Set<Runtime>;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
 }
@@ -52,17 +62,22 @@ function GraphCanvasInner({
   showExternal,
   enabledNodeKinds,
   enabledCategories,
+  enabledEnvironments,
+  enabledRuntimes,
   onSelect,
   onToggleExpand,
 }: GraphCanvasProps) {
   const { fitView } = useReactFlow();
 
   const { rfNodes, rfEdges } = useMemo(() => {
-    // Apply node filters: files always show; externals follow their toggle; symbols
-    // must pass the kind + category filters. Edges with a hidden endpoint drop out.
+    // Apply node filters. Environment/runtime apply to every node (so you can isolate,
+    // e.g., only client-side files); kind/category apply to symbols. Externals follow
+    // their toggle. Edges with a hidden endpoint drop out.
     const visible = (n: GraphModel["nodes"][number]) => {
-      if (n.kind === "file") return true;
       if (n.kind === "external") return showExternal;
+      if (n.environment && !enabledEnvironments.has(n.environment)) return false;
+      if (n.runtimes?.length && !n.runtimes.some((r) => enabledRuntimes.has(r))) return false;
+      if (n.kind === "file") return true;
       return enabledNodeKinds.has(n.kind) && (!n.category || enabledCategories.has(n.category));
     };
     const keptIds = new Set(graph.nodes.filter(visible).map((n) => n.id));
@@ -146,6 +161,8 @@ function GraphCanvasInner({
     showExternal,
     enabledNodeKinds,
     enabledCategories,
+    enabledEnvironments,
+    enabledRuntimes,
   ]);
 
   // Re-fit the viewport after the layout changes (direction switch, expand/collapse,

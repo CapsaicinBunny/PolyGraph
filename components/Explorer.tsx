@@ -3,13 +3,23 @@
 import { useCallback, useMemo, useState } from "react";
 import { Badge, Box, Button, Flex, Heading, HStack, Text } from "@chakra-ui/react";
 import type { ViewEdgeKind } from "@/lib/aggregate";
-import type { AnalyzeResult, NodeCategory, NodeKind } from "@/lib/graph/types";
+import type {
+  AnalyzeResult,
+  Environment,
+  NodeCategory,
+  NodeKind,
+  Runtime,
+} from "@/lib/graph/types";
 import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "@/lib/graph/visual";
 import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import { GraphCanvas } from "./GraphCanvas";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 import { Sidebar } from "./Sidebar";
 import { UploadDropzone } from "./UploadDropzone";
+
+const ALL_ENVIRONMENTS: Environment[] = ["client", "server"];
+const ALL_RUNTIMES: Runtime[] = ["node", "deno", "bun"];
+const ALL_CATEGORIES: NodeCategory[] = ["ui", "feature"];
 
 interface Stats {
   fileCount: number;
@@ -27,8 +37,12 @@ export function Explorer() {
     () => new Set(FILTERABLE_NODE_KINDS),
   );
   const [enabledCategories, setEnabledCategories] = useState<Set<NodeCategory>>(
-    () => new Set<NodeCategory>(["ui", "feature"]),
+    () => new Set(ALL_CATEGORIES),
   );
+  const [enabledEnvironments, setEnabledEnvironments] = useState<Set<Environment>>(
+    () => new Set(ALL_ENVIRONMENTS),
+  );
+  const [enabledRuntimes, setEnabledRuntimes] = useState<Set<Runtime>>(() => new Set(ALL_RUNTIMES));
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [algorithm, setAlgorithm] = useState<LayoutAlgorithm>("layered");
@@ -109,6 +123,34 @@ export function Explorer() {
     });
   }, []);
 
+  const handleToggleEnvironment = useCallback((env: Environment) => {
+    setEnabledEnvironments((prev) => {
+      const next = new Set(prev);
+      if (next.has(env)) next.delete(env);
+      else next.add(env);
+      return next;
+    });
+  }, []);
+
+  const handleToggleRuntime = useCallback((rt: Runtime) => {
+    setEnabledRuntimes((prev) => {
+      const next = new Set(prev);
+      if (next.has(rt)) next.delete(rt);
+      else next.add(rt);
+      return next;
+    });
+  }, []);
+
+  const handleResetFilters = useCallback(() => {
+    setSearch("");
+    setEnabledEdgeKinds(new Set(FILTERABLE_EDGE_KINDS));
+    setEnabledNodeKinds(new Set(FILTERABLE_NODE_KINDS));
+    setEnabledCategories(new Set(ALL_CATEGORIES));
+    setEnabledEnvironments(new Set(ALL_ENVIRONMENTS));
+    setEnabledRuntimes(new Set(ALL_RUNTIMES));
+    setShowExternal(false);
+  }, []);
+
   if (!result || !graph) {
     return (
       <Box h="100vh" bg="bg" overflow="auto">
@@ -164,6 +206,11 @@ export function Explorer() {
           onToggleNodeKind={handleToggleNodeKind}
           enabledCategories={enabledCategories}
           onToggleCategory={handleToggleCategory}
+          enabledEnvironments={enabledEnvironments}
+          onToggleEnvironment={handleToggleEnvironment}
+          enabledRuntimes={enabledRuntimes}
+          onToggleRuntime={handleToggleRuntime}
+          onResetFilters={handleResetFilters}
           algorithm={algorithm}
           onAlgorithm={setAlgorithm}
           direction={direction}
@@ -181,6 +228,8 @@ export function Explorer() {
             showExternal={showExternal}
             enabledNodeKinds={enabledNodeKinds}
             enabledCategories={enabledCategories}
+            enabledEnvironments={enabledEnvironments}
+            enabledRuntimes={enabledRuntimes}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
           />

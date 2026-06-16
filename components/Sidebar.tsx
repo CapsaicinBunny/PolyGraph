@@ -10,7 +10,14 @@ import {
   NODE_STYLES,
   ROLE_STYLES,
 } from "@/lib/graph/visual";
-import type { ExternalKind, NodeCategory, NodeKind, NodeRole } from "@/lib/graph/types";
+import type {
+  Environment,
+  ExternalKind,
+  NodeCategory,
+  NodeKind,
+  NodeRole,
+  Runtime,
+} from "@/lib/graph/types";
 import { DIRECTIONAL_ALGORITHMS, type LayoutAlgorithm, type LayoutDirection } from "@/lib/layout";
 
 interface SidebarProps {
@@ -22,6 +29,11 @@ interface SidebarProps {
   onToggleNodeKind: (kind: NodeKind) => void;
   enabledCategories: Set<NodeCategory>;
   onToggleCategory: (category: NodeCategory) => void;
+  enabledEnvironments: Set<Environment>;
+  onToggleEnvironment: (env: Environment) => void;
+  enabledRuntimes: Set<Runtime>;
+  onToggleRuntime: (rt: Runtime) => void;
+  onResetFilters: () => void;
   algorithm: LayoutAlgorithm;
   onAlgorithm: (algorithm: LayoutAlgorithm) => void;
   direction: LayoutDirection;
@@ -31,6 +43,17 @@ interface SidebarProps {
 const CATEGORIES: { value: NodeCategory; label: string; color: string }[] = [
   { value: "ui", label: "UI", color: "#22c55e" },
   { value: "feature", label: "Feature", color: "#3b82f6" },
+];
+
+const ENVIRONMENTS: { value: Environment; label: string; color: string }[] = [
+  { value: "client", label: "Client", color: "#fb923c" },
+  { value: "server", label: "Server", color: "#2dd4bf" },
+];
+
+const RUNTIMES: { value: Runtime; label: string; color: string }[] = [
+  { value: "node", label: "node", color: "#4ade80" },
+  { value: "deno", label: "deno", color: "#60a5fa" },
+  { value: "bun", label: "bun", color: "#f472b6" },
 ];
 
 const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
@@ -62,6 +85,11 @@ export function Sidebar({
   onToggleNodeKind,
   enabledCategories,
   onToggleCategory,
+  enabledEnvironments,
+  onToggleEnvironment,
+  enabledRuntimes,
+  onToggleRuntime,
+  onResetFilters,
   algorithm,
   onAlgorithm,
   direction,
@@ -80,9 +108,14 @@ export function Sidebar({
       overflowY="auto"
     >
       <Box>
-        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
-          Search
-        </Heading>
+        <HStack justify="space-between" mb="2">
+          <Heading size="xs" color="fg.muted" textTransform="uppercase" letterSpacing="wide">
+            Search
+          </Heading>
+          <Button size="xs" variant="ghost" colorPalette="gray" onClick={onResetFilters}>
+            Reset
+          </Button>
+        </HStack>
         <Input
           size="sm"
           placeholder="Filter nodes by name…"
@@ -193,6 +226,56 @@ export function Sidebar({
             );
           })}
         </SimpleGrid>
+      </Box>
+
+      <Box>
+        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
+          Environment
+        </Heading>
+        <SimpleGrid columns={2} gap="1.5">
+          {ENVIRONMENTS.map((e) => {
+            const active = enabledEnvironments.has(e.value);
+            return (
+              <Button
+                key={e.value}
+                size="sm"
+                justifyContent="flex-start"
+                variant={active ? "subtle" : "ghost"}
+                colorPalette={active ? (e.value === "client" ? "orange" : "teal") : "gray"}
+                opacity={active ? 1 : 0.55}
+                onClick={() => onToggleEnvironment(e.value)}
+              >
+                <Dot color={e.color} />
+                <Text ml="2">{e.label}</Text>
+              </Button>
+            );
+          })}
+        </SimpleGrid>
+      </Box>
+
+      <Box>
+        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
+          Runtime
+        </Heading>
+        <Stack gap="1.5">
+          {RUNTIMES.map((r) => {
+            const active = enabledRuntimes.has(r.value);
+            return (
+              <Button
+                key={r.value}
+                size="sm"
+                justifyContent="flex-start"
+                variant={active ? "subtle" : "ghost"}
+                colorPalette={active ? "purple" : "gray"}
+                opacity={active ? 1 : 0.55}
+                onClick={() => onToggleRuntime(r.value)}
+              >
+                <Dot color={r.color} />
+                <Text ml="2">{r.label}</Text>
+              </Button>
+            );
+          })}
+        </Stack>
       </Box>
 
       <Box>
