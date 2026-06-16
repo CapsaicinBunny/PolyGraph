@@ -40,7 +40,9 @@ bun install
 bun run dev      # http://localhost:3000
 ```
 
-Open the app, drop a folder (or click **Choose folder**), and explore.
+Open the app, paste an absolute folder path into **Scan a folder on this machine**, and
+explore. The local server reads that folder directly from disk — nothing is uploaded or copied.
+(An in-browser folder picker is also available as a fallback.)
 
 ## Scripts
 
@@ -55,12 +57,18 @@ bun run format       # oxfmt
 
 ## How it works
 
-1. The browser reads `.ts/.tsx/.js/.jsx` files from the chosen folder (skipping
-   `node_modules`, build output, and large files) into a `{ path: source }` map.
-2. The map is POSTed to `/api/analyze`, which builds an **in-memory ts-morph project** and runs
-   four isolated analyzers (`lib/analyzer/*`) that emit a shared `GraphModel`.
-3. The client projects that model into a view (`lib/aggregate.ts`), lays it out with dagre
-   (`lib/layout.ts`), and renders it with React Flow.
+Two ways to feed it code:
+
+- **Scan a path (default).** You give it an absolute folder path; `/api/scan` walks that
+  directory on the server's filesystem (`lib/server/scan-dir.ts`), skipping `node_modules`,
+  build output, and large files, into a `{ path: source }` map. Nothing leaves your machine.
+- **In-browser picker (fallback).** The browser reads the chosen folder's files into the same
+  map and POSTs it to `/api/analyze`.
+
+Either way, the map is fed to `analyzeSources()`, which builds an **in-memory ts-morph project**
+and runs four isolated analyzers (`lib/analyzer/*`) that emit a shared `GraphModel`. The client
+projects that model into a view (`lib/aggregate.ts`), lays it out with dagre (`lib/layout.ts`),
+and renders it with React Flow.
 
 The analyzer layer is intentionally decoupled from the UI behind a single
 `analyzeSources(files) → GraphModel` boundary, so the parsing engine could later be swapped

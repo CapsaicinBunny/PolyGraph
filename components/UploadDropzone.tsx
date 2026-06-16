@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Box, Button, Heading, HStack, Progress, Stack, Text } from "@chakra-ui/react";
+import { Box, Button, Heading, HStack, Input, Progress, Stack, Text } from "@chakra-ui/react";
 import { readSourceFiles } from "@/lib/client/read-files";
 import type { AnalyzeResult, SourceFileMap } from "@/lib/graph/types";
 
@@ -9,7 +9,7 @@ interface UploadDropzoneProps {
   onResult: (result: AnalyzeResult, stats: { fileCount: number; skipped: number }) => void;
 }
 
-type Phase = "idle" | "reading" | "analyzing";
+type Phase = "idle" | "scanning" | "reading" | "analyzing";
 
 function ProgressBar({
   phase,
@@ -22,13 +22,16 @@ function ProgressBar({
 }) {
   const reading = phase === "reading";
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
-  const label = reading
-    ? `Reading files… ${progress.done}/${progress.total || "…"}`
-    : `Analyzing ${fileCount} ${fileCount === 1 ? "file" : "files"}…`;
+  const label =
+    phase === "scanning"
+      ? "Scanning folder…"
+      : reading
+        ? `Reading files… ${progress.done}/${progress.total || "…"}`
+        : `Analyzing ${fileCount} ${fileCount === 1 ? "file" : "files"}…`;
 
   return (
     <Progress.Root
-      // Indeterminate (animated stripes) while the server analyzes; determinate while reading.
+      // Determinate while reading files in-browser; indeterminate stripes otherwise.
       value={reading ? pct : null}
       w="full"
       maxW="sm"
@@ -86,6 +89,7 @@ async function filesFromDataTransfer(dt: DataTransfer): Promise<File[]> {
 
 export function UploadDropzone({ onResult }: UploadDropzoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [path, setPath] = useState("");
   const [dragging, setDragging] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState({ done: 0, total: 0 });
@@ -94,6 +98,40 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
 
   const busy = phase !== "idle";
 
+  // Primary path: the server reads the folder directly from disk.
+  async function scan(dirPath: string) {
+    const trimmed = dirPath.trim();
+    if (!trimmed) {
+      setError("Enter a folder path to scan.");
+      return;
+    }
+    setError(null);
+    setPhase("scanning");
+    try {
+      const res = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: trimmed }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Partial<AnalyzeResult> & {
+        error?: string;
+        fileCount?: number;
+        skipped?: number;
+      };
+      if (!res.ok || !data.graph) {
+        throw new Error(data.error ?? `Scan failed (${res.status})`);
+      }
+      onResult(
+        { graph: data.graph, errors: data.errors ?? [] },
+        { fileCount: data.fileCount ?? data.graph.nodes.length, skipped: data.skipped ?? 0 },
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Scan failed");
+      setPhase("idle");
+    }
+  }
+
+  // Fallback path: read files in the browser, then send their contents.
   async function analyze(files: SourceFileMap, skipped: number) {
     const count = Object.keys(files).length;
     setFileCount(count);
@@ -110,7 +148,6 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
       }
       const result = (await res.json()) as AnalyzeResult;
       onResult(result, { fileCount: count, skipped });
-      // On success the parent swaps this view out; no need to reset state.
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed");
       setPhase("idle");
@@ -133,71 +170,97 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
   }
 
   return (
-    <Box
-      w="full"
-      maxW="640px"
-      mx="auto"
-      mt="20"
-      p="10"
-      borderWidth="2px"
-      borderStyle="dashed"
-      borderColor={dragging ? "blue.400" : "border.emphasized"}
-      rounded="2xl"
-      bg={dragging ? "blue.subtle" : "bg.panel"}
-      transition="all 0.15s"
-      textAlign="center"
-      onDragOver={(e) => {
-        e.preventDefault();
-        if (!busy) setDragging(true);
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={async (e) => {
-        e.preventDefault();
-        setDragging(false);
-        if (busy) return;
-        const files = await filesFromDataTransfer(e.dataTransfer);
-        await handleFileList(files);
-      }}
-    >
-      <Stack gap="4" align="center">
-        <Text fontSize="5xl">📂</Text>
-        <Heading size="lg">Drop a project folder</Heading>
-        <Text color="fg.muted" maxW="md">
-          Drag a folder here, or pick one below. Files are read in your browser and sent for
-          analysis —
-          <Text as="span" color="fg.muted">
-            {" "}
-            node_modules and build output are skipped automatically.
+    <Stack w="full" maxW="640px" mx="auto" mt="16" gap="6">
+      {/* Primary: scan a path on this machine */}
+      <Box p="6" borderWidth="1px" borderColor="border.emphasized" rounded="2xl" bg="bg.panel">
+        <Stack gap="3">
+          <Heading size="md">Scan a folder on this machine</Heading>
+          <Text color="fg.muted" fontSize="sm">
+            Enter an absolute folder path. It's read directly from disk by the local server —
+            nothing is uploaded or copied. node_modules and build output are skipped.
           </Text>
+          <HStack gap="2">
+            <Input
+              placeholder="C:\\path\\to\\your\\project"
+              value={path}
+              disabled={busy}
+              fontFamily="mono"
+              onChange={(e) => setPath(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !busy) void scan(path);
+              }}
+            />
+            <Button colorPalette="blue" disabled={busy} onClick={() => void scan(path)}>
+              Scan
+            </Button>
+          </HStack>
+          {busy && phase === "scanning" && (
+            <ProgressBar phase={phase} progress={progress} fileCount={fileCount} />
+          )}
+        </Stack>
+      </Box>
+
+      <HStack color="fg.subtle" fontSize="xs">
+        <Box flex="1" h="1px" bg="border" />
+        <Text>or use the in-browser picker</Text>
+        <Box flex="1" h="1px" bg="border" />
+      </HStack>
+
+      {/* Fallback: pick/drop a folder; files are read in the browser */}
+      <Box
+        p="8"
+        borderWidth="2px"
+        borderStyle="dashed"
+        borderColor={dragging ? "blue.400" : "border.emphasized"}
+        rounded="2xl"
+        bg={dragging ? "blue.subtle" : "bg.panel"}
+        transition="all 0.15s"
+        textAlign="center"
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!busy) setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={async (e) => {
+          e.preventDefault();
+          setDragging(false);
+          if (busy) return;
+          const files = await filesFromDataTransfer(e.dataTransfer);
+          await handleFileList(files);
+        }}
+      >
+        <Stack gap="4" align="center">
+          <Text fontSize="4xl">📂</Text>
+          <Heading size="sm">Drop a project folder</Heading>
+
+          {busy && phase !== "scanning" ? (
+            <ProgressBar phase={phase} progress={progress} fileCount={fileCount} />
+          ) : (
+            <Button variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}>
+              Choose folder
+            </Button>
+          )}
+        </Stack>
+      </Box>
+
+      {error && (
+        <Text color="red.400" fontSize="sm" textAlign="center">
+          {error}
         </Text>
+      )}
 
-        {busy ? (
-          <ProgressBar phase={phase} progress={progress} fileCount={fileCount} />
-        ) : (
-          <Button colorPalette="blue" size="lg" onClick={() => inputRef.current?.click()}>
-            Choose folder
-          </Button>
-        )}
-
-        {error && (
-          <Text color="red.400" fontSize="sm">
-            {error}
-          </Text>
-        )}
-
-        <input
-          ref={inputRef}
-          type="file"
-          // @ts-expect-error non-standard but widely supported directory picker attributes
-          webkitdirectory=""
-          directory=""
-          multiple
-          style={{ display: "none" }}
-          onChange={(e) => {
-            if (e.target.files) void handleFileList(e.target.files);
-          }}
-        />
-      </Stack>
-    </Box>
+      <input
+        ref={inputRef}
+        type="file"
+        // @ts-expect-error non-standard but widely supported directory picker attributes
+        webkitdirectory=""
+        directory=""
+        multiple
+        style={{ display: "none" }}
+        onChange={(e) => {
+          if (e.target.files) void handleFileList(e.target.files);
+        }}
+      />
+    </Stack>
   );
 }

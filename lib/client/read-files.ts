@@ -1,9 +1,5 @@
+import { IGNORE_DIR, MAX_FILE_BYTES, SOURCE_EXT } from "../file-filters";
 import type { SourceFileMap } from "../graph/types";
-
-const SOURCE_EXT = /\.(tsx?|jsx?|mts|cts|mjs|cjs)$/i;
-const IGNORE_DIR =
-  /(^|\/)(node_modules|\.git|\.next|dist|build|out|coverage|\.turbo|\.cache)(\/|$)/;
-const MAX_FILE_BYTES = 1_000_000; // skip very large files (likely generated/minified)
 
 function relativePath(file: File): string {
   const raw = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
