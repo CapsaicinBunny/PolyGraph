@@ -21,6 +21,10 @@ export class VelloCanvas {
      * Replace the graph data (JSON: { nodes:[...], edges:[...] }).
      */
     set_data(json: string): void;
+    /**
+     * Marching-ants dash offset (screen px), advanced by the animation loop.
+     */
+    set_phase(phase: number): void;
     set_search(query: string): void;
     set_selection(id?: string | null): void;
 }
@@ -40,6 +44,7 @@ export interface InitOutput {
     readonly vellocanvas_resize: (a: number, b: number, c: number) => void;
     readonly vellocanvas_set_camera: (a: number, b: number, c: number, d: number) => void;
     readonly vellocanvas_set_data: (a: number, b: number, c: number) => [number, number];
+    readonly vellocanvas_set_phase: (a: number, b: number) => void;
     readonly vellocanvas_set_search: (a: number, b: number, c: number) => void;
     readonly vellocanvas_set_selection: (a: number, b: number, c: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h8d0a2bd66ba9dad6: (a: number, b: number, c: any) => [number, number];

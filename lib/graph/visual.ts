@@ -121,3 +121,51 @@ export function glyphFor(kind: NodeKind, role?: NodeRole): string {
   if (role) return ROLE_GLYPH[role];
   return KIND_GLYPH[kind];
 }
+
+/**
+ * Vector icon shape drawn by the Vello renderer (Unicode glyphs aren't in the
+ * bundled font, so cards draw real shapes instead). One of a small primitive set.
+ */
+export type IconShape =
+  | "doc"
+  | "diamond"
+  | "diamond-o"
+  | "rounded"
+  | "bars"
+  | "circle"
+  | "hexagon"
+  | "square"
+  | "arrow";
+
+const KIND_SHAPE: Record<NodeKind, IconShape> = {
+  file: "doc",
+  class: "diamond",
+  interface: "diamond-o",
+  type: "rounded",
+  enum: "bars",
+  function: "circle",
+  component: "hexagon",
+  variable: "square",
+  external: "arrow",
+};
+
+const ROLE_SHAPE: Record<NodeRole, IconShape> = {
+  "react-component": "hexagon",
+  "vue-component": "hexagon",
+  "svelte-component": "hexagon",
+  "angular-component": "hexagon",
+  "angular-service": "circle",
+  "angular-module": "square",
+  "angular-directive": "diamond",
+  "angular-pipe": "arrow",
+  "ecs-component": "diamond",
+  "ecs-system": "hexagon",
+  "ecs-entity": "circle",
+};
+
+/** Icon shape for a node: external arrow, else role shape, else kind shape. */
+export function iconShapeFor(kind: NodeKind, role?: NodeRole): IconShape {
+  if (kind === "external") return "arrow";
+  if (role) return ROLE_SHAPE[role];
+  return KIND_SHAPE[kind];
+}

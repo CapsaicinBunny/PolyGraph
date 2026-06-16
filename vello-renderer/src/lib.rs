@@ -5,7 +5,7 @@
 use serde::Deserialize;
 use skrifa::instance::{LocationRef, Size};
 use skrifa::{FontRef, MetadataProvider};
-use vello::kurbo::{Affine, Line, Point, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, CubicBez, Point, RoundedRect, Stroke};
 use vello::peniko::{Blob, Color, Fill, FontData};
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu;
@@ -15,16 +15,19 @@ use web_sys::HtmlCanvasElement;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/Inter-Regular.ttf");
 
-const PANEL_FILL: Color = Color::from_rgb8(28, 31, 38);
-const BORDER: Color = Color::from_rgb8(59, 65, 76);
-const SELECT: Color = Color::from_rgb8(96, 165, 250);
-const MATCH: Color = Color::from_rgb8(250, 204, 21);
-const LABEL: Color = Color::from_rgb8(226, 232, 240);
+// Light cards on a charcoal canvas (matches the original React Flow look).
+const CARD_FILL: Color = Color::from_rgb8(248, 250, 252);
+const CARD_BORDER: Color = Color::from_rgb8(203, 213, 225);
+const SELECT: Color = Color::from_rgb8(37, 99, 235);
+const MATCH: Color = Color::from_rgb8(234, 179, 8);
+const LABEL: Color = Color::from_rgb8(30, 41, 59);
+const BADGE: Color = Color::from_rgb8(100, 116, 139);
 const BASE: Color = Color::from_rgb8(21, 23, 28);
 
 const FONT_SIZE: f32 = 13.0;
 const GLYPH_SIZE: f32 = 13.0;
-const LABEL_MIN_SCALE: f64 = 0.5; // only lay out labels when readable
+const LABEL_MIN_SCALE: f64 = 0.5; // only lay out labels/icons when readable
+const ICON_R: f64 = 6.0; // icon half-size in world units
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -41,11 +44,10 @@ struct NodeData {
     /// Accent color (border / glyph / left bar) as [r,g,b].
     color: [u8; 3],
     label: String,
-    glyph: String,
+    #[serde(default)]
+    shape: String,
     #[serde(default)]
     badge: String,
-    #[serde(default)]
-    external: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -55,8 +57,6 @@ struct EdgeData {
     x2: f64,
     y2: f64,
     color: [u8; 3],
-    #[serde(default)]
-    dashed: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -80,6 +80,7 @@ pub struct VelloCanvas {
     vh: f64,
     selected: Option<String>,
     search: String,
+    dash_phase: f64,
 }
 
 #[wasm_bindgen]
@@ -126,6 +127,7 @@ impl VelloCanvas {
             vh: height as f64,
             selected: None,
             search: String::new(),
+            dash_phase: 0.0,
         })
     }
 
@@ -155,6 +157,11 @@ impl VelloCanvas {
 
     pub fn set_search(&mut self, query: String) {
         self.search = query.to_lowercase();
+    }
+
+    /// Marching-ants dash offset (screen px), advanced by the animation loop.
+    pub fn set_phase(&mut self, phase: f64) {
+        self.dash_phase = phase;
     }
 
     /// Camera (screen units): world point -> screen = world * scale + (cam_x, cam_y).
@@ -212,15 +219,30 @@ impl VelloCanvas {
             x + w >= left && x <= right && y + h >= top && y <= bottom
         };
 
-        // Edges first (under nodes).
+        // Edges first (under the cards). Drawn in screen space so line width and
+        // dash size stay constant at any zoom; curved + animated marching ants.
+        let dash = Stroke::new(1.4).with_dashes(self.dash_phase, [6.0, 6.0]);
+        let to_screen =
+            |x: f64, y: f64| -> (f64, f64) { (x * self.cam_scale + self.cam_x, y * self.cam_scale + self.cam_y) };
         for e in &self.data.edges {
-            if !on_screen(e.x1.min(e.x2), e.y1.min(e.y2), (e.x1 - e.x2).abs(), (e.y1 - e.y2).abs()) {
+            let (sx1, sy1) = to_screen(e.x1, e.y1);
+            let (sx2, sy2) = to_screen(e.x2, e.y2);
+            if sx1.max(sx2) < 0.0 || sx1.min(sx2) > self.vw || sy1.max(sy2) < 0.0 || sy1.min(sy2) > self.vh {
                 continue;
             }
+            let dx = sx2 - sx1;
+            let dy = sy2 - sy1;
+            // Smooth S-curve: pull control points along the dominant axis (like React Flow).
+            let (c1, c2) = if dx.abs() >= dy.abs() {
+                let mid = sx1 + dx * 0.5;
+                (Point::new(mid, sy1), Point::new(mid, sy2))
+            } else {
+                let mid = sy1 + dy * 0.5;
+                (Point::new(sx1, mid), Point::new(sx2, mid))
+            };
+            let curve = CubicBez::new(Point::new(sx1, sy1), c1, c2, Point::new(sx2, sy2));
             let color = Color::from_rgb8(e.color[0], e.color[1], e.color[2]);
-            let line = Line::new(Point::new(e.x1, e.y1), Point::new(e.x2, e.y2));
-            self.scene
-                .stroke(&Stroke::new(1.25), camera, color, None, &line);
+            self.scene.stroke(&dash, Affine::IDENTITY, color, None, &curve);
         }
 
         let label_lod = self.cam_scale >= LABEL_MIN_SCALE;
@@ -231,17 +253,14 @@ impl VelloCanvas {
                 continue;
             }
             let accent = Color::from_rgb8(n.color[0], n.color[1], n.color[2]);
+            let selected = Some(&n.id) == self.selected.as_ref();
             let card = RoundedRect::new(n.x, n.y, n.x + n.w, n.y + n.h, 6.0);
-            self.scene.fill(Fill::NonZero, camera, PANEL_FILL, None, &card);
-            let border = if Some(&n.id) == self.selected.as_ref() {
-                SELECT
-            } else {
-                BORDER
-            };
-            let stroke_w = if n.external { 1.0 } else { 1.2 };
+            self.scene.fill(Fill::NonZero, camera, CARD_FILL, None, &card);
+            let border = if selected { SELECT } else { CARD_BORDER };
+            let stroke_w = if selected { 1.8 } else { 1.0 };
             self.scene
                 .stroke(&Stroke::new(stroke_w), camera, border, None, &card);
-            // Left accent bar.
+            // Left accent bar (color-codes the node kind/role/source family).
             let bar = RoundedRect::new(n.x, n.y, n.x + 4.0, n.y + n.h, 2.0);
             self.scene.fill(Fill::NonZero, camera, accent, None, &bar);
 
@@ -254,28 +273,24 @@ impl VelloCanvas {
             if !label_lod {
                 continue;
             }
-            // Glyph + label text, vertically centered, clipped to the card width.
+
+            // Vector icon (in the accent color) — replaces the unrenderable glyph chars.
+            draw_icon(&mut self.scene, camera, &n.shape, n.x + 16.0, n.y + n.h / 2.0, ICON_R, accent);
+
+            // Filename label (dark), vertically centered, clipped to the card width.
             let baseline = n.y + n.h / 2.0 + 4.0;
-            let text = if n.badge.is_empty() {
-                format!("{}  {}", n.glyph, n.label)
-            } else {
-                format!("{}  {}  {}", n.glyph, n.label, n.badge)
-            };
-            let max_w = n.w - 18.0;
-            let mut gx = n.x + 12.0;
-            let start = gx;
-            let glyphs: Vec<Glyph> = text
+            let label_x = n.x + 28.0;
+            let max_w = n.w - 38.0;
+            let mut gx = label_x;
+            let glyphs: Vec<Glyph> = n
+                .label
                 .chars()
                 .filter_map(|c| {
-                    if gx - start > max_w {
+                    if gx - label_x > max_w {
                         return None;
                     }
                     let gid = charmap.map(c)?;
-                    let g = Glyph {
-                        id: gid.to_u32(),
-                        x: gx as f32,
-                        y: baseline as f32,
-                    };
+                    let g = Glyph { id: gid.to_u32(), x: gx as f32, y: baseline as f32 };
                     gx += metrics.advance_width(gid).unwrap_or(0.0) as f64;
                     Some(g)
                 })
@@ -286,6 +301,31 @@ impl VelloCanvas {
                 .transform(camera)
                 .brush(LABEL)
                 .draw(Fill::NonZero, glyphs.into_iter());
+
+            // Symbol-count badge (muted), right after the label.
+            if !n.badge.is_empty() {
+                let mut bx = gx + 8.0;
+                let badge_max = n.x + n.w - 10.0;
+                let bglyphs: Vec<Glyph> = n
+                    .badge
+                    .chars()
+                    .filter_map(|c| {
+                        if bx > badge_max {
+                            return None;
+                        }
+                        let gid = charmap.map(c)?;
+                        let g = Glyph { id: gid.to_u32(), x: bx as f32, y: baseline as f32 };
+                        bx += metrics.advance_width(gid).unwrap_or(0.0) as f64;
+                        Some(g)
+                    })
+                    .collect();
+                self.scene
+                    .draw_glyphs(&self.font)
+                    .font_size(FONT_SIZE)
+                    .transform(camera)
+                    .brush(BADGE)
+                    .draw(Fill::NonZero, bglyphs.into_iter());
+            }
         }
 
         let device_handle = &self.context.devices[self.surface.dev_id];
@@ -319,4 +359,86 @@ impl VelloCanvas {
         frame.present();
         Ok(())
     }
+}
+
+/// Draw a small vector icon centered at (cx, cy) with half-size `r`, in `color`.
+fn draw_icon(scene: &mut Scene, t: Affine, shape: &str, cx: f64, cy: f64, r: f64, color: Color) {
+    match shape {
+        "circle" => {
+            scene.fill(Fill::NonZero, t, color, None, &Circle::new(Point::new(cx, cy), r));
+        }
+        "square" => {
+            let s = RoundedRect::new(cx - r, cy - r, cx + r, cy + r, 1.0);
+            scene.fill(Fill::NonZero, t, color, None, &s);
+        }
+        "rounded" => {
+            let s = RoundedRect::new(cx - r, cy - r, cx + r, cy + r, r * 0.5);
+            scene.fill(Fill::NonZero, t, color, None, &s);
+        }
+        "diamond" => {
+            scene.fill(Fill::NonZero, t, color, None, &diamond(cx, cy, r));
+        }
+        "diamond-o" => {
+            scene.stroke(&Stroke::new(1.5), t, color, None, &diamond(cx, cy, r));
+        }
+        "hexagon" => {
+            scene.fill(Fill::NonZero, t, color, None, &hexagon(cx, cy, r));
+        }
+        "bars" => {
+            for i in -1..=1 {
+                let yy = cy + i as f64 * (r * 0.7);
+                let bar = RoundedRect::new(cx - r, yy - r * 0.16, cx + r, yy + r * 0.16, r * 0.16);
+                scene.fill(Fill::NonZero, t, color, None, &bar);
+            }
+        }
+        "arrow" => {
+            let mut shaft = BezPath::new();
+            shaft.move_to((cx - r, cy + r));
+            shaft.line_to((cx + r, cy - r));
+            scene.stroke(&Stroke::new(1.5), t, color, None, &shaft);
+            let mut head = BezPath::new();
+            head.move_to((cx + r * 0.1, cy - r));
+            head.line_to((cx + r, cy - r));
+            head.line_to((cx + r, cy - r * 0.1));
+            scene.stroke(&Stroke::new(1.5), t, color, None, &head);
+        }
+        // "doc" (files) and any unknown shape: a page outline with a folded corner.
+        _ => {
+            let w = r * 1.3;
+            let h = r * 1.7;
+            let mut p = BezPath::new();
+            p.move_to((cx - w, cy - h));
+            p.line_to((cx + w * 0.35, cy - h));
+            p.line_to((cx + w, cy - h * 0.5));
+            p.line_to((cx + w, cy + h));
+            p.line_to((cx - w, cy + h));
+            p.close_path();
+            scene.stroke(&Stroke::new(1.4), t, color, None, &p);
+        }
+    }
+}
+
+fn diamond(cx: f64, cy: f64, r: f64) -> BezPath {
+    let mut p = BezPath::new();
+    p.move_to((cx, cy - r));
+    p.line_to((cx + r, cy));
+    p.line_to((cx, cy + r));
+    p.line_to((cx - r, cy));
+    p.close_path();
+    p
+}
+
+fn hexagon(cx: f64, cy: f64, r: f64) -> BezPath {
+    let mut p = BezPath::new();
+    for i in 0..6 {
+        let a = std::f64::consts::FRAC_PI_3 * i as f64 - std::f64::consts::FRAC_PI_2;
+        let pt = (cx + r * a.cos(), cy + r * a.sin());
+        if i == 0 {
+            p.move_to(pt);
+        } else {
+            p.line_to(pt);
+        }
+    }
+    p.close_path();
+    p
 }

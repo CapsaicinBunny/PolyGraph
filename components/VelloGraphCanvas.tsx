@@ -17,6 +17,7 @@ interface VelloHandle {
   set_camera: (x: number, y: number, scale: number) => void;
   set_selection: (id: string | undefined) => void;
   set_search: (q: string) => void;
+  set_phase: (p: number) => void;
   fit: () => Float64Array | number[];
   pick: (px: number, py: number) => string | undefined;
   resize: (w: number, h: number) => void;
@@ -91,9 +92,8 @@ export function VelloGraphCanvas(props: GraphCanvasProps) {
       h: n.height,
       color: hexToRgb(n.color),
       label: n.label,
-      glyph: n.glyph,
+      shape: n.shape,
       badge: n.isFile && n.symbolCount > 0 ? `+${n.symbolCount}` : "",
-      external: n.isExternal,
     }));
     const edges = scene.edges
       .filter((e) => e.kind !== "contains")
@@ -101,7 +101,7 @@ export function VelloGraphCanvas(props: GraphCanvasProps) {
         const a = center.get(e.source);
         const b = center.get(e.target);
         if (!a || !b) return null;
-        return { x1: a[0], y1: a[1], x2: b[0], y2: b[1], color: hexToRgb(e.color), dashed: e.dashed };
+        return { x1: a[0], y1: a[1], x2: b[0], y2: b[1], color: hexToRgb(e.color) };
       })
       .filter(Boolean);
     return JSON.stringify({ nodes, edges });
@@ -121,6 +121,21 @@ export function VelloGraphCanvas(props: GraphCanvasProps) {
         raf = 0;
         vcRef.current?.render();
       });
+    };
+
+    // Marching-ants animation: advance the dash phase + redraw each frame, but
+    // only while zoomed in enough to perceive it (keeps the zoomed-out case — where
+    // the whole graph is on screen — cheap, since dashes are sub-pixel there anyway).
+    const ANIM_MIN_SCALE = 0.35;
+    let animRaf = 0;
+    let phase = 0;
+    const animate = () => {
+      animRaf = requestAnimationFrame(animate);
+      const vc = vcRef.current;
+      if (!vc || cam.current.scale < ANIM_MIN_SCALE) return;
+      phase = (phase + 0.6) % 12;
+      vc.set_phase(-phase);
+      vc.render();
     };
 
     const sizeCanvas = () => {
@@ -212,6 +227,7 @@ export function VelloGraphCanvas(props: GraphCanvasProps) {
         el.addEventListener("pointerup", onUp);
         ro.observe(el);
         setReady(true);
+        animate();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
@@ -220,6 +236,7 @@ export function VelloGraphCanvas(props: GraphCanvasProps) {
     return () => {
       destroyed = true;
       if (raf) cancelAnimationFrame(raf);
+      if (animRaf) cancelAnimationFrame(animRaf);
       ro.disconnect();
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("pointerdown", onDown);
