@@ -2,10 +2,29 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Box } from "@chakra-ui/react";
+import type { ViewEdgeKind } from "@/lib/aggregate";
 import type { SceneFilters } from "@/lib/graph/scene";
-import type { GraphCanvasProps } from "./GraphCanvas";
+import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
+import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import { LayoutOverlay } from "./LayoutOverlay";
 import { useScene } from "./useScene";
+
+export interface GraphViewProps {
+  graph: GraphModel;
+  expanded: Set<string>;
+  enabledEdgeKinds: Set<ViewEdgeKind>;
+  search: string;
+  selectedId: string | null;
+  algorithm: LayoutAlgorithm;
+  direction: LayoutDirection;
+  showExternal: boolean;
+  enabledNodeKinds: Set<NodeKind>;
+  enabledCategories: Set<NodeCategory>;
+  enabledEnvironments: Set<Environment>;
+  enabledRuntimes: Set<Runtime>;
+  onSelect: (id: string) => void;
+  onToggleExpand: (fileId: string) => void;
+}
 
 function hexToRgb(hex: string): [number, number, number] {
   const v = Number.parseInt(hex.replace("#", ""), 16);
@@ -25,7 +44,7 @@ interface VelloHandle {
   free?: () => void;
 }
 
-export function VelloGraphCanvas(props: GraphCanvasProps) {
+export function VelloGraphCanvas(props: GraphViewProps) {
   const {
     graph,
     expanded,

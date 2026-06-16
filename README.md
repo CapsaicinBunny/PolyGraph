@@ -1,9 +1,9 @@
 # TS Module Scanner
 
-An interactive dependency-graph analyzer for TypeScript / JavaScript codebases. Drop in a
-project folder and explore a node graph of its **modules, classes, interfaces, functions, and
-React components** — and the relationships between them: imports, calls, inheritance, and JSX
-component usage.
+An interactive dependency-graph analyzer for **TypeScript/JavaScript, Python, Java, Kotlin,
+Rust, and Go** codebases. Drop in a project folder and explore a node graph of its modules,
+classes, interfaces, structs, traits, functions, and components — and the relationships between
+them: imports, calls, inheritance, instantiation, and JSX component usage.
 
 ![node graph](docs/screenshot.png)
 
@@ -27,10 +27,9 @@ component usage.
   - **Angular** — `@Component` / `@Directive` / `@Pipe` / `@Injectable` / `@NgModule`
   - **ECS** — `ecs-component` / `ecs-system` / `ecs-entity` from naming (`*Component`/`*System`/
     `*Entity`), lowercase decorators, and `defineSystem` / `defineQuery` (in a bitECS context)
-- **Two renderers** — a **React Flow** canvas (rich: minimap, animated edges, draggable nodes)
-  for small/medium graphs, and a **GPU renderer** (PixiJS v8, WebGPU with WebGL fallback) that
-  draws nodes/edges as GPU primitives and scales to thousands of nodes. The toolbar
-  **Renderer** toggle switches between them; large graphs (>1200 nodes) default to GPU.
+- **GPU vector renderer** — a Vello (Rust→WASM, WebGPU) canvas draws every card, edge, and
+  label as a crisp GPU-rendered vector, with color-coded curved animated edges and pan/zoom
+  that stay smooth at thousands of nodes.
 - **External dependencies** (toggle in the toolbar, off by default) — imported npm packages,
   Node builtins, and `Bun` / `Deno` / `process` API usage appear as dashed external nodes,
   color-coded by source family (npm / Node / Deno / Bun); edges into them are tinted to match.
@@ -51,14 +50,14 @@ component usage.
 
 ## Stack
 
-| Concern       | Choice                                      |
-| ------------- | ------------------------------------------- |
-| Framework     | Next.js (App Router)                        |
-| Runtime / PM  | Bun                                         |
-| UI            | Chakra UI v3                                |
-| Graph         | React Flow (`@xyflow/react`) + dagre layout |
-| Code analysis | ts-morph (TypeScript compiler)              |
-| Lint / format | oxlint / oxfmt                              |
+| Concern       | Choice                                                                      |
+| ------------- | --------------------------------------------------------------------------- |
+| Framework     | Next.js (App Router)                                                        |
+| Runtime / PM  | Bun                                                                         |
+| UI            | Chakra UI v3                                                                |
+| Graph         | Vello (Rust→WASM, WebGPU) vector renderer + dagre layout                    |
+| Code analysis | ts-morph (TS/JS) + native tree-sitter core (Python, Java, Kotlin, Rust, Go) |
+| Lint / format | oxlint / oxfmt                                                              |
 
 ## Getting started
 
@@ -92,14 +91,23 @@ Two ways to feed it code:
 - **In-browser picker (fallback).** The browser reads the chosen folder's files into the same
   map and POSTs it to `/api/analyze`.
 
-Either way, the map is fed to `analyzeSources()`, which builds an **in-memory ts-morph project**
-and runs four isolated analyzers (`lib/analyzer/*`) that emit a shared `GraphModel`. The client
-projects that model into a view (`lib/aggregate.ts`), lays it out with dagre (`lib/layout.ts`),
-and renders it with React Flow.
+Either way, the map is fed to the **language kernel** (`analyzeProject()`, `lib/kernel/`), which
+buckets files by extension and hands each to a provider that emits a shared `GraphModel`:
 
-The analyzer layer is intentionally decoupled from the UI behind a single
-`analyzeSources(files) → GraphModel` boundary, so the parsing engine could later be swapped
-(e.g. for the native Go `tsgo` compiler once it exposes a comparable API).
+- **TypeScript / JavaScript** → a precise, ts-morph-backed provider (`lib/analyzer/`) with
+  type-resolved calls and JSX component/renders detection.
+- **Python, Java, Kotlin, Rust, Go** → declarative tree-sitter packs (`language-packs/<id>/`,
+  a `pack.yaml` + `tags.scm`) run by a native Rust core (`analyzer-core/`, napi-rs). Adding a
+  language is mostly a new pack folder.
+
+The client projects the merged model into a view (`lib/aggregate.ts`), lays it out with dagre
+off the main thread (`lib/layout.worker.ts`), and renders it on a **Vello WebGPU vector canvas**
+(`vello-renderer/`, Rust→WASM) — cards, edges, and text are GPU-drawn vectors, so it stays smooth
+at thousands of nodes.
+
+The kernel is decoupled from the UI behind a single `analyzeProject(files) → GraphModel`
+boundary, and each language is a plugin: a declarative pack, or a precise code-backed provider
+like ts-morph.
 
 ## Project layout
 
@@ -107,12 +115,16 @@ The analyzer layer is intentionally decoupled from the UI behind a single
 lib/
   graph/types.ts      shared GraphModel types + id helpers
   graph/visual.ts     colors / labels per node & edge kind
-  analyzer/           in-memory project + the four sub-analyzers + composer
+  kernel/             language kernel: provider interface, registry, tree-sitter glue
+  analyzer/           ts-morph TypeScript/JS provider (the precise plugin)
   aggregate.ts        collapse/expand view projection
-  layout.ts           dagre layout
+  layout.ts           dagre layout (+ layout.worker.ts off-main-thread)
   client/read-files.ts browser folder reader
+language-packs/       declarative tree-sitter packs (python, java, kotlin, rust, go)
+analyzer-core/        native Rust (napi-rs) tree-sitter analysis core
+vello-renderer/       Rust→WASM WebGPU vector renderer
 app/
   page.tsx            renders the Explorer
   api/analyze/route.ts analysis endpoint (Node.js runtime)
-components/           Explorer, GraphCanvas, Sidebar, NodeDetailPanel, UploadDropzone, nodes/
+components/           Explorer, VelloGraphCanvas, Sidebar, NodeDetailPanel, UploadDropzone
 ```
