@@ -179,7 +179,7 @@ export function Explorer() {
   return (
     <Flex direction="column" h="100vh" bg="bg">
       <HStack px="4" py="3" borderBottomWidth="1px" borderColor="border" gap="4" bg="bg.panel">
-        <Heading size="md">Code Atlas</Heading>
+        <Heading size="md">PolyGraph</Heading>
         <HStack gap="2" color="fg.muted" fontSize="sm">
           <Badge variant="subtle">{graph.nodes.length} nodes</Badge>
           <Badge variant="subtle">{graph.edges.length} edges</Badge>

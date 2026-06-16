@@ -1,4 +1,4 @@
-# Code Atlas
+# PolyGraph
 
 An interactive dependency-graph analyzer for codebases across **~25 languages** — TypeScript/
 JavaScript, Python, Java, Kotlin, Rust, Go, Scala, C#, F#, C, C++, Objective-C, Swift, Zig,

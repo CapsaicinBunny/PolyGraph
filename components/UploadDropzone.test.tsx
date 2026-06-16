@@ -13,7 +13,7 @@ describe("UploadDropzone", () => {
       </Provider>,
     );
 
-    expect(screen.getByRole("heading", { name: "Code Atlas" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "PolyGraph" })).toBeDefined();
     expect(screen.getByRole("button", { name: /scan/i })).toBeDefined();
     expect(screen.getByText("Drop a project folder")).toBeDefined();
   });

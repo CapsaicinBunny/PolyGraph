@@ -256,7 +256,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
           </Box>
           <Stack gap="1.5" align="center">
             <Heading size={{ base: "xl", md: "2xl" }} letterSpacing="tight">
-              Code Atlas
+              PolyGraph
             </Heading>
             <Text color="fg.muted" maxW="lg">
               Map a codebase into an interactive graph — modules, types, functions, and what calls
