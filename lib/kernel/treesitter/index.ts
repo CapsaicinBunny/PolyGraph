@@ -1,45 +1,31 @@
-// Build a LanguageProvider from a declarative pack. The grammar + query are
-// loaded once (async) at construction; afterwards analyze() is synchronous —
-// tree-sitter parsing itself is sync and fast. Each file is parsed, queried, and
-// freed; the per-file extracts are then resolved into the universal graph IR.
+// Build a LanguageProvider from a declarative pack, backed by the native
+// tree-sitter core. The pack (grammar name + query + import style) is loaded in
+// JS; parsing, extraction, and cross-file resolution all happen in Rust, which
+// returns the finished graph fragment as JSON.
 
-import type { AnalyzeError } from "../../graph/types";
+import type { AnalyzeError, GraphEdge, GraphNode } from "../../graph/types";
 import type { LanguageProvider, ProviderResult } from "../provider";
-import { extractFile, type FileExtract } from "./extract";
+import { type AnalyzerCore, loadCore } from "./core";
 import { loadPack } from "./pack";
-import { buildGraphFromExtracts } from "./resolve";
-import { createParser, createQuery, loadLanguage } from "./runtime";
+
+interface CoreOutput {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  errors: AnalyzeError[];
+}
 
 export async function createTreeSitterProvider(packId: string): Promise<LanguageProvider> {
   const pack = await loadPack(packId);
-  const language = await loadLanguage(pack.grammar);
-  const parser = createParser(language);
-  const query = createQuery(language, pack.query);
+  // Fail fast here if the native core is missing so the registry can fall back.
+  const core: AnalyzerCore = loadCore();
 
   return {
     id: pack.id,
     extensions: pack.extensions,
     analyze(files: Record<string, string>): ProviderResult {
-      const errors: AnalyzeError[] = [];
-      const perFile = new Map<string, FileExtract>();
-      for (const [path, text] of Object.entries(files)) {
-        const norm = path.replace(/\\/g, "/").replace(/^\.\//, "");
-        let tree = null;
-        try {
-          tree = parser.parse(text);
-          if (!tree) {
-            errors.push({ filePath: norm, message: "Parse failed" });
-            continue;
-          }
-          perFile.set(norm, extractFile(norm, tree, query));
-        } catch (e) {
-          errors.push({ filePath: norm, message: e instanceof Error ? e.message : "Parse error" });
-        } finally {
-          tree?.delete();
-        }
-      }
-      const graph = buildGraphFromExtracts(perFile, pack.importStyle);
-      return { nodes: graph.nodes, edges: graph.edges, errors };
+      const json = core.analyze(pack.grammar, pack.query, pack.importStyle, JSON.stringify(files));
+      const out = JSON.parse(json) as CoreOutput;
+      return { nodes: out.nodes, edges: out.edges, errors: out.errors };
     },
   };
 }

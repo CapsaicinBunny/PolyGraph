@@ -26,3 +26,5 @@ next-env.d.ts
 
 # rust / wasm build artifacts
 /vello-renderer/target
+
+/analyzer-core/target
