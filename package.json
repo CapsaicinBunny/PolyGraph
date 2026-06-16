@@ -4,8 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:next": "next dev -p 3003",
+    "dev:sidecar": "bun run sidecar/server.ts",
     "build": "next build",
+    "build:sidecar": "bun build --compile sidecar/server.ts --outfile dist/polygraph-sidecar",
     "start": "next start",
     "typecheck": "tsgo --noEmit",
     "lint": "oxlint --type-aware",
