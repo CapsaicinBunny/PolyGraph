@@ -56,16 +56,19 @@ describe("multi-language kernel", () => {
         "package com.app;\nimport com.app.Service;\npublic class User extends Base {\n  void save() { new Service().run(); }\n}\n",
     };
     const { graph } = await analyzeProject(files);
-    const ids = new Set(graph.nodes.map((n) => n.id));
-    expect(ids.has("com/app/User.java#User")).toBe(true);
-    expect(ids.has("com/app/Base.java#Base")).toBe(true);
+    const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(byId.get("com/app/User.java#User")).toBe("class");
+    expect(byId.get("com/app/Base.java#Base")).toBe("class");
+    // members now surface as their own nodes
+    expect(byId.get("com/app/User.java#save")).toBe("method");
 
     const hasEdge = (s: string, t: string, k: string) =>
       graph.edges.some((e) => e.source === s && e.target === t && e.kind === k);
     // extends resolves with no import (same-package global fallback)
     expect(hasEdge("com/app/User.java#User", "com/app/Base.java#Base", "extends")).toBe(true);
     expect(hasEdge("com/app/User.java", "com/app/Service.java", "import")).toBe(true);
-    expect(hasEdge("com/app/User.java#User", "com/app/Service.java#Service", "instantiates")).toBe(
+    // the `new Service()` is inside save(), so it attributes to the method node
+    expect(hasEdge("com/app/User.java#save", "com/app/Service.java#Service", "instantiates")).toBe(
       true,
     );
   });
@@ -99,7 +102,7 @@ describe("multi-language kernel", () => {
     const byId = new Map(graph.nodes.map((n) => [n.id, n.kind]));
     // Each Rust construct maps to its own distinct node kind.
     expect(byId.get("shapes.rs#Circle")).toBe("struct");
-    expect(byId.get("shapes.rs#U")).toBe("struct");
+    expect(byId.get("shapes.rs#U")).toBe("union");
     expect(byId.get("shapes.rs#Kind")).toBe("enum");
     expect(byId.get("shapes.rs#Draw")).toBe("trait");
     expect(byId.get("shapes.rs#Id")).toBe("type");
@@ -129,7 +132,7 @@ describe("multi-language kernel", () => {
     expect(byId.get("model.go#Store")).toBe("interface");
     expect(byId.get("model.go#NewUser")).toBe("function");
     expect(byId.get("model.go#Version")).toBe("constant"); // package-level const
-    expect(byId.get("model.go#Greet")).toBe("function"); // method
+    expect(byId.get("model.go#Greet")).toBe("method"); // method (distinct kind)
     // same-package call resolves with no import
     expect(
       graph.edges.some(

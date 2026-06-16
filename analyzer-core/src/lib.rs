@@ -79,36 +79,65 @@ const REF_KINDS: [&str; 7] = [
     "injects",
 ];
 
+/// Map a pack's `@definition.<suffix>` to a universal NodeKind. Unknown suffixes
+/// fall back to "function". Kinds must exist in lib/graph/types.ts NodeKind.
 fn map_node_kind(kind: &str) -> &'static str {
     match kind {
         "class" => "class",
         "interface" => "interface",
         "struct" => "struct",
         "trait" => "trait",
+        "protocol" => "protocol",
         "enum" => "enum",
+        "union" => "union",
+        "record" => "record",
+        "object" => "object",
         "type" => "type",
+        "namespace" => "namespace",
         "module" => "module",
+        "function" => "function",
+        "method" => "method",
+        "constructor" => "constructor",
+        "accessor" => "accessor",
+        "component" => "component",
         "macro" => "macro",
-        "constant" => "constant",
         "variable" => "variable",
-        "method" | "function" => "function",
+        "constant" => "constant",
+        "field" => "field",
+        "property" => "property",
+        "annotation" => "annotation",
         _ => "function",
     }
 }
 
-/// Kinds that become a node even when nested (types/containers), vs functions
-/// which emit only at the top level (so methods fold into their class).
+/// Kinds that become a node even when nested — types, members, macros, modules.
+/// Only free functions/variables/constants are gated to the top level, so locals
+/// (closures, a `let` inside a function) fold away.
 fn is_always_emit(kind: &str) -> bool {
-    matches!(
-        kind,
-        "class" | "interface" | "struct" | "trait" | "enum" | "module"
-    )
+    !matches!(kind, "function" | "variable" | "constant")
 }
 
-/// Containers that own their members (a method folds into its class). Modules
-/// are emitted but NON-absorbing — items inside a `mod` stay separate nodes.
+/// Containers whose nested code folds into them (a closure or local in a function;
+/// the function-level top-level check). Grouping kinds (module/namespace) are NOT
+/// absorbing, so items inside a `mod` stay separate nodes.
 fn is_absorbing(kind: &str) -> bool {
-    is_always_emit(kind) && kind != "module"
+    matches!(
+        kind,
+        "class"
+            | "interface"
+            | "struct"
+            | "trait"
+            | "protocol"
+            | "enum"
+            | "union"
+            | "record"
+            | "object"
+            | "method"
+            | "constructor"
+            | "accessor"
+            | "function"
+            | "component"
+    )
 }
 
 struct RawSymbol {

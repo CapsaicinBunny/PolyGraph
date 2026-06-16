@@ -16,7 +16,15 @@ import type {
   NodeRole,
   Runtime,
 } from "./types";
-import { EDGE_STYLES, glyphFor, type IconShape, iconShapeFor, nodeStyle } from "./visual";
+import {
+  EDGE_STYLES,
+  glyphFor,
+  type IconShape,
+  iconShapeFor,
+  type LangBadge,
+  languageBadge,
+  nodeStyle,
+} from "./visual";
 
 export interface SceneFilters {
   showExternal: boolean;
@@ -41,6 +49,8 @@ export interface SceneNode {
   glyph: string;
   /** Vector icon shape (drawn by the Vello renderer). */
   shape: IconShape;
+  /** Language badge (code + color) shown inside a file node's icon. */
+  lang?: LangBadge;
   /** Accent color (border / glyph), from role/external/kind. */
   color: string;
   symbolCount: number;
@@ -167,6 +177,7 @@ export function buildSceneStructure(
       label: n.label,
       glyph: glyphFor(n.kind, n.role),
       shape: iconShapeFor(n.kind, n.role),
+      ...(n.kind === "file" ? { lang: languageBadge(n.label) ?? undefined } : {}),
       color: nodeStyle(n.kind, n.role, n.externalKind).color,
       symbolCount: symbolCount.get(n.id) ?? 0,
       isFile: n.kind === "file",

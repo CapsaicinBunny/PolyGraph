@@ -5,7 +5,7 @@
 
 ; --- definitions ---
 (struct_item name: (type_identifier) @name) @definition.struct
-(union_item name: (type_identifier) @name) @definition.struct
+(union_item name: (type_identifier) @name) @definition.union
 (enum_item name: (type_identifier) @name) @definition.enum
 (trait_item name: (type_identifier) @name) @definition.trait
 (type_item name: (type_identifier) @name) @definition.type

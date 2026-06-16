@@ -1,19 +1,36 @@
 // Shared graph model — used by both the server-side analyzer and the client UI.
 
+// Universal, language-neutral node taxonomy. Each language parser emits the
+// subset that fits its constructs (a Rust parser uses struct/trait/macro, a
+// Java parser uses class/interface/method/field/annotation, etc.).
 export type NodeKind =
   | "file"
+  // type / container declarations
   | "class"
   | "interface"
   | "struct"
   | "trait"
-  | "type"
+  | "protocol"
   | "enum"
+  | "union"
+  | "record"
+  | "object"
+  | "type"
+  | "namespace"
+  | "module"
+  // callables
   | "function"
+  | "method"
+  | "constructor"
+  | "accessor"
   | "component"
+  | "macro"
+  // values / members
   | "variable"
   | "constant"
-  | "module"
-  | "macro"
+  | "field"
+  | "property"
+  | "annotation"
   | "external";
 
 /** Source family of an external (out-of-project) node. */

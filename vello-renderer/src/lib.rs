@@ -23,9 +23,11 @@ const MATCH: Color = Color::from_rgb8(234, 179, 8);
 const LABEL: Color = Color::from_rgb8(30, 41, 59);
 const BADGE: Color = Color::from_rgb8(100, 116, 139);
 const BASE: Color = Color::from_rgb8(21, 23, 28);
+const WHITE: Color = Color::from_rgb8(255, 255, 255);
 
 const FONT_SIZE: f32 = 13.0;
 const GLYPH_SIZE: f32 = 13.0;
+const BADGE_SIZE: f32 = 9.0; // language-code text size inside file icons
 const LABEL_MIN_SCALE: f64 = 0.5; // only lay out labels/icons when readable
 const ICON_R: f64 = 6.0; // icon half-size in world units
 
@@ -48,6 +50,12 @@ struct NodeData {
     shape: String,
     #[serde(default)]
     badge: String,
+    /// Language code shown inside a file node's icon (e.g. "TS", "RS"); empty otherwise.
+    #[serde(default)]
+    lang: String,
+    /// Brand color for the language badge, as [r,g,b].
+    #[serde(default)]
+    lang_color: [u8; 3],
 }
 
 #[derive(Deserialize, Default)]
@@ -209,6 +217,7 @@ impl VelloCanvas {
             FontRef::new(FONT_BYTES).map_err(|e| JsValue::from_str(&format!("font: {e}")))?;
         let charmap = font_ref.charmap();
         let metrics = font_ref.glyph_metrics(Size::new(GLYPH_SIZE), LocationRef::default());
+        let badge_metrics = font_ref.glyph_metrics(Size::new(BADGE_SIZE), LocationRef::default());
 
         // Visible world bounds (with margin) for culling.
         let left = -self.cam_x / self.cam_scale;
@@ -288,28 +297,32 @@ impl VelloCanvas {
                 continue;
             }
 
-            // Icon chip (Chakra-style): a rounded square tinted with the accent color,
-            // holding the kind's vector icon.
             let mid_y = n.y + n.h / 2.0;
             let chip_cx = n.x + 19.0;
-            let chip = RoundedRect::new(
-                chip_cx - 11.0,
-                mid_y - 11.0,
-                chip_cx + 11.0,
-                mid_y + 11.0,
-                6.0,
-            );
-            self.scene
-                .fill(Fill::NonZero, camera, tint(n.color), None, &chip);
-            draw_icon(
-                &mut self.scene,
-                camera,
-                &n.shape,
-                chip_cx,
-                mid_y,
-                ICON_R,
-                accent,
-            );
+            if !n.lang.is_empty() {
+                // File node: a colored document with the language code inside it.
+                let lang_color =
+                    Color::from_rgb8(n.lang_color[0], n.lang_color[1], n.lang_color[2]);
+                draw_lang_badge(
+                    &mut self.scene,
+                    &self.font,
+                    &font_ref,
+                    &badge_metrics,
+                    camera,
+                    chip_cx,
+                    mid_y,
+                    lang_color,
+                    &n.lang,
+                );
+            } else {
+                // Icon chip (Chakra-style): a rounded square tinted with the accent
+                // color, holding the kind's vector icon.
+                let chip =
+                    RoundedRect::new(chip_cx - 11.0, mid_y - 11.0, chip_cx + 11.0, mid_y + 11.0, 6.0);
+                self.scene
+                    .fill(Fill::NonZero, camera, tint(n.color), None, &chip);
+                draw_icon(&mut self.scene, camera, &n.shape, chip_cx, mid_y, ICON_R, accent);
+            }
 
             // Filename label (dark), vertically centered, clipped to the card width.
             let baseline = mid_y + 4.0;
@@ -465,6 +478,57 @@ fn clip_segment(
 fn tint(c: [u8; 3]) -> Color {
     let mix = |v: u8| ((v as f32) * 0.18 + 255.0 * 0.82) as u8;
     Color::from_rgb8(mix(c[0]), mix(c[1]), mix(c[2]))
+}
+
+/// Draw a file node's icon as a colored document with the language code inside.
+#[allow(clippy::too_many_arguments)]
+fn draw_lang_badge(
+    scene: &mut Scene,
+    font: &FontData,
+    font_ref: &FontRef,
+    metrics: &skrifa::metrics::GlyphMetrics<'_>,
+    t: Affine,
+    cx: f64,
+    cy: f64,
+    color: Color,
+    code: &str,
+) {
+    // Document silhouette with a folded top-right corner, filled in the lang color.
+    let w = 9.0;
+    let h = 11.0;
+    let mut p = BezPath::new();
+    p.move_to((cx - w, cy - h));
+    p.line_to((cx + w * 0.35, cy - h));
+    p.line_to((cx + w, cy - h * 0.5));
+    p.line_to((cx + w, cy + h));
+    p.line_to((cx - w, cy + h));
+    p.close_path();
+    scene.fill(Fill::NonZero, t, color, None, &p);
+
+    // Two-letter language code, white, centered on the document.
+    let charmap = font_ref.charmap();
+    let width: f64 = code
+        .chars()
+        .filter_map(|c| charmap.map(c))
+        .map(|gid| metrics.advance_width(gid).unwrap_or(0.0) as f64)
+        .sum();
+    let mut gx = cx - width / 2.0;
+    let baseline = cy + 3.2;
+    let glyphs: Vec<Glyph> = code
+        .chars()
+        .filter_map(|c| {
+            let gid = charmap.map(c)?;
+            let g = Glyph { id: gid.to_u32(), x: gx as f32, y: baseline as f32 };
+            gx += metrics.advance_width(gid).unwrap_or(0.0) as f64;
+            Some(g)
+        })
+        .collect();
+    scene
+        .draw_glyphs(font)
+        .font_size(BADGE_SIZE)
+        .transform(t)
+        .brush(WHITE)
+        .draw(Fill::NonZero, glyphs.into_iter());
 }
 
 /// Draw a small vector icon centered at (cx, cy) with half-size `r`, in `color`.

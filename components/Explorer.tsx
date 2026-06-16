@@ -120,6 +120,17 @@ export function Explorer() {
     });
   }, []);
 
+  const handleSetNodeKinds = useCallback((kinds: NodeKind[], on: boolean) => {
+    setEnabledNodeKinds((prev) => {
+      const next = new Set(prev);
+      for (const kind of kinds) {
+        if (on) next.add(kind);
+        else next.delete(kind);
+      }
+      return next;
+    });
+  }, []);
+
   const handleToggleCategory = useCallback((category: NodeCategory) => {
     setEnabledCategories((prev) => {
       const next = new Set(prev);
@@ -204,6 +215,7 @@ export function Explorer() {
           onToggleEdgeKind={handleToggleEdgeKind}
           enabledNodeKinds={enabledNodeKinds}
           onToggleNodeKind={handleToggleNodeKind}
+          onSetNodeKinds={handleSetNodeKinds}
           enabledCategories={enabledCategories}
           onToggleCategory={handleToggleCategory}
           enabledEnvironments={enabledEnvironments}

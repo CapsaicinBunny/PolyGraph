@@ -8,6 +8,7 @@ import {
   EXTERNAL_STYLES,
   FILTERABLE_EDGE_KINDS,
   FILTERABLE_NODE_KINDS,
+  NODE_KIND_LAYERS,
   NODE_STYLES,
   ROLE_STYLES,
 } from "@/lib/graph/visual";
@@ -28,6 +29,7 @@ interface SidebarProps {
   onToggleEdgeKind: (kind: ViewEdgeKind) => void;
   enabledNodeKinds: Set<NodeKind>;
   onToggleNodeKind: (kind: NodeKind) => void;
+  onSetNodeKinds: (kinds: NodeKind[], on: boolean) => void;
   enabledCategories: Set<NodeCategory>;
   onToggleCategory: (category: NodeCategory) => void;
   enabledEnvironments: Set<Environment>;
@@ -254,6 +256,7 @@ export function Sidebar({
   onToggleEdgeKind,
   enabledNodeKinds,
   onToggleNodeKind,
+  onSetNodeKinds,
   enabledCategories,
   onToggleCategory,
   enabledEnvironments,
@@ -349,17 +352,54 @@ export function Sidebar({
       </Section>
 
       <Section title="Node types" modified={nodeTypesModified}>
-        <ChipRow>
-          {FILTERABLE_NODE_KINDS.map((kind) => (
-            <Chip
-              key={kind}
-              label={NODE_STYLES[kind].label}
-              color={NODE_STYLES[kind].color}
-              active={enabledNodeKinds.has(kind)}
-              onClick={() => onToggleNodeKind(kind)}
-            />
-          ))}
-        </ChipRow>
+        <Stack gap="3">
+          {NODE_KIND_LAYERS.map((layer) => {
+            const allOn = layer.kinds.every((k) => enabledNodeKinds.has(k));
+            return (
+              <Box key={layer.label}>
+                <Flex align="center" justify="space-between" mb="1.5">
+                  <Text
+                    fontSize="10px"
+                    color="fg.subtle"
+                    textTransform="uppercase"
+                    letterSpacing="wide"
+                  >
+                    {layer.label}
+                  </Text>
+                  <Box
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSetNodeKinds(layer.kinds, !allOn)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onSetNodeKinds(layer.kinds, !allOn);
+                      }
+                    }}
+                    fontSize="10px"
+                    color="fg.subtle"
+                    cursor="pointer"
+                    userSelect="none"
+                    _hover={{ color: "fg" }}
+                  >
+                    {allOn ? "hide all" : "show all"}
+                  </Box>
+                </Flex>
+                <ChipRow>
+                  {layer.kinds.map((kind) => (
+                    <Chip
+                      key={kind}
+                      label={NODE_STYLES[kind].label}
+                      color={NODE_STYLES[kind].color}
+                      active={enabledNodeKinds.has(kind)}
+                      onClick={() => onToggleNodeKind(kind)}
+                    />
+                  ))}
+                </ChipRow>
+              </Box>
+            );
+          })}
+        </Stack>
       </Section>
 
       <Section title="Scope" defaultOpen={false} modified={scopeModified}>

@@ -1,11 +1,16 @@
-; Java language pack. Methods fold into their class; same-package and imported
-; type references resolve by simple name (jvm import style).
+; Java language pack. Classes, interfaces, enums, records, annotations, and their
+; members (methods, constructors, fields) all become nodes; references resolve by
+; simple name (jvm import style).
 
 ; --- definitions ---
 (class_declaration name: (identifier) @name) @definition.class
 (interface_declaration name: (identifier) @name) @definition.interface
 (enum_declaration name: (identifier) @name) @definition.enum
+(record_declaration name: (identifier) @name) @definition.record
+(annotation_type_declaration name: (identifier) @name) @definition.annotation
 (method_declaration name: (identifier) @name) @definition.method
+(constructor_declaration name: (identifier) @name) @definition.constructor
+(field_declaration declarator: (variable_declarator name: (identifier) @name)) @definition.field
 
 ; --- inheritance ---
 (superclass (type_identifier) @name) @reference.extends

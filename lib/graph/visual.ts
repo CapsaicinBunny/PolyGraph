@@ -15,14 +15,25 @@ export const NODE_STYLES: Record<NodeKind, KindStyle> = {
   interface: { label: "Interface", palette: "cyan", color: "#06b6d4" },
   struct: { label: "Struct", palette: "purple", color: "#6366f1" },
   trait: { label: "Trait", palette: "cyan", color: "#22d3ee" },
-  type: { label: "Type", palette: "yellow", color: "#eab308" },
+  protocol: { label: "Protocol", palette: "cyan", color: "#67e8f9" },
   enum: { label: "Enum", palette: "orange", color: "#f97316" },
+  union: { label: "Union", palette: "purple", color: "#a78bfa" },
+  record: { label: "Record", palette: "purple", color: "#818cf8" },
+  object: { label: "Object", palette: "purple", color: "#c084fc" },
+  type: { label: "Type", palette: "yellow", color: "#eab308" },
+  namespace: { label: "Namespace", palette: "yellow", color: "#fbbf24" },
+  module: { label: "Module", palette: "orange", color: "#f59e0b" },
   function: { label: "Function", palette: "blue", color: "#3b82f6" },
+  method: { label: "Method", palette: "blue", color: "#60a5fa" },
+  constructor: { label: "Constructor", palette: "blue", color: "#2563eb" },
+  accessor: { label: "Accessor", palette: "cyan", color: "#38bdf8" },
   component: { label: "Component", palette: "green", color: "#22c55e" },
+  macro: { label: "Macro", palette: "pink", color: "#ec4899" },
   variable: { label: "Variable", palette: "teal", color: "#14b8a6" },
   constant: { label: "Constant", palette: "green", color: "#84cc16" },
-  module: { label: "Module", palette: "orange", color: "#f59e0b" },
-  macro: { label: "Macro", palette: "pink", color: "#ec4899" },
+  field: { label: "Field", palette: "teal", color: "#2dd4bf" },
+  property: { label: "Property", palette: "teal", color: "#5eead4" },
+  annotation: { label: "Annotation", palette: "pink", color: "#f472b6" },
   external: { label: "External", palette: "gray", color: "#94a3b8" },
 };
 
@@ -61,21 +72,37 @@ export const EDGE_STYLES: Record<ViewEdgeKind, KindStyle> = {
   contains: { label: "Contains", palette: "gray", color: "#475569" },
 };
 
-/** Symbol node kinds the user can toggle (excludes file, which always shows, and external). */
-export const FILTERABLE_NODE_KINDS: NodeKind[] = [
-  "class",
-  "interface",
-  "struct",
-  "trait",
-  "type",
-  "enum",
-  "function",
-  "component",
-  "variable",
-  "constant",
-  "module",
-  "macro",
+/**
+ * Node kinds grouped into filter "layers" — abstraction bands the user can toggle
+ * as a group (or individually). Excludes file (always shows) and external (its own
+ * toolbar toggle). Parsers emit whatever fits; unused kinds just never appear.
+ */
+export const NODE_KIND_LAYERS: { label: string; kinds: NodeKind[] }[] = [
+  {
+    label: "Types",
+    kinds: [
+      "class",
+      "interface",
+      "struct",
+      "trait",
+      "protocol",
+      "enum",
+      "union",
+      "record",
+      "object",
+      "type",
+    ],
+  },
+  {
+    label: "Callables",
+    kinds: ["function", "method", "constructor", "accessor", "component", "macro"],
+  },
+  { label: "Members", kinds: ["field", "property", "variable", "constant", "annotation"] },
+  { label: "Modules", kinds: ["module", "namespace"] },
 ];
+
+/** Flat list of all filterable node kinds (derived from the layers). */
+export const FILTERABLE_NODE_KINDS: NodeKind[] = NODE_KIND_LAYERS.flatMap((l) => l.kinds);
 
 /** Edge kinds the user can filter (excludes the synthetic "contains"). */
 export const FILTERABLE_EDGE_KINDS: ViewEdgeKind[] = [
@@ -105,14 +132,25 @@ export const KIND_GLYPH: Record<NodeKind, string> = {
   interface: "◇",
   struct: "▤",
   trait: "✦",
-  type: "𝓣",
+  protocol: "◈",
   enum: "≣",
+  union: "⊍",
+  record: "▦",
+  object: "◉",
+  type: "𝓣",
+  namespace: "❏",
+  module: "❏",
   function: "ƒ",
+  method: "ƒ",
+  constructor: "⊕",
+  accessor: "⇄",
   component: "⬡",
+  macro: "!",
   variable: "▪",
   constant: "=",
-  module: "❏",
-  macro: "!",
+  field: "▫",
+  property: "◦",
+  annotation: "@",
   external: "↗",
 };
 
@@ -158,14 +196,25 @@ const KIND_SHAPE: Record<NodeKind, IconShape> = {
   interface: "diamond-o",
   struct: "square",
   trait: "diamond-o",
-  type: "rounded",
+  protocol: "diamond-o",
   enum: "bars",
+  union: "diamond",
+  record: "square",
+  object: "hexagon",
+  type: "rounded",
+  namespace: "hexagon",
+  module: "hexagon",
   function: "circle",
+  method: "circle",
+  constructor: "circle",
+  accessor: "circle",
   component: "hexagon",
+  macro: "diamond",
   variable: "square",
   constant: "circle",
-  module: "hexagon",
-  macro: "diamond",
+  field: "square",
+  property: "rounded",
+  annotation: "diamond",
   external: "arrow",
 };
 
@@ -188,4 +237,31 @@ export function iconShapeFor(kind: NodeKind, role?: NodeRole): IconShape {
   if (kind === "external") return "arrow";
   if (role) return ROLE_SHAPE[role];
   return KIND_SHAPE[kind];
+}
+
+/** A short language badge (code + brand color) drawn inside a file node's icon. */
+export interface LangBadge {
+  code: string;
+  color: string;
+}
+
+const LANG_BADGES: { test: RegExp; code: string; color: string }[] = [
+  { test: /\.tsx$/i, code: "TX", color: "#3178c6" },
+  { test: /\.ts$|\.mts$|\.cts$/i, code: "TS", color: "#3178c6" },
+  { test: /\.(jsx|js|mjs|cjs)$/i, code: "JS", color: "#eab308" },
+  { test: /\.py$/i, code: "PY", color: "#3776ab" },
+  { test: /\.rs$/i, code: "RS", color: "#f74c00" },
+  { test: /\.go$/i, code: "GO", color: "#00add8" },
+  { test: /\.java$/i, code: "JV", color: "#e76f00" },
+  { test: /\.(kt|kts)$/i, code: "KT", color: "#7f52ff" },
+  { test: /\.vue$/i, code: "VU", color: "#42b883" },
+  { test: /\.svelte$/i, code: "SV", color: "#ff3e00" },
+];
+
+/** The language badge for a file path, or null if the extension is unknown. */
+export function languageBadge(filePath: string): LangBadge | null {
+  for (const b of LANG_BADGES) {
+    if (b.test.test(filePath)) return { code: b.code, color: b.color };
+  }
+  return null;
 }

@@ -113,6 +113,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       label: n.label,
       shape: n.shape,
       badge: n.isFile && n.symbolCount > 0 ? `+${n.symbolCount}` : "",
+      lang: n.lang?.code ?? "",
+      lang_color: n.lang ? hexToRgb(n.lang.color) : [0, 0, 0],
     }));
     const edges = scene.edges
       .filter((e) => e.kind !== "contains")
