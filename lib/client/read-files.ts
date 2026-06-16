@@ -40,12 +40,26 @@ export async function readSourceFiles(
   let done = 0;
   onProgress?.(0, total);
 
-  await Promise.all(
-    candidates.map(async ({ path, file }) => {
-      files[path] = await file.text();
+  // Bounded concurrency: firing thousands of file.text() reads at once exhausts
+  // the browser's file handles and throws NotReadableError. A small worker pool
+  // caps it; a file that fails to read (moved/locked/permission) is skipped
+  // rather than aborting the whole scan.
+  const CONCURRENCY = 48;
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < candidates.length) {
+      const { path, file } = candidates[next++];
+      try {
+        files[path] = await file.text();
+      } catch {
+        skipped++;
+      }
       done++;
       onProgress?.(done, total);
-    }),
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, () => worker()),
   );
 
   return { files, skipped };

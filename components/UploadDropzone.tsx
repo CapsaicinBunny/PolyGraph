@@ -211,15 +211,24 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
     setError(null);
     setProgress({ done: 0, total: 0 });
     setPhase("reading");
-    const { files, skipped } = await readSourceFiles(list, (done, total) =>
-      setProgress({ done, total }),
-    );
-    if (Object.keys(files).length === 0) {
+    try {
+      const { files, skipped } = await readSourceFiles(list, (done, total) =>
+        setProgress({ done, total }),
+      );
+      if (Object.keys(files).length === 0) {
+        setPhase("idle");
+        setError("No source files found in that folder.");
+        return;
+      }
+      await analyze(files, skipped);
+    } catch (err) {
       setPhase("idle");
-      setError("No source files found in that folder.");
-      return;
+      setError(
+        err instanceof Error
+          ? `Couldn't read that folder: ${err.message}`
+          : "Couldn't read that folder.",
+      );
     }
-    await analyze(files, skipped);
   }
 
   return (
