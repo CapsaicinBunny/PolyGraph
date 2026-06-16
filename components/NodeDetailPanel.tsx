@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { Badge, Box, CloseButton, Heading, HStack, Stack, Text } from "@chakra-ui/react";
 import type { GraphEdge, GraphModel } from "@/lib/graph/types";
-import { EDGE_STYLES, NODE_STYLES, ROLE_STYLES } from "@/lib/graph/visual";
+import { EDGE_STYLES, EXTERNAL_STYLES, NODE_STYLES, ROLE_STYLES } from "@/lib/graph/visual";
 
 interface NodeDetailPanelProps {
   graph: GraphModel;
@@ -79,6 +79,15 @@ export function NodeDetailPanel({ graph, selectedId, onSelect, onClose }: NodeDe
                 {ROLE_STYLES[node.role].label}
               </Badge>
             )}
+            {node.externalKind && (
+              <Badge
+                colorPalette={EXTERNAL_STYLES[node.externalKind].palette}
+                variant="solid"
+                w="fit-content"
+              >
+                {EXTERNAL_STYLES[node.externalKind].label}
+              </Badge>
+            )}
           </HStack>
           <Heading size="md" wordBreak="break-word">
             {node.label}
@@ -87,51 +96,68 @@ export function NodeDetailPanel({ graph, selectedId, onSelect, onClose }: NodeDe
         <CloseButton size="sm" onClick={onClose} />
       </HStack>
 
-      <Box>
-        <Text fontSize="xs" color="fg.muted">
-          File
-        </Text>
-        <Text fontSize="sm" fontFamily="mono" wordBreak="break-all">
-          {node.filePath}
-          {node.line > 0 ? `:${node.line}` : ""}
-        </Text>
-      </Box>
+      {node.kind === "external" ? (
+        <Box>
+          <Text fontSize="xs" color="fg.muted">
+            External dependency
+          </Text>
+          <Text fontSize="sm" color="fg.muted">
+            Out of the analyzed project. Edges below show where it’s used.
+          </Text>
+        </Box>
+      ) : (
+        <>
+          <Box>
+            <Text fontSize="xs" color="fg.muted">
+              File
+            </Text>
+            <Text fontSize="sm" fontFamily="mono" wordBreak="break-all">
+              {node.filePath}
+              {node.line > 0 ? `:${node.line}` : ""}
+            </Text>
+          </Box>
 
-      <Box>
-        <Text fontSize="xs" color="fg.muted" mb="1.5">
-          About
-        </Text>
-        <HStack gap="1.5" wrap="wrap">
-          {node.category && (
-            <Badge colorPalette={node.category === "ui" ? "green" : "blue"} variant="subtle">
-              {node.category === "ui" ? "UI" : "Feature"}
-            </Badge>
-          )}
-          {node.environment ? (
-            <Badge
-              colorPalette={node.environment === "client" ? "orange" : "teal"}
-              variant="subtle"
-            >
-              {node.environment === "client" ? "Client" : "Server"}
-            </Badge>
-          ) : (
-            <Badge colorPalette="gray" variant="subtle" title="No use client/use server directive">
-              Env: unspecified
-            </Badge>
-          )}
-          {node.runtimes?.length ? (
-            node.runtimes.map((rt) => (
-              <Badge key={rt} colorPalette="purple" variant="subtle">
-                {rt}
-              </Badge>
-            ))
-          ) : (
-            <Badge colorPalette="gray" variant="subtle">
-              runtime: agnostic
-            </Badge>
-          )}
-        </HStack>
-      </Box>
+          <Box>
+            <Text fontSize="xs" color="fg.muted" mb="1.5">
+              About
+            </Text>
+            <HStack gap="1.5" wrap="wrap">
+              {node.category && (
+                <Badge colorPalette={node.category === "ui" ? "green" : "blue"} variant="subtle">
+                  {node.category === "ui" ? "UI" : "Feature"}
+                </Badge>
+              )}
+              {node.environment ? (
+                <Badge
+                  colorPalette={node.environment === "client" ? "orange" : "teal"}
+                  variant="subtle"
+                >
+                  {node.environment === "client" ? "Client" : "Server"}
+                </Badge>
+              ) : (
+                <Badge
+                  colorPalette="gray"
+                  variant="subtle"
+                  title="No use client/use server directive"
+                >
+                  Env: unspecified
+                </Badge>
+              )}
+              {node.runtimes?.length ? (
+                node.runtimes.map((rt) => (
+                  <Badge key={rt} colorPalette="purple" variant="subtle">
+                    {rt}
+                  </Badge>
+                ))
+              ) : (
+                <Badge colorPalette="gray" variant="subtle">
+                  runtime: agnostic
+                </Badge>
+              )}
+            </HStack>
+          </Box>
+        </>
+      )}
 
       <Box>
         <Text fontSize="xs" color="fg.muted" mb="1">

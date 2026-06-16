@@ -22,6 +22,14 @@ export function createInMemoryProject(files: SourceFileMap): Project {
       noresolve: false,
       skipLibCheck: true,
       allowImportingTsExtensions: true,
+      // Resolve the most common path aliases so `@/x` imports link to project files
+      // instead of looking like external packages. Files live under "/" in the
+      // in-memory FS, so `@/*` and `~/*` map to the project root.
+      baseUrl: "/",
+      paths: {
+        "@/*": ["*"],
+        "~/*": ["*"],
+      },
     },
   });
 

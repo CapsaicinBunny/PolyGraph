@@ -27,13 +27,15 @@ export interface GraphView {
 export function buildView(graph: GraphModel, expanded: Set<string>): GraphView {
   const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
 
-  const visibleNodes = graph.nodes.filter((n) => n.kind === "file" || expanded.has(n.parentFile));
+  const visibleNodes = graph.nodes.filter(
+    (n) => n.kind === "file" || n.kind === "external" || expanded.has(n.parentFile),
+  );
 
   // Map any node id to the id that represents it in the current view.
   const repr = (id: string): string | undefined => {
     const node = nodeById.get(id);
     if (!node) return undefined;
-    if (node.kind === "file") return node.id;
+    if (node.kind === "file" || node.kind === "external") return node.id;
     return expanded.has(node.parentFile) ? node.id : node.parentFile;
   };
 

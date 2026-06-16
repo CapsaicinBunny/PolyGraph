@@ -1,4 +1,4 @@
-import type { NodeKind, NodeRole } from "./types";
+import type { ExternalKind, NodeKind, NodeRole } from "./types";
 import type { ViewEdgeKind } from "../aggregate";
 
 export interface KindStyle {
@@ -16,6 +16,15 @@ export const NODE_STYLES: Record<NodeKind, KindStyle> = {
   function: { label: "Function", palette: "blue", color: "#3b82f6" },
   component: { label: "Component", palette: "green", color: "#22c55e" },
   variable: { label: "Variable", palette: "teal", color: "#14b8a6" },
+  external: { label: "External", palette: "gray", color: "#94a3b8" },
+};
+
+/** External (out-of-project) node colors, by source family. */
+export const EXTERNAL_STYLES: Record<ExternalKind, KindStyle> = {
+  npm: { label: "npm package", palette: "red", color: "#f87171" },
+  node: { label: "Node builtin", palette: "green", color: "#4ade80" },
+  deno: { label: "Deno API", palette: "blue", color: "#60a5fa" },
+  bun: { label: "Bun API", palette: "pink", color: "#f472b6" },
 };
 
 /** Architectural roles detected by paradigm scanning. Color overrides kind when present. */
@@ -50,7 +59,12 @@ export const FILTERABLE_EDGE_KINDS: ViewEdgeKind[] = [
   "injects",
 ];
 
-/** Effective display style for a node: its role style if detected, else its kind style. */
-export function nodeStyle(kind: NodeKind, role?: NodeRole): KindStyle {
-  return role ? ROLE_STYLES[role] : NODE_STYLES[kind];
+/**
+ * Effective display style for a node: external source color for externals, else the
+ * detected role color, else the structural kind color.
+ */
+export function nodeStyle(kind: NodeKind, role?: NodeRole, externalKind?: ExternalKind): KindStyle {
+  if (kind === "external") return EXTERNAL_STYLES[externalKind ?? "npm"];
+  if (role) return ROLE_STYLES[role];
+  return NODE_STYLES[kind];
 }

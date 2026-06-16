@@ -45,14 +45,15 @@ describe("declaration nodes", () => {
 });
 
 describe("import edges", () => {
-  test("links files that import each other and drops external modules", () => {
+  test("links files that import each other; external module is a distinct external node", () => {
     const { graph } = analyzeSources({
       "a.ts": `import { b } from "./b"; import React from "react"; export const a = () => b();`,
       "b.ts": `export function b() { return 1; }`,
     });
     expect(hasEdge(graph, "a.ts", "b.ts", "import")).toBe(true);
-    // "react" is outside the uploaded set -> no node, no edge.
-    expect([...ids(graph)].some((id) => id.includes("react"))).toBe(false);
+    // "react" resolves outside the project, so it becomes an external node (not a file).
+    expect(nodeKind(graph, "external:module:react")).toBe("external");
+    expect([...ids(graph)].some((id) => id === "react" || id === "react.ts")).toBe(false);
   });
 });
 

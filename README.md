@@ -24,6 +24,9 @@ component usage.
   `ecs-entity`, detected from naming (`*Component`/`*System`/`*Entity`), decorators
   (`@Component`/`@System`/`@Entity`), and data-oriented factories (`defineComponent`,
   `defineSystem`, `defineQuery`).
+- **External dependencies** (toggle in the toolbar, off by default) — imported npm packages,
+  Node builtins, and `Bun` / `Deno` / `process` API usage appear as dashed external nodes,
+  color-coded by source family (npm / Node / Deno / Bun).
 - **Layout algorithms** — Layered and Tree (dagre, with top-down / left-right / bottom-up /
   right-left directions, Mermaid-style), plus Radial, Circular, Grid, and Force-directed
   (d3-force). The view auto-fits on change.

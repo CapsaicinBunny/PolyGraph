@@ -14,7 +14,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { buildView, type ViewEdgeKind } from "@/lib/aggregate";
-import type { GraphModel, NodeKind, NodeRole } from "@/lib/graph/types";
+import type { ExternalKind, GraphModel, NodeKind, NodeRole } from "@/lib/graph/types";
 import { EDGE_STYLES, nodeStyle } from "@/lib/graph/visual";
 import {
   DIRECTIONAL_ALGORITHMS,
@@ -34,6 +34,7 @@ interface GraphCanvasProps {
   selectedId: string | null;
   algorithm: LayoutAlgorithm;
   direction: LayoutDirection;
+  showExternal: boolean;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
 }
@@ -46,13 +47,28 @@ function GraphCanvasInner({
   selectedId,
   algorithm,
   direction,
+  showExternal,
   onSelect,
   onToggleExpand,
 }: GraphCanvasProps) {
   const { fitView } = useReactFlow();
 
   const { rfNodes, rfEdges } = useMemo(() => {
-    const view = buildView(graph, expanded);
+    // External nodes are hidden unless the toggle is on.
+    const sourceGraph = showExternal
+      ? graph
+      : (() => {
+          const externalIds = new Set(
+            graph.nodes.filter((n) => n.kind === "external").map((n) => n.id),
+          );
+          return {
+            nodes: graph.nodes.filter((n) => n.kind !== "external"),
+            edges: graph.edges.filter(
+              (e) => !externalIds.has(e.source) && !externalIds.has(e.target),
+            ),
+          };
+        })();
+    const view = buildView(sourceGraph, expanded);
     const visibleEdges = view.edges.filter(
       (e) => e.kind === "contains" || enabledEdgeKinds.has(e.kind),
     );
@@ -79,6 +95,7 @@ function GraphCanvasInner({
         label: n.label,
         kind: n.kind,
         role: n.role,
+        externalKind: n.externalKind,
         symbolCount: symbolCount.get(n.id) ?? 0,
         expanded: expanded.has(n.id),
         matched: searching && n.label.toLowerCase().includes(query),
@@ -105,7 +122,7 @@ function GraphCanvasInner({
     });
 
     return { rfNodes, rfEdges };
-  }, [graph, expanded, enabledEdgeKinds, search, selectedId, algorithm, direction]);
+  }, [graph, expanded, enabledEdgeKinds, search, selectedId, algorithm, direction, showExternal]);
 
   // Re-fit the viewport after the layout changes (direction switch, expand/collapse,
   // or a freshly loaded graph). rAF lets React Flow measure the new node positions first.
@@ -135,8 +152,8 @@ function GraphCanvasInner({
         pannable
         zoomable
         nodeColor={(n) => {
-          const d = n.data as { kind: NodeKind; role?: NodeRole };
-          return nodeStyle(d.kind, d.role).color;
+          const d = n.data as { kind: NodeKind; role?: NodeRole; externalKind?: ExternalKind };
+          return nodeStyle(d.kind, d.role, d.externalKind).color;
         }}
         maskColor="rgba(0,0,0,0.4)"
         style={{ background: "var(--chakra-colors-bg-panel)" }}

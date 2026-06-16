@@ -2,8 +2,14 @@
 
 import { Box, Button, Heading, HStack, Input, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import type { ViewEdgeKind } from "@/lib/aggregate";
-import { EDGE_STYLES, FILTERABLE_EDGE_KINDS, NODE_STYLES, ROLE_STYLES } from "@/lib/graph/visual";
-import type { NodeKind, NodeRole } from "@/lib/graph/types";
+import {
+  EDGE_STYLES,
+  EXTERNAL_STYLES,
+  FILTERABLE_EDGE_KINDS,
+  NODE_STYLES,
+  ROLE_STYLES,
+} from "@/lib/graph/visual";
+import type { ExternalKind, NodeKind, NodeRole } from "@/lib/graph/types";
 import { DIRECTIONAL_ALGORITHMS, type LayoutAlgorithm, type LayoutDirection } from "@/lib/layout";
 
 interface SidebarProps {
@@ -182,8 +188,24 @@ export function Sidebar({
         </Stack>
       </Box>
 
+      <Box>
+        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
+          External sources
+        </Heading>
+        <Stack gap="2">
+          {(Object.keys(EXTERNAL_STYLES) as ExternalKind[]).map((ext) => (
+            <HStack key={ext} gap="2">
+              <Dot color={EXTERNAL_STYLES[ext].color} />
+              <Text fontSize="sm" color="fg.muted">
+                {EXTERNAL_STYLES[ext].label}
+              </Text>
+            </HStack>
+          ))}
+        </Stack>
+      </Box>
+
       <Text fontSize="xs" color="fg.subtle" mt="auto">
-        Click a file node to expand its classes, functions, and components.
+        Toggle “Externals” in the toolbar to show imported packages and Node/Deno/Bun APIs.
       </Text>
     </Stack>
   );

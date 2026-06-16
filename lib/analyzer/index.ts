@@ -9,6 +9,7 @@ import type {
 import { analyzeCalls } from "./calls";
 import { analyzeComponents } from "./components";
 import { analyzeComposition } from "./composition";
+import { analyzeExternals } from "./externals";
 import { analyzeImports } from "./imports";
 import { analyzeInheritance } from "./inheritance";
 import { buildDeclIndex } from "./nodes";
@@ -56,6 +57,7 @@ export function analyzeSources(files: SourceFileMap): AnalyzeResult {
   }
 
   const index = buildDeclIndex(project);
+  const externals = analyzeExternals(project, index);
 
   const edges: GraphEdge[] = [
     ...analyzeImports(project),
@@ -63,9 +65,10 @@ export function analyzeSources(files: SourceFileMap): AnalyzeResult {
     ...analyzeInheritance(project, index),
     ...analyzeComponents(project, index),
     ...analyzeComposition(project, index),
+    ...externals.edges,
   ];
 
-  const nodes = dedupeNodes(index.nodes);
+  const nodes = dedupeNodes([...index.nodes, ...externals.nodes]);
   const nodeIds = new Set(nodes.map((n) => n.id));
   const validEdges = dedupeEdges(edges).filter(
     (e) => nodeIds.has(e.source) && nodeIds.has(e.target),

@@ -3,13 +3,14 @@
 import { Badge, Box, HStack, Text } from "@chakra-ui/react";
 import { Handle, type NodeProps, Position } from "@xyflow/react";
 import type { LayoutDirection } from "@/lib/layout";
-import type { NodeKind, NodeRole } from "@/lib/graph/types";
+import type { ExternalKind, NodeKind, NodeRole } from "@/lib/graph/types";
 import { nodeStyle } from "@/lib/graph/visual";
 
 export interface GraphFlowNodeData {
   label: string;
   kind: NodeKind;
   role?: NodeRole;
+  externalKind?: ExternalKind;
   symbolCount: number;
   expanded: boolean;
   matched: boolean;
@@ -25,6 +26,7 @@ const KIND_GLYPH: Record<NodeKind, string> = {
   function: "ƒ",
   component: "⬡",
   variable: "▪",
+  external: "↗",
 };
 
 const ROLE_GLYPH: Record<NodeRole, string> = {
@@ -44,18 +46,21 @@ const HANDLES: Record<LayoutDirection, { target: Position; source: Position }> =
 
 export function GraphFlowNode({ data, selected }: NodeProps) {
   const d = data as GraphFlowNodeData;
-  const style = nodeStyle(d.kind, d.role);
+  const style = nodeStyle(d.kind, d.role, d.externalKind);
   const isFile = d.kind === "file";
+  const isExternal = d.kind === "external";
   const dimmed = d.searching && !d.matched;
   const handles = HANDLES[d.direction] ?? HANDLES.LR;
-  const glyph = d.role ? ROLE_GLYPH[d.role] : KIND_GLYPH[d.kind];
+  const glyph = isExternal ? KIND_GLYPH.external : d.role ? ROLE_GLYPH[d.role] : KIND_GLYPH[d.kind];
 
   return (
     <Box
-      bg="bg.panel"
+      bg={isExternal ? "bg.subtle" : "bg.panel"}
       borderWidth="1px"
+      borderStyle={isExternal ? "dashed" : "solid"}
       borderColor={selected ? `${style.palette}.400` : "border.emphasized"}
       borderLeftWidth="4px"
+      borderLeftStyle="solid"
       borderLeftColor={`${style.palette}.500`}
       rounded="md"
       px="3"

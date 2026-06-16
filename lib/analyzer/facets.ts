@@ -2,7 +2,7 @@ import { Node, type SourceFile, SyntaxKind } from "ts-morph";
 import type { Environment, Runtime } from "../graph/types";
 
 // Common Node.js builtin module names (with or without the `node:` prefix).
-const NODE_BUILTINS = new Set([
+export const NODE_BUILTINS = new Set([
   "assert",
   "async_hooks",
   "buffer",

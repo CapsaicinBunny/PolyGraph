@@ -27,6 +27,7 @@ export function Explorer() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [algorithm, setAlgorithm] = useState<LayoutAlgorithm>("layered");
   const [direction, setDirection] = useState<LayoutDirection>("LR");
+  const [showExternal, setShowExternal] = useState(false);
 
   const graph = result?.graph ?? null;
 
@@ -112,7 +113,16 @@ export function Explorer() {
             </Badge>
           )}
         </HStack>
-        <Button ml="auto" size="sm" variant="subtle" onClick={handleToggleExpandAll}>
+        <Button
+          ml="auto"
+          size="sm"
+          variant={showExternal ? "subtle" : "ghost"}
+          colorPalette={showExternal ? "purple" : "gray"}
+          onClick={() => setShowExternal((v) => !v)}
+        >
+          {showExternal ? "Externals: on" : "Externals: off"}
+        </Button>
+        <Button size="sm" variant="subtle" onClick={handleToggleExpandAll}>
           {allExpanded ? "Collapse all" : "Expand all"}
         </Button>
         <Button size="sm" variant="outline" onClick={() => setResult(null)}>
@@ -140,6 +150,7 @@ export function Explorer() {
             selectedId={selectedId}
             algorithm={algorithm}
             direction={direction}
+            showExternal={showExternal}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
           />

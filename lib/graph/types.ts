@@ -1,6 +1,16 @@
 // Shared graph model — used by both the server-side analyzer and the client UI.
 
-export type NodeKind = "file" | "class" | "interface" | "function" | "component" | "variable";
+export type NodeKind =
+  | "file"
+  | "class"
+  | "interface"
+  | "function"
+  | "component"
+  | "variable"
+  | "external";
+
+/** Source family of an external (out-of-project) node. */
+export type ExternalKind = "node" | "deno" | "bun" | "npm";
 
 export type EdgeKind =
   | "import"
@@ -48,6 +58,8 @@ export interface GraphNode {
   environment?: Environment;
   /** JS runtimes the owning file targets (node / deno / bun). */
   runtimes?: Runtime[];
+  /** For `kind: "external"`, which source family it belongs to. */
+  externalKind?: ExternalKind;
 }
 
 export interface GraphEdge {
