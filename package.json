@@ -2,6 +2,7 @@
   "name": "polygraph",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0 OR MIT",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -13,8 +14,8 @@
     "typecheck": "tsgo --noEmit",
     "lint": "oxlint --type-aware",
     "lint:fix": "oxlint --type-aware --fix",
-    "format": "oxfmt .",
-    "format:check": "oxfmt --check .",
+    "format": "oxfmt --ignore-path .gitignore --ignore-path .oxfmtignore .",
+    "format:check": "oxfmt --ignore-path .gitignore --ignore-path .oxfmtignore --check .",
     "test": "bun test"
   },
   "dependencies": {

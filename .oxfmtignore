@@ -1,0 +1,9 @@
+# Paths oxfmt should skip, passed explicitly via --ignore-path in the format
+# scripts (alongside .gitignore).
+
+# Process artifacts (brainstorm/plan/spec docs). oxfmt reflows fenced code blocks
+# inside these and corrupts hand-aligned layout samples, so keep it out of them.
+docs/superpowers/
+
+# Generated wasm-bindgen output — not hand-edited, so don't format it.
+vello-renderer/pkg/

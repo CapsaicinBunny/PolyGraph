@@ -7,6 +7,7 @@
 **An interactive dependency-graph analyzer for codebases — across ~26 languages.**
 
 [![CI](https://github.com/CapsaicinBunny/PolyGraph/actions/workflows/ci.yml/badge.svg?branch=release)](https://github.com/CapsaicinBunny/PolyGraph/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)](#license)
 &nbsp;
 ![Bun](https://img.shields.io/badge/Bun-1.3-fbf0df?logo=bun&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
@@ -147,3 +148,12 @@ sidecar/server.ts      Bun analysis sidecar (loopback endpoints /scan and /analy
 app/page.tsx           renders the Explorer (static-exported SPA)
 components/            Explorer, VelloGraphCanvas, Sidebar, NodeDetailPanel, UploadDropzone
 ```
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for
+inclusion in this project by you, as defined in the Apache-2.0 license, shall be dual
+licensed as above, without any additional terms or conditions.

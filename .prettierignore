@@ -1,9 +1,0 @@
-# Process artifacts (brainstorm/plan/spec docs). oxfmt reflows fenced code
-# blocks inside these and corrupts hand-aligned layout samples, so keep the
-# formatter out of them.
-docs/superpowers/
-
-# Generated wasm-bindgen output. Locally an untracked pkg/.gitignore hides these
-# from oxfmt, but it isn't committed, so CI would otherwise check the generated
-# (unformatted) files. Exclude them explicitly here.
-vello-renderer/pkg/
