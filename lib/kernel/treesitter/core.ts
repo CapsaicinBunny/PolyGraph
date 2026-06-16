@@ -13,13 +13,21 @@ export interface AnalyzerCore {
   analyze(grammar: string, querySrc: string, importStyle: string, filesJson: string): string;
 }
 
+/**
+ * Absolute path to the native addon. POLYGRAPH_CORE lets a packaged build (the
+ * Bun sidecar / Tauri app) point at a bundled .node outside the repo; otherwise
+ * it resolves relative to the working directory for local dev and tests.
+ */
+export function resolveCorePath(): string {
+  return process.env.POLYGRAPH_CORE ?? join(process.cwd(), "analyzer-core", "analyzer-core.node");
+}
+
 let cached: AnalyzerCore | null = null;
 
 export function loadCore(): AnalyzerCore {
   if (!cached) {
-    const addonPath = join(process.cwd(), "analyzer-core", "analyzer-core.node");
     const mod = { exports: {} as AnalyzerCore };
-    process.dlopen(mod, addonPath);
+    process.dlopen(mod, resolveCorePath());
     cached = mod.exports;
   }
   return cached;
