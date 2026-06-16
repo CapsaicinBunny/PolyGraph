@@ -8,6 +8,7 @@ import {
   EXTERNAL_STYLES,
   FILTERABLE_EDGE_KINDS,
   FILTERABLE_NODE_KINDS,
+  KIND_GLYPH,
   NODE_KIND_LAYERS,
   NODE_STYLES,
   ROLE_STYLES,
@@ -211,7 +212,15 @@ function Chip({
       }}
     >
       {glyph ? (
-        <Text as="span" w="13px" textAlign="center" lineHeight="1" fontWeight="bold">
+        <Text
+          as="span"
+          w="14px"
+          textAlign="center"
+          lineHeight="1"
+          fontWeight="bold"
+          flexShrink={0}
+          style={{ color: color ? accent : undefined }}
+        >
           {glyph}
         </Text>
       ) : (
@@ -391,6 +400,7 @@ export function Sidebar({
                       key={kind}
                       label={NODE_STYLES[kind].label}
                       color={NODE_STYLES[kind].color}
+                      glyph={KIND_GLYPH[kind]}
                       active={enabledNodeKinds.has(kind)}
                       onClick={() => onToggleNodeKind(kind)}
                     />
