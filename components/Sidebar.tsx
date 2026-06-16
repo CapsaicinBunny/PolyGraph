@@ -1,6 +1,7 @@
 "use client";
 
-import { Box, Button, Heading, HStack, Input, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import { type ReactNode, useState } from "react";
+import { Box, Button, Flex, HStack, Input, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import {
   EDGE_STYLES,
@@ -72,8 +73,178 @@ const DIRECTIONS: { value: LayoutDirection; label: string; glyph: string }[] = [
   { value: "RL", label: "Right → left", glyph: "←" },
 ];
 
-function Dot({ color }: { color: string }) {
-  return <Box w="10px" h="10px" rounded="full" bg={color} flexShrink={0} />;
+const ACCENT = "#3b82f6";
+const BORDER_VAR = "var(--chakra-colors-border)";
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      style={{
+        transform: open ? "rotate(90deg)" : "none",
+        transition: "transform 0.15s ease",
+        color: "var(--chakra-colors-fg-muted)",
+        flexShrink: 0,
+      }}
+    >
+      <path
+        d="M9 6l6 6-6 6"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function Section({
+  title,
+  defaultOpen = true,
+  modified = false,
+  action,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  modified?: boolean;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const toggle = () => setOpen((o) => !o);
+  return (
+    <Box>
+      <Flex align="center" justify="space-between" gap="2">
+        <HStack
+          role="button"
+          tabIndex={0}
+          aria-expanded={open}
+          onClick={toggle}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              toggle();
+            }
+          }}
+          gap="2"
+          flex="1"
+          py="1"
+          cursor="pointer"
+          color="fg.muted"
+          _hover={{ color: "fg" }}
+        >
+          <Chevron open={open} />
+          <Text
+            fontSize="11px"
+            fontWeight="semibold"
+            textTransform="uppercase"
+            letterSpacing="wider"
+          >
+            {title}
+          </Text>
+          {modified && <Box w="6px" h="6px" rounded="full" bg="blue.solid" flexShrink={0} />}
+        </HStack>
+        {action}
+      </Flex>
+      {open && (
+        <Box mt="2.5" mb="1">
+          {children}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function Chip({
+  label,
+  active,
+  onClick,
+  color,
+  glyph,
+  disabled = false,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  color?: string;
+  glyph?: string;
+  disabled?: boolean;
+}) {
+  const accent = color ?? ACCENT;
+  return (
+    <Box
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-pressed={active}
+      onClick={disabled ? undefined : onClick}
+      onKeyDown={(e) => {
+        if (!disabled && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      display="inline-flex"
+      alignItems="center"
+      gap="1.5"
+      px="2.5"
+      py="1"
+      rounded="full"
+      borderWidth="1px"
+      fontSize="xs"
+      fontWeight="medium"
+      userSelect="none"
+      whiteSpace="nowrap"
+      cursor={disabled ? "not-allowed" : "pointer"}
+      color={active ? "fg" : "fg.muted"}
+      opacity={disabled ? 0.3 : active ? 1 : 0.6}
+      transition="opacity 0.12s, background-color 0.12s, border-color 0.12s"
+      _hover={disabled ? undefined : { opacity: 1 }}
+      style={{
+        backgroundColor: active ? `${accent}26` : "transparent",
+        borderColor: active ? accent : BORDER_VAR,
+      }}
+    >
+      {glyph ? (
+        <Text as="span" w="13px" textAlign="center" lineHeight="1" fontWeight="bold">
+          {glyph}
+        </Text>
+      ) : (
+        <Box w="7px" h="7px" rounded="full" flexShrink={0} style={{ backgroundColor: accent }} />
+      )}
+      {label}
+    </Box>
+  );
+}
+
+function ChipRow({ children }: { children: ReactNode }) {
+  return (
+    <Flex wrap="wrap" gap="1.5">
+      {children}
+    </Flex>
+  );
+}
+
+function MiniLabel({ children }: { children: ReactNode }) {
+  return (
+    <Text fontSize="10px" color="fg.subtle" textTransform="uppercase" letterSpacing="wide" mb="1.5">
+      {children}
+    </Text>
+  );
+}
+
+function LegendItem({ color, label }: { color: string; label: string }) {
+  return (
+    <HStack gap="2">
+      <Box w="8px" h="8px" rounded="full" flexShrink={0} style={{ backgroundColor: color }} />
+      <Text fontSize="xs" color="fg.muted" lineClamp={1}>
+        {label}
+      </Text>
+    </HStack>
+  );
 }
 
 export function Sidebar({
@@ -96,249 +267,179 @@ export function Sidebar({
   onDirection,
 }: SidebarProps) {
   const directionEnabled = DIRECTIONAL_ALGORITHMS.includes(algorithm);
+
+  const relationshipsModified = enabledEdgeKinds.size !== FILTERABLE_EDGE_KINDS.length;
+  const nodeTypesModified = enabledNodeKinds.size !== FILTERABLE_NODE_KINDS.length;
+  const scopeModified =
+    enabledCategories.size !== CATEGORIES.length ||
+    enabledEnvironments.size !== ENVIRONMENTS.length ||
+    enabledRuntimes.size !== RUNTIMES.length;
+
   return (
     <Stack
-      w="260px"
+      w="256px"
       h="full"
       p="4"
-      gap="6"
+      gap="5"
       bg="bg.panel"
       borderRightWidth="1px"
       borderColor="border"
       overflowY="auto"
     >
-      <Box>
-        <HStack justify="space-between" mb="2">
-          <Heading size="xs" color="fg.muted" textTransform="uppercase" letterSpacing="wide">
-            Search
-          </Heading>
-          <Button size="xs" variant="ghost" colorPalette="gray" onClick={onResetFilters}>
-            Reset
-          </Button>
-        </HStack>
+      <HStack gap="2">
         <Input
           size="sm"
-          placeholder="Filter nodes by name…"
+          rounded="lg"
+          placeholder="Search nodes…"
           value={search}
           onChange={(e) => onSearch(e.target.value)}
         />
-      </Box>
+        <Button
+          size="sm"
+          variant="ghost"
+          colorPalette="gray"
+          onClick={onResetFilters}
+          flexShrink={0}
+        >
+          Reset
+        </Button>
+      </HStack>
 
-      <Box>
-        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
-          Layout
-        </Heading>
-        <SimpleGrid columns={2} gap="1.5">
-          {ALGORITHMS.map((a) => {
-            const active = algorithm === a.value;
-            return (
-              <Button
-                key={a.value}
-                size="sm"
-                justifyContent="flex-start"
-                variant={active ? "subtle" : "ghost"}
-                colorPalette={active ? "blue" : "gray"}
-                opacity={active ? 1 : 0.7}
-                onClick={() => onAlgorithm(a.value)}
-              >
-                <Text fontWeight="bold">{a.glyph}</Text>
-                <Text ml="1.5" fontSize="xs">
-                  {a.label}
-                </Text>
-              </Button>
-            );
-          })}
-        </SimpleGrid>
-
-        <Text fontSize="xs" color="fg.muted" mt="3" mb="1.5">
-          Direction {directionEnabled ? "" : "(layered / tree only)"}
-        </Text>
-        <SimpleGrid columns={2} gap="1.5">
-          {DIRECTIONS.map((d) => {
-            const active = direction === d.value;
-            return (
-              <Button
+      <Section title="Layout">
+        <ChipRow>
+          {ALGORITHMS.map((a) => (
+            <Chip
+              key={a.value}
+              label={a.label}
+              glyph={a.glyph}
+              active={algorithm === a.value}
+              onClick={() => onAlgorithm(a.value)}
+            />
+          ))}
+        </ChipRow>
+        <Box mt="3">
+          <MiniLabel>Direction{directionEnabled ? "" : " · layered / tree only"}</MiniLabel>
+          <ChipRow>
+            {DIRECTIONS.map((d) => (
+              <Chip
                 key={d.value}
-                size="sm"
-                justifyContent="flex-start"
-                variant={active ? "subtle" : "ghost"}
-                colorPalette={active ? "blue" : "gray"}
-                opacity={directionEnabled ? (active ? 1 : 0.7) : 0.35}
+                label={d.label}
+                glyph={d.glyph}
+                active={direction === d.value}
                 disabled={!directionEnabled}
                 onClick={() => onDirection(d.value)}
-              >
-                <Text fontWeight="bold">{d.glyph}</Text>
-                <Text ml="1.5" fontSize="xs">
-                  {d.label}
-                </Text>
-              </Button>
-            );
-          })}
-        </SimpleGrid>
-      </Box>
+              />
+            ))}
+          </ChipRow>
+        </Box>
+      </Section>
 
-      <Box>
-        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
-          Relationships
-        </Heading>
-        <Stack gap="1.5">
-          {FILTERABLE_EDGE_KINDS.map((kind) => {
-            const active = enabledEdgeKinds.has(kind);
-            const style = EDGE_STYLES[kind];
-            return (
-              <Button
-                key={kind}
-                size="sm"
-                justifyContent="flex-start"
-                variant={active ? "subtle" : "ghost"}
-                colorPalette={active ? style.palette : "gray"}
-                opacity={active ? 1 : 0.55}
-                onClick={() => onToggleEdgeKind(kind)}
-              >
-                <Dot color={style.color} />
-                <Text ml="2">{style.label}</Text>
-              </Button>
-            );
-          })}
-        </Stack>
-      </Box>
-
-      <Box>
-        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
-          Category
-        </Heading>
-        <SimpleGrid columns={2} gap="1.5">
-          {CATEGORIES.map((c) => {
-            const active = enabledCategories.has(c.value);
-            return (
-              <Button
-                key={c.value}
-                size="sm"
-                justifyContent="flex-start"
-                variant={active ? "subtle" : "ghost"}
-                colorPalette={active ? (c.value === "ui" ? "green" : "blue") : "gray"}
-                opacity={active ? 1 : 0.55}
-                onClick={() => onToggleCategory(c.value)}
-              >
-                <Dot color={c.color} />
-                <Text ml="2">{c.label}</Text>
-              </Button>
-            );
-          })}
-        </SimpleGrid>
-      </Box>
-
-      <Box>
-        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
-          Environment
-        </Heading>
-        <SimpleGrid columns={2} gap="1.5">
-          {ENVIRONMENTS.map((e) => {
-            const active = enabledEnvironments.has(e.value);
-            return (
-              <Button
-                key={e.value}
-                size="sm"
-                justifyContent="flex-start"
-                variant={active ? "subtle" : "ghost"}
-                colorPalette={active ? (e.value === "client" ? "orange" : "teal") : "gray"}
-                opacity={active ? 1 : 0.55}
-                onClick={() => onToggleEnvironment(e.value)}
-              >
-                <Dot color={e.color} />
-                <Text ml="2">{e.label}</Text>
-              </Button>
-            );
-          })}
-        </SimpleGrid>
-      </Box>
-
-      <Box>
-        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
-          Runtime
-        </Heading>
-        <Stack gap="1.5">
-          {RUNTIMES.map((r) => {
-            const active = enabledRuntimes.has(r.value);
-            return (
-              <Button
-                key={r.value}
-                size="sm"
-                justifyContent="flex-start"
-                variant={active ? "subtle" : "ghost"}
-                colorPalette={active ? "purple" : "gray"}
-                opacity={active ? 1 : 0.55}
-                onClick={() => onToggleRuntime(r.value)}
-              >
-                <Dot color={r.color} />
-                <Text ml="2">{r.label}</Text>
-              </Button>
-            );
-          })}
-        </Stack>
-      </Box>
-
-      <Box>
-        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
-          Node types
-        </Heading>
-        <Stack gap="1.5">
-          {FILTERABLE_NODE_KINDS.map((kind) => {
-            const active = enabledNodeKinds.has(kind);
-            const style = NODE_STYLES[kind];
-            return (
-              <Button
-                key={kind}
-                size="sm"
-                justifyContent="flex-start"
-                variant={active ? "subtle" : "ghost"}
-                colorPalette={active ? style.palette : "gray"}
-                opacity={active ? 1 : 0.55}
-                onClick={() => onToggleNodeKind(kind)}
-              >
-                <Dot color={style.color} />
-                <Text ml="2">{style.label}</Text>
-              </Button>
-            );
-          })}
-        </Stack>
-      </Box>
-
-      <Box>
-        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
-          Detected roles
-        </Heading>
-        <Stack gap="2">
-          {(Object.keys(ROLE_STYLES) as NodeRole[]).map((role) => (
-            <HStack key={role} gap="2">
-              <Dot color={ROLE_STYLES[role].color} />
-              <Text fontSize="sm" color="fg.muted">
-                {ROLE_STYLES[role].label}
-              </Text>
-            </HStack>
+      <Section title="Relationships" modified={relationshipsModified}>
+        <ChipRow>
+          {FILTERABLE_EDGE_KINDS.map((kind) => (
+            <Chip
+              key={kind}
+              label={EDGE_STYLES[kind].label}
+              color={EDGE_STYLES[kind].color}
+              active={enabledEdgeKinds.has(kind)}
+              onClick={() => onToggleEdgeKind(kind)}
+            />
           ))}
-        </Stack>
-      </Box>
+        </ChipRow>
+      </Section>
 
-      <Box>
-        <Heading size="xs" color="fg.muted" mb="2" textTransform="uppercase" letterSpacing="wide">
-          External sources
-        </Heading>
-        <Stack gap="2">
-          {(Object.keys(EXTERNAL_STYLES) as ExternalKind[]).map((ext) => (
-            <HStack key={ext} gap="2">
-              <Dot color={EXTERNAL_STYLES[ext].color} />
-              <Text fontSize="sm" color="fg.muted">
-                {EXTERNAL_STYLES[ext].label}
-              </Text>
-            </HStack>
+      <Section title="Node types" modified={nodeTypesModified}>
+        <ChipRow>
+          {FILTERABLE_NODE_KINDS.map((kind) => (
+            <Chip
+              key={kind}
+              label={NODE_STYLES[kind].label}
+              color={NODE_STYLES[kind].color}
+              active={enabledNodeKinds.has(kind)}
+              onClick={() => onToggleNodeKind(kind)}
+            />
           ))}
-        </Stack>
-      </Box>
+        </ChipRow>
+      </Section>
 
-      <Text fontSize="xs" color="fg.subtle" mt="auto">
-        Toggle “Externals” in the toolbar to show imported packages and Node/Deno/Bun APIs.
-      </Text>
+      <Section title="Scope" defaultOpen={false} modified={scopeModified}>
+        <Stack gap="3">
+          <Box>
+            <MiniLabel>Category</MiniLabel>
+            <ChipRow>
+              {CATEGORIES.map((c) => (
+                <Chip
+                  key={c.value}
+                  label={c.label}
+                  color={c.color}
+                  active={enabledCategories.has(c.value)}
+                  onClick={() => onToggleCategory(c.value)}
+                />
+              ))}
+            </ChipRow>
+          </Box>
+          <Box>
+            <MiniLabel>Environment</MiniLabel>
+            <ChipRow>
+              {ENVIRONMENTS.map((e) => (
+                <Chip
+                  key={e.value}
+                  label={e.label}
+                  color={e.color}
+                  active={enabledEnvironments.has(e.value)}
+                  onClick={() => onToggleEnvironment(e.value)}
+                />
+              ))}
+            </ChipRow>
+          </Box>
+          <Box>
+            <MiniLabel>Runtime</MiniLabel>
+            <ChipRow>
+              {RUNTIMES.map((r) => (
+                <Chip
+                  key={r.value}
+                  label={r.label}
+                  color={r.color}
+                  active={enabledRuntimes.has(r.value)}
+                  onClick={() => onToggleRuntime(r.value)}
+                />
+              ))}
+            </ChipRow>
+          </Box>
+        </Stack>
+      </Section>
+
+      <Section title="Legend" defaultOpen={false}>
+        <Stack gap="4">
+          <Box>
+            <MiniLabel>Detected roles</MiniLabel>
+            <SimpleGrid columns={2} gap="2">
+              {(Object.keys(ROLE_STYLES) as NodeRole[]).map((role) => (
+                <LegendItem
+                  key={role}
+                  color={ROLE_STYLES[role].color}
+                  label={ROLE_STYLES[role].label}
+                />
+              ))}
+            </SimpleGrid>
+          </Box>
+          <Box>
+            <MiniLabel>External sources</MiniLabel>
+            <SimpleGrid columns={2} gap="2">
+              {(Object.keys(EXTERNAL_STYLES) as ExternalKind[]).map((ext) => (
+                <LegendItem
+                  key={ext}
+                  color={EXTERNAL_STYLES[ext].color}
+                  label={EXTERNAL_STYLES[ext].label}
+                />
+              ))}
+            </SimpleGrid>
+            <Text fontSize="11px" color="fg.subtle" mt="2.5" lineHeight="1.5">
+              Toggle “Externals” in the toolbar to show imported packages and Node/Deno/Bun APIs.
+            </Text>
+          </Box>
+        </Stack>
+      </Section>
     </Stack>
   );
 }
