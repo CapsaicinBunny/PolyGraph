@@ -106,6 +106,14 @@ export class VelloCanvas {
         var len0 = WASM_VECTOR_LEN;
         wasm.vellocanvas_set_selection(this.__wbg_ptr, ptr0, len0);
     }
+    /**
+     * Switch the canvas palette: `true` = dark (charcoal canvas, light cards),
+     * `false` = light (soft slate canvas, white cards). The caller re-renders.
+     * @param {boolean} dark
+     */
+    set_theme(dark) {
+        wasm.vellocanvas_set_theme(this.__wbg_ptr, dark);
+    }
 }
 if (Symbol.dispose) VelloCanvas.prototype[Symbol.dispose] = VelloCanvas.prototype.free;
 

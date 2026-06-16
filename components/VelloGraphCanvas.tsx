@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Box } from "@chakra-ui/react";
+import { useTheme } from "next-themes";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import type { SceneFilters } from "@/lib/graph/scene";
 import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
@@ -37,6 +38,7 @@ interface VelloHandle {
   set_selection: (id: string | undefined) => void;
   set_search: (q: string) => void;
   set_phase: (p: number) => void;
+  set_theme: (dark: boolean) => void;
   fit: () => Float64Array | number[];
   pick: (px: number, py: number) => string | undefined;
   resize: (w: number, h: number) => void;
@@ -82,6 +84,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   );
 
   const { scene, layingOut } = useScene(graph, expanded, filters, algorithm, direction);
+  const { resolvedTheme } = useTheme();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -291,6 +294,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     vc.render();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, selectedId, search]);
+
+  // Match the canvas palette to the app's light/dark mode.
+  useEffect(() => {
+    const vc = vcRef.current;
+    if (!ready || !vc) return;
+    vc.set_theme(resolvedTheme !== "light");
+    vc.render();
+  }, [ready, resolvedTheme]);
 
   return (
     <Box position="absolute" inset="0" ref={containerRef} overflow="hidden">

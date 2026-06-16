@@ -20,6 +20,7 @@ import {
 import { readSourceFiles } from "@/lib/client/read-files";
 import { apiBase } from "@/lib/client/api";
 import type { AnalyzeResult, SourceFileMap } from "@/lib/graph/types";
+import { ThemeToggle } from "./ThemeToggle";
 
 interface UploadDropzoneProps {
   onResult: (result: AnalyzeResult, stats: { fileCount: number; skipped: number }) => void;
@@ -251,6 +252,9 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
   return (
     <Container maxW="2xl" py={{ base: "10", md: "16" }}>
       <Stack gap="8">
+        <Flex justify="flex-end" mb={{ base: "-4", md: "-8" }}>
+          <ThemeToggle />
+        </Flex>
         {/* Hero */}
         <Stack gap="4" align="center" textAlign="center">
           <Image

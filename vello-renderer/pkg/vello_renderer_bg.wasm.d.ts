@@ -13,6 +13,7 @@ export const vellocanvas_set_data: (a: number, b: number, c: number) => [number,
 export const vellocanvas_set_phase: (a: number, b: number) => void;
 export const vellocanvas_set_search: (a: number, b: number, c: number) => void;
 export const vellocanvas_set_selection: (a: number, b: number, c: number) => void;
+export const vellocanvas_set_theme: (a: number, b: number) => void;
 export const wasm_bindgen__convert__closures_____invoke__h8d0a2bd66ba9dad6: (a: number, b: number, c: any) => [number, number];
 export const wasm_bindgen__convert__closures_____invoke__h26b056603e6c5143: (a: number, b: number, c: any, d: any) => void;
 export const wasm_bindgen__convert__closures_____invoke__h1f61da4447a6259c: (a: number, b: number, c: any) => void;

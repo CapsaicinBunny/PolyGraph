@@ -15,15 +15,23 @@ use web_sys::HtmlCanvasElement;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/Inter-Regular.ttf");
 
-// Light cards on a charcoal canvas.
-const CARD_FILL: Color = Color::from_rgb8(248, 250, 252);
-const CARD_BORDER: Color = Color::from_rgb8(226, 232, 240);
+// Accent / text colors shared by both themes (cards stay light-surfaced in both,
+// so dark label/badge text reads on them either way).
 const SELECT: Color = Color::from_rgb8(37, 99, 235);
 const MATCH: Color = Color::from_rgb8(234, 179, 8);
 const LABEL: Color = Color::from_rgb8(30, 41, 59);
 const BADGE: Color = Color::from_rgb8(100, 116, 139);
-const BASE: Color = Color::from_rgb8(21, 23, 28);
 const WHITE: Color = Color::from_rgb8(255, 255, 255);
+
+// Dark theme: light cards on a charcoal canvas.
+const BASE_DARK: Color = Color::from_rgb8(21, 23, 28);
+const CARD_FILL_DARK: Color = Color::from_rgb8(248, 250, 252);
+const CARD_BORDER_DARK: Color = Color::from_rgb8(226, 232, 240);
+
+// Light theme: white cards on a soft slate canvas, with a more visible border.
+const BASE_LIGHT: Color = Color::from_rgb8(237, 240, 245);
+const CARD_FILL_LIGHT: Color = Color::from_rgb8(255, 255, 255);
+const CARD_BORDER_LIGHT: Color = Color::from_rgb8(203, 213, 225);
 
 const FONT_SIZE: f32 = 13.0;
 const GLYPH_SIZE: f32 = 13.0;
@@ -89,6 +97,7 @@ pub struct VelloCanvas {
     selected: Option<String>,
     search: String,
     dash_phase: f64,
+    dark: bool,
 }
 
 #[wasm_bindgen]
@@ -136,6 +145,7 @@ impl VelloCanvas {
             selected: None,
             search: String::new(),
             dash_phase: 0.0,
+            dark: true,
         })
     }
 
@@ -170,6 +180,12 @@ impl VelloCanvas {
     /// Marching-ants dash offset (screen px), advanced by the animation loop.
     pub fn set_phase(&mut self, phase: f64) {
         self.dash_phase = phase;
+    }
+
+    /// Switch the canvas palette: `true` = dark (charcoal canvas, light cards),
+    /// `false` = light (soft slate canvas, white cards). The caller re-renders.
+    pub fn set_theme(&mut self, dark: bool) {
+        self.dark = dark;
     }
 
     /// Camera (screen units): world point -> screen = world * scale + (cam_x, cam_y).
@@ -213,6 +229,11 @@ impl VelloCanvas {
     pub fn render(&mut self) -> Result<(), JsValue> {
         self.scene.reset();
         let camera = self.camera();
+        let (base, card_fill, card_border) = if self.dark {
+            (BASE_DARK, CARD_FILL_DARK, CARD_BORDER_DARK)
+        } else {
+            (BASE_LIGHT, CARD_FILL_LIGHT, CARD_BORDER_LIGHT)
+        };
         let font_ref =
             FontRef::new(FONT_BYTES).map_err(|e| JsValue::from_str(&format!("font: {e}")))?;
         let charmap = font_ref.charmap();
@@ -280,8 +301,8 @@ impl VelloCanvas {
             self.scene.fill(Fill::NonZero, camera, accent, None, &card);
             let body = RoundedRect::new(n.x + 3.0, n.y, r, b, 10.0);
             self.scene
-                .fill(Fill::NonZero, camera, CARD_FILL, None, &body);
-            let border = if selected { SELECT } else { CARD_BORDER };
+                .fill(Fill::NonZero, camera, card_fill, None, &body);
+            let border = if selected { SELECT } else { card_border };
             let stroke_w = if selected { 1.8 } else { 1.0 };
             self.scene
                 .stroke(&Stroke::new(stroke_w), camera, border, None, &card);
@@ -391,7 +412,7 @@ impl VelloCanvas {
                 &self.scene,
                 &self.surface.target_view,
                 &vello::RenderParams {
-                    base_color: BASE,
+                    base_color: base,
                     width: self.surface.config.width,
                     height: self.surface.config.height,
                     antialiasing_method: AaConfig::Area,
