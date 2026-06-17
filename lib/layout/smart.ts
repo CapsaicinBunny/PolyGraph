@@ -47,6 +47,7 @@ function dagreItems(
   items: { id: string; width: number; height: number }[],
   edges: { source: string; target: string }[],
   direction: LayoutDirection,
+  spacing: number,
 ): Map<string, XYPosition> {
   const centers = new Map<string, XYPosition>();
   if (items.length === 0) return centers;
@@ -54,8 +55,8 @@ function dagreItems(
   const g = new dagre.graphlib.Graph();
   g.setGraph({
     rankdir: direction,
-    nodesep: vertical ? 36 : 24,
-    ranksep: vertical ? 70 : 90,
+    nodesep: (vertical ? 36 : 24) * spacing,
+    ranksep: (vertical ? 70 : 90) * spacing,
     marginx: 0,
     marginy: 0,
   });
@@ -75,7 +76,7 @@ function dagreItems(
 }
 
 /** Row-major grid of items (centers), sized to the largest item so none overlap. Used when a cluster has no internal edges. */
-function gridItems(items: Item[]): Centers {
+function gridItems(items: Item[], spacing: number): Centers {
   const centers: Centers = new Map();
   const n = items.length;
   if (n === 0) return centers;
@@ -86,8 +87,8 @@ function gridItems(items: Item[]): Centers {
     cellW = Math.max(cellW, it.width);
     cellH = Math.max(cellH, it.height);
   }
-  const stepX = cellW + 40;
-  const stepY = cellH + 40;
+  const stepX = cellW + 40 * spacing;
+  const stepY = cellH + 40 * spacing;
   items.forEach((it, i) => {
     centers.set(it.id, { x: (i % cols) * stepX, y: Math.floor(i / cols) * stepY });
   });
@@ -95,7 +96,7 @@ function gridItems(items: Item[]): Centers {
 }
 
 /** Items evenly spaced on a ring around the origin (centers). Used inside SCC super-items. */
-function circularItems(items: Item[]): Centers {
+function circularItems(items: Item[], spacing: number): Centers {
   const centers: Centers = new Map();
   const n = items.length;
   if (n === 0) return centers;
@@ -106,7 +107,7 @@ function circularItems(items: Item[]): Centers {
   let extent = 0;
   for (const it of items) extent = Math.max(extent, Math.hypot(it.width, it.height));
   // Radius from a per-item arc allowance so cards never crowd on the ring.
-  const radius = Math.max(160, (n * (extent + 30)) / (2 * Math.PI));
+  const radius = Math.max(160 * spacing, (n * (extent + 30 * spacing)) / (2 * Math.PI));
   items.forEach((it, i) => {
     const angle = (i / n) * Math.PI * 2;
     centers.set(it.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
@@ -119,7 +120,11 @@ interface SimNode extends SimulationNodeDatum {
 }
 
 /** Force-directed placement of items (centers) via fixed synchronous ticks. Deterministic (no RNG). */
-function forceItems(items: Item[], edges: { source: string; target: string }[]): Centers {
+function forceItems(
+  items: Item[],
+  edges: { source: string; target: string }[],
+  spacing: number,
+): Centers {
   const centers: Centers = new Map();
   if (items.length === 0) return centers;
   const simNodes: SimNode[] = items.map((it) => ({ id: it.id }));
@@ -136,11 +141,11 @@ function forceItems(items: Item[], edges: { source: string; target: string }[]):
       "link",
       forceLink<SimNode, { source: string; target: string }>(links)
         .id((d) => d.id)
-        .distance(radius * 2.2)
+        .distance(radius * 2.2 * spacing)
         .strength(0.4),
     )
     .force("center", forceCenter(0, 0))
-    .force("collide", forceCollide(radius))
+    .force("collide", forceCollide(radius * spacing))
     .stop();
   for (let i = 0; i < 400; i++) sim.tick();
   items.forEach((it, i) => centers.set(it.id, { x: simNodes[i].x ?? 0, y: simNodes[i].y ?? 0 }));
@@ -163,15 +168,20 @@ function layoutCluster(
   ancestry: Map<string, string[]>,
   kindOf: Map<string, string>,
   edges: LayoutInput["edges"],
+  spacing: number,
 ): ClusterLayout {
   const isRoot = node.id === "";
+  const pad = PADDING * spacing;
   const childKeys = [...node.children.keys()].sort();
 
   // 1. Lay out child clusters first (bottom-up).
   const childLayouts = new Map<string, ClusterLayout>();
   for (const key of childKeys) {
     const child = node.children.get(key)!;
-    childLayouts.set(child.id, layoutCluster(child, depth + 1, direction, ancestry, kindOf, edges));
+    childLayouts.set(
+      child.id,
+      layoutCluster(child, depth + 1, direction, ancestry, kindOf, edges, spacing),
+    );
   }
 
   // 2. Items = child clusters (box sizes) + direct nodes (node sizes).
@@ -227,7 +237,7 @@ function layoutCluster(
       continue;
     }
     const memberItems: Item[] = comp.members.map((id) => ({ id, ...sizeOf.get(id)! }));
-    const ring = circularItems(memberItems);
+    const ring = circularItems(memberItems, spacing);
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -257,10 +267,10 @@ function layoutCluster(
   const mode = chooseMode(condItems.length, condEdges.length);
   const condCenters =
     mode === "grid"
-      ? gridItems(condItems)
+      ? gridItems(condItems, spacing)
       : mode === "force"
-        ? forceItems(condItems, condEdges)
-        : dagreItems(condItems, condEdges, direction);
+        ? forceItems(condItems, condEdges, spacing)
+        : dagreItems(condItems, condEdges, direction, spacing);
 
   // Expand super-items: each original item id → world-ish center (cluster-local).
   const centers: Centers = new Map();
@@ -316,8 +326,8 @@ function layoutCluster(
     maxX = Math.max(maxX, p.x + p.w);
     maxY = Math.max(maxY, p.y + p.h);
   }
-  const dx = (isRoot ? 0 : PADDING) - minX;
-  const dy = (isRoot ? 0 : PADDING + HEADER_H) - minY;
+  const dx = (isRoot ? 0 : pad) - minX;
+  const dy = (isRoot ? 0 : pad + HEADER_H) - minY;
   for (const [nid, p] of positions) positions.set(nid, { x: p.x + dx, y: p.y + dy });
   for (const b of clusters) {
     b.x += dx;
@@ -326,8 +336,8 @@ function layoutCluster(
   const contentW = maxX - minX;
   const contentH = maxY - minY;
   return {
-    width: isRoot ? contentW : contentW + 2 * PADDING,
-    height: isRoot ? contentH : contentH + 2 * PADDING + HEADER_H,
+    width: isRoot ? contentW : contentW + 2 * pad,
+    height: isRoot ? contentH : contentH + 2 * pad + HEADER_H,
     positions,
     clusters,
   };
@@ -336,10 +346,11 @@ function layoutCluster(
 /** Smart (semanticMultilevel) layout: group by directory / community / none, lay out by dependency flow. */
 export function smartLayout(
   view: LayoutInput,
-  options: { direction?: LayoutDirection; groupBy?: GroupBy } = {},
+  options: { direction?: LayoutDirection; groupBy?: GroupBy; density?: number } = {},
 ): LayoutResult {
   const direction = options.direction ?? "TB";
   const groupBy = options.groupBy ?? "directory";
+  const spacing = options.density ?? 1;
 
   let groupOf: ((node: { id: string; kind: string }) => string[]) | undefined;
   if (groupBy === "community") {
@@ -361,6 +372,6 @@ export function smartLayout(
 
   const { root, ancestry } = buildClusterTree(view.nodes, groupOf);
   const kindOf = new Map(view.nodes.map((n) => [n.id, n.kind]));
-  const out = layoutCluster(root, -1, direction, ancestry, kindOf, view.edges);
+  const out = layoutCluster(root, -1, direction, ancestry, kindOf, view.edges, spacing);
   return { nodes: out.positions, clusters: out.clusters };
 }

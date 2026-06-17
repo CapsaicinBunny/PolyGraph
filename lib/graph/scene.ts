@@ -120,6 +120,7 @@ export function buildSceneStructure(
   direction: LayoutDirection,
   collapsedClusters: Set<string> = new Set(),
   groupBy: GroupBy = "directory",
+  density = 1,
 ): SceneStructure {
   const {
     showExternal,
@@ -170,6 +171,7 @@ export function buildSceneStructure(
     ser(enabledLanguages),
     ser(collapsedClusters),
     groupBy,
+    `d${density}`,
   ].join("|");
 
   const symbolCount = new Map<string, number>();
@@ -226,7 +228,7 @@ export function buildSceneStructure(
       nodes: view.nodes.map((n) => ({ id: n.id, kind: n.kind })),
       edges: visibleEdges.map((e) => ({ source: e.source, target: e.target })),
     },
-    options: { algorithm, direction, groupBy },
+    options: { algorithm, direction, groupBy, density },
   };
 }
 
