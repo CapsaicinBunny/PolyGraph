@@ -6,6 +6,7 @@
 
 import { stat } from "node:fs/promises";
 import type { PackageManifest } from "../graph/levels/types";
+import { trimIfLarge } from "../graph/trim";
 import type { AnalyzeError, GraphModel, SourceFileMap, UnresolvedRef } from "../graph/types";
 import { analyzeProject } from "../kernel";
 import { discoverPackages } from "./manifests";
@@ -86,7 +87,11 @@ export async function runScan(
     const packages = await readPackageDeps(root);
     const manifests = discoverPackages(files);
     const tAnalyze = performance.now();
-    const { graph, errors, unresolved } = await analyzeProject(files, { packages });
+    const analyzed = await analyzeProject(files, { packages });
+    // On a huge graph, edge occurrences dominate the payload and can push
+    // JSON.stringify past V8's string ceiling — trim them to a sample (count kept).
+    const graph = trimIfLarge(analyzed.graph);
+    const { errors, unresolved } = analyzed;
     const analyzeMs = performance.now() - tAnalyze;
     console.error(
       `[scan] ${fileCount} files | read ${scanMs.toFixed(0)}ms | analyze ${analyzeMs.toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges | ${manifests.length} packages`,
