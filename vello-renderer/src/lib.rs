@@ -96,6 +96,8 @@ struct SceneData {
     edges: Vec<EdgeData>,
     #[serde(default)]
     clusters: Vec<ClusterData>,
+    #[serde(default)]
+    routing: String,
 }
 
 #[wasm_bindgen]
@@ -351,15 +353,6 @@ impl VelloCanvas {
             };
             let dx = sx2 - sx1;
             let dy = sy2 - sy1;
-            // Smooth S-curve: pull control points along the dominant axis.
-            let (c1, c2) = if dx.abs() >= dy.abs() {
-                let mid = sx1 + dx * 0.5;
-                (Point::new(mid, sy1), Point::new(mid, sy2))
-            } else {
-                let mid = sy1 + dy * 0.5;
-                (Point::new(sx1, mid), Point::new(sx2, mid))
-            };
-            let curve = CubicBez::new(Point::new(sx1, sy1), c1, c2, Point::new(sx2, sy2));
             // Fade long-distance edges so a dense graph's local structure stays
             // legible: full opacity up to ~600 world units, easing to 0.3 by ~4000.
             let world_len = ((e.x2 - e.x1).powi(2) + (e.y2 - e.y1).powi(2)).sqrt();
@@ -370,8 +363,35 @@ impl VelloCanvas {
                 e.color[2] as f32 / 255.0,
                 fade,
             ]);
-            self.scene
-                .stroke(&dash, Affine::IDENTITY, color, None, &curve);
+            if self.data.routing == "orthogonal" {
+                // Right-angle elbow: turn once on the dominant axis' midpoint.
+                let mut path = BezPath::new();
+                path.move_to((sx1, sy1));
+                if dx.abs() >= dy.abs() {
+                    let mx = (sx1 + sx2) * 0.5;
+                    path.line_to((mx, sy1));
+                    path.line_to((mx, sy2));
+                } else {
+                    let my = (sy1 + sy2) * 0.5;
+                    path.line_to((sx1, my));
+                    path.line_to((sx2, my));
+                }
+                path.line_to((sx2, sy2));
+                self.scene
+                    .stroke(&dash, Affine::IDENTITY, color, None, &path);
+            } else {
+                // Smooth S-curve: pull control points along the dominant axis.
+                let (c1, c2) = if dx.abs() >= dy.abs() {
+                    let mid = sx1 + dx * 0.5;
+                    (Point::new(mid, sy1), Point::new(mid, sy2))
+                } else {
+                    let mid = sy1 + dy * 0.5;
+                    (Point::new(sx1, mid), Point::new(sx2, mid))
+                };
+                let curve = CubicBez::new(Point::new(sx1, sy1), c1, c2, Point::new(sx2, sy2));
+                self.scene
+                    .stroke(&dash, Affine::IDENTITY, color, None, &curve);
+            }
         }
 
         let label_lod = self.cam_scale >= LABEL_MIN_SCALE;

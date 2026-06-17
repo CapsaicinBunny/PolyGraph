@@ -37,17 +37,28 @@ const lastSegment = (clusterId: string): string => clusterId.slice(clusterId.las
  * nodes are rerouted to the aggregate (self-loops dropped, duplicates merged). Pure —
  * returns a new GraphModel, or the input unchanged when nothing collapses.
  */
-export function collapseClusters(graph: GraphModel, collapsed: Set<string>): GraphModel {
+export function collapseClusters(
+  graph: GraphModel,
+  collapsed: Set<string>,
+  communityOf?: Map<string, string>,
+): GraphModel {
   if (collapsed.size === 0) return graph;
 
   // Each node → its outermost collapsed ancestor dir (the collapse root), if any.
   const absorbedBy = new Map<string, string>();
   for (const n of graph.nodes) {
+    let absorbed = false;
     for (const prefix of dirPrefixes(n)) {
       if (collapsed.has(prefix)) {
         absorbedBy.set(n.id, prefix);
+        absorbed = true;
         break; // outermost-first
       }
+    }
+    // Fall back to community membership when no directory absorbed the node.
+    if (!absorbed && communityOf) {
+      const community = communityOf.get(n.id);
+      if (community && collapsed.has(community)) absorbedBy.set(n.id, community);
     }
   }
   if (absorbedBy.size === 0) return graph;

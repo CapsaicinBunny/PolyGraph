@@ -20,6 +20,7 @@ import {
 } from "@/lib/graph/filters";
 import { FiltersPanel } from "./FiltersPanel";
 import { NodeDetailPanel } from "./NodeDetailPanel";
+import { SettingsPanel } from "./SettingsPanel";
 import { Sidebar } from "./Sidebar";
 import { ThemeToggle } from "./ThemeToggle";
 import { UploadDropzone } from "./UploadDropzone";
@@ -67,6 +68,9 @@ export function Explorer() {
   const [enabledFolders, setEnabledFolders] = useState<Set<string>>(() => new Set());
   const [enabledLanguages, setEnabledLanguages] = useState<Set<string>>(() => new Set());
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [edgeRouting, setEdgeRouting] = useState<"curved" | "orthogonal">("curved");
+  const [communityCollapse, setCommunityCollapse] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const graph = result?.graph ?? null;
 
@@ -109,6 +113,8 @@ export function Explorer() {
       setCollapsedClusters(new Set());
       setSelectedId(null);
       setSearch("");
+      setEdgeRouting("curved");
+      setCommunityCollapse(false);
       resetFileFilters(res.graph);
     },
     [resetFileFilters],
@@ -283,6 +289,14 @@ export function Explorer() {
         >
           Filters
         </Button>
+        <Button
+          size="sm"
+          variant={settingsOpen ? "subtle" : "ghost"}
+          colorPalette={settingsOpen ? "blue" : "gray"}
+          onClick={() => setSettingsOpen((v) => !v)}
+        >
+          Settings
+        </Button>
         <Button size="sm" variant="outline" onClick={() => setResult(null)}>
           Analyze another
         </Button>
@@ -332,6 +346,8 @@ export function Explorer() {
             enabledFolders={enabledFolders}
             enabledLanguages={enabledLanguages}
             collapsedClusters={collapsedClusters}
+            communityCollapse={communityCollapse}
+            edgeRouting={edgeRouting}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
             onToggleCollapse={handleToggleCollapse}
@@ -348,6 +364,15 @@ export function Explorer() {
             onSetFolders={handleSetFolders}
             onSetLanguages={handleSetLanguages}
             onClose={() => setFiltersOpen(false)}
+          />
+        )}
+        {settingsOpen && (
+          <SettingsPanel
+            edgeRouting={edgeRouting}
+            onEdgeRouting={setEdgeRouting}
+            communityCollapse={communityCollapse}
+            onCommunityCollapse={setCommunityCollapse}
+            onClose={() => setSettingsOpen(false)}
           />
         )}
         {selectedId && (

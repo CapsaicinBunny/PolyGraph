@@ -60,6 +60,11 @@ export interface LayoutOptions {
   groupBy?: GroupBy;
   /** Spacing multiplier for the Smart layout (1 = normal; >1 sparser, <1 denser). */
   density?: number;
+  /**
+   * Precomputed community assignment (nodeId → community id). Injected so the
+   * Smart layout and the collapse transform share a single source of truth.
+   */
+  communityOf?: Map<string, string>;
 }
 
 /** A directory/package container box emitted by the Smart layout. World-space, top-left origin. */
@@ -413,8 +418,12 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
   const { algorithm = "layered", direction = "LR" } = options;
   switch (algorithm) {
     case "smart":
-      return smartLayout(view, { direction, groupBy: options.groupBy, density: options.density })
-        .nodes;
+      return smartLayout(view, {
+        direction,
+        groupBy: options.groupBy,
+        density: options.density,
+        communityOf: options.communityOf,
+      }).nodes;
     case "tree":
       return layoutByComponents(view, (sub) => dagreLayout(sub, direction, "tight-tree"));
     case "radial":

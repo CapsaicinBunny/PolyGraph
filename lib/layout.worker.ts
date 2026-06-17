@@ -17,6 +17,7 @@ self.onmessage = (event: MessageEvent<Request>) => {
           direction: options.direction,
           groupBy: options.groupBy,
           density: options.density,
+          communityOf: options.communityOf,
         })
       : { nodes: layoutView(input, options), clusters: [] };
   const flat: [string, number, number][] = [];
