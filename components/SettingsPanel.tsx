@@ -65,6 +65,7 @@ export function SettingsPanel({
         <HStack gap="2">
           <Button
             size="sm"
+            aria-pressed={edgeRouting === "curved"}
             variant={edgeRouting === "curved" ? "subtle" : "ghost"}
             colorPalette={edgeRouting === "curved" ? "blue" : "gray"}
             onClick={() => onEdgeRouting("curved")}
@@ -73,6 +74,7 @@ export function SettingsPanel({
           </Button>
           <Button
             size="sm"
+            aria-pressed={edgeRouting === "orthogonal"}
             variant={edgeRouting === "orthogonal" ? "subtle" : "ghost"}
             colorPalette={edgeRouting === "orthogonal" ? "blue" : "gray"}
             onClick={() => onEdgeRouting("orthogonal")}
@@ -86,6 +88,7 @@ export function SettingsPanel({
         <GroupLabel title="Collapse community groups" />
         <Button
           size="sm"
+          aria-pressed={communityCollapse}
           variant={communityCollapse ? "subtle" : "ghost"}
           colorPalette={communityCollapse ? "blue" : "gray"}
           onClick={() => onCommunityCollapse(!communityCollapse)}
