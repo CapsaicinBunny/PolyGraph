@@ -9,8 +9,17 @@
 import { join } from "node:path";
 
 export interface AnalyzerCore {
-  /** Returns JSON `{ nodes, edges, errors }` for a bucket of same-language files. */
-  analyze(grammar: string, querySrc: string, importStyle: string, filesJson: string): string;
+  /**
+   * Returns a Promise resolving to JSON `{ nodes, edges, errors }` for a bucket
+   * of same-language files. The native binding runs the parse on napi's libuv
+   * threadpool (off the JS thread), so callers must await the result.
+   */
+  analyze(
+    grammar: string,
+    querySrc: string,
+    importStyle: string,
+    filesJson: string,
+  ): Promise<string>;
 }
 
 /**

@@ -37,8 +37,17 @@ export async function createTreeSitterProvider(packId: string): Promise<Language
   return {
     id: pack.id,
     extensions: pack.extensions,
-    analyze(files: Record<string, string>): ProviderResult {
-      const json = core.analyze(pack.grammar, pack.query, pack.importStyle, JSON.stringify(files));
+    // The native core now runs the parse off the JS thread and returns a
+    // Promise, so this is async and we await it. That's what lets the kernel's
+    // `Promise.all` over buckets parse different languages concurrently instead
+    // of freezing Bun on one synchronous multi-minute call.
+    async analyze(files: Record<string, string>): Promise<ProviderResult> {
+      const json = await core.analyze(
+        pack.grammar,
+        pack.query,
+        pack.importStyle,
+        JSON.stringify(files),
+      );
       const out = JSON.parse(json) as CoreOutput;
       const edges: GraphEdge[] = out.edges.map((e) => {
         const { line, column, confidence, ...edge } = e;

@@ -5,11 +5,14 @@
 
 /**
  * Analyze a bucket of same-language files. `files_json` is a JSON object of
- * relative path -> source text. Returns a JSON `{ nodes, edges, errors }`.
+ * relative path -> source text. Returns a `Promise` that resolves to a JSON
+ * `{ nodes, edges, errors }` string. The heavy work runs off the JS thread on
+ * napi's libuv threadpool (see [`AnalyzeTask`]); the inputs and the resolved
+ * JSON shape are identical to the previous synchronous binding.
  */
 export declare function analyze(
   grammar: string,
   querySrc: string,
   importStyle: string,
   filesJson: string,
-): string;
+): Promise<string>;
