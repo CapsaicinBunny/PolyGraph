@@ -66,11 +66,11 @@ Each analyzer replaces its local `seen`-Set dedup with an `EdgeBuilder`. Evidenc
 Confidence:
 | Analyzer | exact | ambiguous | inferred |
 | --- | --- | --- | --- |
-| `calls`, `composition`, `components`, `inheritance` | identifier resolves to exactly 1 definition (`getDefinitionNodes().length === 1`) | resolves to >1 definition | — |
+| `calls`, `composition`, `components`, `inheritance` | identifier resolves to exactly 1 **distinct** target id | resolves to >1 distinct target id | — |
 | `imports` → in-project module | resolved to a project file | — | — |
 | `imports`/`externals` → third-party | — | — | external boundary (import site exact, target is external) |
 
-`calls.ts`'s `resolveTarget` is extended to report whether the identifier had >1 definition node (→ `ambiguous`). References that resolve to **0** definitions are unresolved — still dropped in Phase 1 (surfaced in Phase 4).
+`calls.ts`'s `resolveTarget` is extended to report whether the identifier resolved to >1 **distinct** target id (→ `ambiguous`) — overloads / merged declarations that map to one node stay `exact`. References that resolve to **0** definitions are unresolved — still dropped in Phase 1 (surfaced in Phase 4).
 
 ### Edge-merge points (all must concat occurrences + sum counts, capped)
 
