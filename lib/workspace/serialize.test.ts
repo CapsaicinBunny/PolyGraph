@@ -75,4 +75,21 @@ describe("JSON round-trip + validation", () => {
   test("rejects a newer workspace version", () => {
     expect(() => parseWorkspace('{"version":999,"filters":{},"layout":{}}')).toThrow(/newer/);
   });
+
+  test("rejects malformed-but-present filters/layout contents", () => {
+    // filters/layout present but with wrong field types — must not restore undefined.
+    const ws = captureWorkspace(sample());
+    const broken = { ...ws, filters: { ...ws.filters, enabledNodeKinds: "oops" } };
+    expect(() => parseWorkspace(JSON.stringify(broken))).toThrow(/enabledNodeKinds/);
+
+    const broken2 = { ...ws, layout: { ...ws.layout, density: "fast" } };
+    expect(() => parseWorkspace(JSON.stringify(broken2))).toThrow(/density/);
+
+    const broken3 = { ...ws, focusedIds: 5 };
+    expect(() => parseWorkspace(JSON.stringify(broken3))).toThrow(/focusedIds/);
+  });
+
+  test("accepts a well-formed captured workspace", () => {
+    expect(() => parseWorkspace(workspaceToJSON(captureWorkspace(sample())))).not.toThrow();
+  });
 });

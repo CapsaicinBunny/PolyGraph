@@ -69,6 +69,11 @@ function esc(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Slugify a string into a safe SVG/CSS id fragment (no spaces, parens, entities). */
+function slug(s: string): string {
+  return s.replace(/[^A-Za-z0-9_-]/g, "-");
+}
+
 const center = (n: SceneNode) => ({ x: n.x + n.width / 2, y: n.y + n.height / 2 });
 
 /** Point where the ray from a rect's center toward `to` crosses the rect border. */
@@ -132,7 +137,7 @@ export function sceneToSVG(scene: Scene, options: SvgOptions = {}): string {
     const dash = e.dashed ? ' stroke-dasharray="4 3"' : "";
     out.push(
       `<line x1="${p1.x.toFixed(1)}" y1="${p1.y.toFixed(1)}" x2="${p2.x.toFixed(1)}" y2="${p2.y.toFixed(1)}" ` +
-        `stroke="${e.color}" stroke-width="1.5"${dash} marker-end="url(#arrow-${esc(e.kind)})"/>`,
+        `stroke="${e.color}" stroke-width="1.5"${dash} marker-end="url(#arrow-${slug(e.kind)})"/>`,
     );
   }
 
@@ -142,7 +147,7 @@ export function sceneToSVG(scene: Scene, options: SvgOptions = {}): string {
   out.push("<defs>");
   for (const [kind, color] of arrowKinds) {
     out.push(
-      `<marker id="arrow-${esc(kind)}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" ` +
+      `<marker id="arrow-${slug(kind)}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" ` +
         `markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${color}"/></marker>`,
     );
   }

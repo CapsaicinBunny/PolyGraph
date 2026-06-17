@@ -26,6 +26,9 @@ const sedge = (source: string, target: string): SceneEdge => ({
   color: "#888",
   dashed: false,
   toExternal: false,
+  occurrences: [],
+  count: 1,
+  originalEdgeIds: [`${source}->${target}:import`],
 });
 
 const scene: Scene = {
@@ -63,6 +66,17 @@ describe("sceneToSVG", () => {
 
   test("respects the theme background", () => {
     expect(sceneToSVG(scene, { theme: DARK_THEME })).toContain(`fill="${DARK_THEME.background}"`);
+  });
+
+  test("slugifies edge-kind marker ids so whitespace can't break url(#…)", () => {
+    const s: Scene = {
+      ...scene,
+      edges: [{ ...sedge("a.ts", "b.ts"), kind: "weird kind" as never }],
+    };
+    const svg = sceneToSVG(s);
+    expect(svg).toContain('marker-end="url(#arrow-weird-kind)"');
+    expect(svg).toContain('id="arrow-weird-kind"');
+    expect(svg).not.toContain("arrow-weird kind");
   });
 
   test("escapes label text", () => {

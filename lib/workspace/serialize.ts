@@ -88,6 +88,55 @@ export function parseWorkspace(text: string): Workspace {
       `Workspace version ${ws.version} is newer than supported (${WORKSPACE_VERSION})`,
     );
   }
-  if (!ws.filters || !ws.layout) throw new Error("Workspace is missing filters/layout");
+  validateShape(ws);
   return ws as Workspace;
+}
+
+const STRING_ARRAY_FILTERS = [
+  "enabledEdgeKinds",
+  "enabledNodeKinds",
+  "enabledCategories",
+  "enabledEnvironments",
+  "enabledRuntimes",
+  "enabledFolders",
+  "enabledLanguages",
+] as const;
+
+function isStringArray(v: unknown): boolean {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+/**
+ * Validate the contents (not just presence) of a workspace so a malformed but
+ * present `filters`/`layout` can't restore `undefined` fields into Explorer state.
+ */
+function validateShape(ws: Partial<Workspace>): void {
+  if (!ws.filters || typeof ws.filters !== "object")
+    throw new Error("Workspace.filters is missing");
+  if (!ws.layout || typeof ws.layout !== "object") throw new Error("Workspace.layout is missing");
+
+  const f = ws.filters;
+  if (typeof f.showExternal !== "boolean")
+    throw new Error("filters.showExternal must be a boolean");
+  if (typeof f.search !== "string") throw new Error("filters.search must be a string");
+  for (const key of STRING_ARRAY_FILTERS) {
+    if (!isStringArray(f[key])) throw new Error(`filters.${key} must be a string array`);
+  }
+
+  const l = ws.layout;
+  for (const key of ["algorithm", "direction", "groupBy", "edgeRouting"] as const) {
+    if (typeof l[key] !== "string") throw new Error(`layout.${key} must be a string`);
+  }
+  if (typeof l.density !== "number") throw new Error("layout.density must be a number");
+  if (typeof l.communityCollapse !== "boolean") {
+    throw new Error("layout.communityCollapse must be a boolean");
+  }
+
+  if (!isStringArray(ws.expandedFiles)) throw new Error("expandedFiles must be a string array");
+  if (!isStringArray(ws.collapsedClusters)) {
+    throw new Error("collapsedClusters must be a string array");
+  }
+  if (ws.focusedIds !== null && !isStringArray(ws.focusedIds)) {
+    throw new Error("focusedIds must be a string array or null");
+  }
 }
