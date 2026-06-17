@@ -124,7 +124,17 @@ pub struct VelloCanvas {
     search: String,
     dash_phase: f64,
     dark: bool,
+    /// Smallest allowed camera scale for the current scene. Tracks `fit()` so a graph
+    /// too large to fit above the usual floor can still be zoomed all the way out.
+    min_scale: f64,
 }
+
+const ZOOM_MAX: f64 = 4.0;
+// Normal zoom-out floor for graphs that already fit above it (keeps small graphs from
+// zooming out into empty space). Big graphs get a lower floor from `fit()` (see min_scale).
+const ZOOM_OUT_FLOOR: f64 = 0.02;
+// Absolute floor for the computed fit scale — only guards against zero/degenerate content.
+const FIT_HARD_FLOOR: f64 = 0.0001;
 
 #[wasm_bindgen]
 impl VelloCanvas {
@@ -172,6 +182,7 @@ impl VelloCanvas {
             search: String::new(),
             dash_phase: 0.0,
             dark: true,
+            min_scale: ZOOM_OUT_FLOOR,
         })
     }
 
@@ -192,7 +203,7 @@ impl VelloCanvas {
     pub fn set_camera(&mut self, x: f64, y: f64, scale: f64) {
         self.cam_x = x;
         self.cam_y = y;
-        self.cam_scale = scale.clamp(0.02, 4.0);
+        self.cam_scale = scale.clamp(self.min_scale, ZOOM_MAX);
     }
 
     pub fn set_selection(&mut self, id: Option<String>) {
@@ -234,7 +245,11 @@ impl VelloCanvas {
         let content_w = (max_x - min_x).max(1.0);
         let content_h = (max_y - min_y).max(1.0);
         let scale = (self.vw / content_w).min(self.vh / content_h).min(1.5) * 0.9;
-        self.cam_scale = scale.clamp(0.02, 4.0);
+        // Fit may need to go below the normal zoom-out floor for very large graphs
+        // (e.g. the fully-expanded symbol level), so only the hard floor applies here.
+        self.cam_scale = scale.clamp(FIT_HARD_FLOOR, ZOOM_MAX);
+        // Let the user zoom out to at least the fit scale; small graphs keep the normal floor.
+        self.min_scale = self.cam_scale.min(ZOOM_OUT_FLOOR);
         self.cam_x = self.vw / 2.0 - (min_x + max_x) / 2.0 * self.cam_scale;
         self.cam_y = self.vh / 2.0 - (min_y + max_y) / 2.0 * self.cam_scale;
         vec![self.cam_x, self.cam_y, self.cam_scale]

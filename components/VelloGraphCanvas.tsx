@@ -141,6 +141,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const vcRef = useRef<VelloHandle | null>(null);
   const cam = useRef({ x: 0, y: 0, scale: 1 });
+  // Smallest zoom the wheel allows; tracks fit() so a graph too big to fit above the
+  // normal floor (e.g. the fully-expanded symbol level) can still be zoomed all the way out.
+  const minScale = useRef(0.02);
   const dpr = useRef(1);
   const isFile = useRef(new Map<string, boolean>());
   const edgesById = useRef(new Map<string, SceneEdge>());
@@ -252,7 +255,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       const px = (e.clientX - rect.left) * dpr.current;
       const py = (e.clientY - rect.top) * dpr.current;
       const c = cam.current;
-      const next = Math.min(4, Math.max(0.02, c.scale * Math.exp(-e.deltaY * 0.0015)));
+      const next = Math.min(4, Math.max(minScale.current, c.scale * Math.exp(-e.deltaY * 0.0015)));
       c.x = px - ((px - c.x) / c.scale) * next;
       c.y = py - ((py - c.y) / c.scale) * next;
       c.scale = next;
@@ -361,6 +364,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     vc.set_data(payload);
     const fit = vc.fit();
     cam.current = { x: fit[0], y: fit[1], scale: fit[2] };
+    // Match the renderer's dynamic floor: allow zooming out to the fit scale (or the
+    // normal floor, whichever is smaller) so large graphs aren't stuck zoomed in.
+    minScale.current = Math.min(fit[2], 0.02);
     vc.set_selection(selectedId ?? undefined);
     vc.set_search(search);
     vc.render();
