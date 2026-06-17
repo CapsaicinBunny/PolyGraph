@@ -17,9 +17,22 @@ fn spawn_detached(program: String, args: Vec<String>) -> Result<(), String> {
 
 /// Read lines [start, end] (1-based, inclusive) of a file — the source-preview
 /// snippet. Bounds are clamped so out-of-range requests return what exists.
+/// Reads are constrained to `root` (the scanned project) as a path-traversal
+/// guard, since the requested path originates in the webview.
 #[tauri::command]
-fn read_source_slice(path: String, start: usize, end: usize) -> Result<String, String> {
-  let content = std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
+fn read_source_slice(
+  root: String,
+  path: String,
+  start: usize,
+  end: usize,
+) -> Result<String, String> {
+  let canon_root =
+    std::fs::canonicalize(&root).map_err(|e| format!("bad project root {root}: {e}"))?;
+  let canon_path = std::fs::canonicalize(&path).map_err(|e| format!("read {path}: {e}"))?;
+  if !canon_path.starts_with(&canon_root) {
+    return Err(format!("refusing to read outside the project: {path}"));
+  }
+  let content = std::fs::read_to_string(&canon_path).map_err(|e| format!("read {path}: {e}"))?;
   let lines: Vec<&str> = content.lines().collect();
   let s = start.saturating_sub(1).min(lines.len());
   let e = end.min(lines.len());

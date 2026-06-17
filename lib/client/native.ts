@@ -58,5 +58,6 @@ export async function readSource(
   end: number,
 ): Promise<string> {
   const path = toAbsolute(projectRoot, relPath, currentPlatform());
-  return invokeTauri<string>("read_source_slice", { path, start, end });
+  // Pass the root too so the Rust side can refuse reads outside the project.
+  return invokeTauri<string>("read_source_slice", { root: projectRoot, path, start, end });
 }
