@@ -357,4 +357,21 @@ describe("multi-language kernel", () => {
     expect(ids.has("a.ts#Widget")).toBe(true);
     expect(ids.has("b.py#Gadget")).toBe(true);
   });
+
+  test("native (non-TS) edges carry evidence: location, provider, confidence", async () => {
+    const { graph } = await analyzeProject({
+      "a.py": "import b\n\ndef f():\n    return b.go()\n",
+      "b.py": "def go():\n    return 1\n",
+    });
+    const imp = graph.edges.find(
+      (e) => e.source === "a.py" && e.target === "b.py" && e.kind === "import",
+    );
+    expect(imp).toBeTruthy();
+    expect(imp?.occurrences.length).toBeGreaterThan(0);
+    const ev = imp?.occurrences[0];
+    expect(ev?.filePath).toBe("a.py");
+    expect(ev?.line).toBe(1); // the `import b` line
+    expect(ev?.provider).toBe("python");
+    expect(ev?.confidence).toBe("inferred"); // native resolution is name-based
+  });
 });

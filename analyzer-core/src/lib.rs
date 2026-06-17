@@ -34,6 +34,12 @@ struct OutEdge {
     source: String,
     target: String,
     kind: String,
+    // Evidence: the 1-based location of the reference/import the edge came from.
+    // Native resolution is name-based, so confidence is always "inferred". The
+    // provider (language) + occurrence filePath are filled in by the kernel.
+    line: u32,
+    column: u32,
+    confidence: String,
 }
 
 #[derive(Serialize)]
@@ -178,10 +184,14 @@ struct RawRef {
     relation: String,
     name: String,
     source_id: String,
+    line: u32,
+    column: u32,
 }
 struct RawImport {
     module: String,
     name: Option<String>,
+    line: u32,
+    column: u32,
 }
 struct FileExtract {
     symbols: Vec<RawSymbol>,
@@ -259,9 +269,12 @@ fn extract_file(file_path: &str, source: &str, parser: &mut Parser, query: &Quer
 
         if is_import {
             if let Some(mn) = module_node {
+                let pos = mn.start_position();
                 imports.push(RawImport {
                     module: text_of(mn, src).to_string(),
                     name: import_name,
+                    line: pos.row as u32 + 1,
+                    column: pos.column as u32 + 1,
                 });
             }
         } else if let (Some(kind), Some(dn), Some(nn)) = (def_kind, def_node, name_node) {
@@ -331,10 +344,15 @@ fn extract_file(file_path: &str, source: &str, parser: &mut Parser, query: &Quer
     let file_id = file_node_id(file_path);
     let refs = ref_raw
         .into_iter()
-        .map(|(relation, name, node)| RawRef {
-            relation,
-            name,
-            source_id: enclosing_emitted(node).unwrap_or_else(|| file_id.clone()),
+        .map(|(relation, name, node)| {
+            let pos = node.start_position();
+            RawRef {
+                relation,
+                name,
+                source_id: enclosing_emitted(node).unwrap_or_else(|| file_id.clone()),
+                line: pos.row as u32 + 1,
+                column: pos.column as u32 + 1,
+            }
         })
         .collect();
 
@@ -474,6 +492,9 @@ fn build_graph(per_file: &HashMap<String, FileExtract>, import_style: &str) -> O
                     source: fid.clone(),
                     target: tid,
                     kind: "import".into(),
+                    line: imp.line,
+                    column: imp.column,
+                    confidence: "inferred".into(),
                 });
                 if let Some(n) = bind_name {
                     binds.insert(n, target);
@@ -513,6 +534,9 @@ fn build_graph(per_file: &HashMap<String, FileExtract>, import_style: &str) -> O
                         source: r.source_id.clone(),
                         target: t,
                         kind: r.relation.clone(),
+                        line: r.line,
+                        column: r.column,
+                        confidence: "inferred".into(),
                     });
                 }
             }
