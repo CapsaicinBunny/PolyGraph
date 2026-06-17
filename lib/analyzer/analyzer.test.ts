@@ -173,3 +173,103 @@ describe("unresolved imports", () => {
     expect(unresolved).toHaveLength(0);
   });
 });
+
+describe("memory-bounded batching", () => {
+  // Files across three directories with imports that cross directory boundaries.
+  // With batchSize: 1 the directory grouping splits this into several batches, so
+  // the cross-directory imports become cross-batch imports.
+  const multiDir = {
+    "dirA/a1.ts": `import { b1 } from "../dirB/b1"; export function a1() { return b1(); }`,
+    "dirA/a2.ts": `import { c1 } from "../dirC/c1"; export class A2 extends c1Base() {} function c1Base() { return class {}; } export const _ = c1;`,
+    "dirB/b1.ts": `import { c2 } from "../dirC/c2"; export function b1() { return c2(); }`,
+    "dirB/b2.ts": `export function b2() { return 2; }`,
+    "dirC/c1.ts": `export const c1 = 1;`,
+    "dirC/c2.ts": `export function c2() { return 3; }`,
+  } as const;
+
+  function fileNodeIds(graph: GraphModel): Set<string> {
+    return new Set(graph.nodes.filter((n) => n.kind === "file").map((n) => n.id));
+  }
+  function importEdgeKeys(graph: GraphModel): Set<string> {
+    return new Set(
+      graph.edges.filter((e) => e.kind === "import").map((e) => `${e.source}->${e.target}`),
+    );
+  }
+  function setsEqual(a: Set<string>, b: Set<string>): boolean {
+    return a.size === b.size && [...a].every((x) => b.has(x));
+  }
+
+  test("forced low threshold splits into multiple batches but preserves file nodes + import edges", () => {
+    // Single project (default behavior).
+    const single = analyzeSources(multiDir).graph;
+    // Forced batching: threshold 0 (always batch) and batchSize 1 (one dir per batch).
+    const batched = analyzeSources(multiDir, { batchThreshold: 0, batchSize: 1 }).graph;
+
+    // File nodes are identical across both runs.
+    expect(setsEqual(fileNodeIds(batched), fileNodeIds(single))).toBe(true);
+
+    // Import edges are identical — the cross-directory (cross-batch) imports survive.
+    expect(setsEqual(importEdgeKeys(batched), importEdgeKeys(single))).toBe(true);
+
+    // Sanity: the fixture really does contain cross-directory import edges.
+    expect(hasEdge(batched, "dirA/a1.ts", "dirB/b1.ts", "import")).toBe(true);
+    expect(hasEdge(batched, "dirA/a2.ts", "dirC/c1.ts", "import")).toBe(true);
+    expect(hasEdge(batched, "dirB/b1.ts", "dirC/c2.ts", "import")).toBe(true);
+  });
+
+  test("cross-batch imports are not reported as unresolved", () => {
+    const { unresolved } = analyzeSources(multiDir, { batchThreshold: 0, batchSize: 1 });
+    // Every relative import in the fixture targets a real file in the set, so even
+    // though those targets live in other batches, none should be unresolved.
+    expect(unresolved).toHaveLength(0);
+  });
+
+  test("a genuinely missing cross-batch import is still reported as unresolved", () => {
+    const { unresolved } = analyzeSources(
+      {
+        "dirA/a.ts": `import { x } from "../dirB/missing"; export const y = 1;`,
+        "dirB/b.ts": `export const b = 1;`,
+      },
+      { batchThreshold: 0, batchSize: 1 },
+    );
+    expect(unresolved).toHaveLength(1);
+    expect(unresolved[0]).toMatchObject({ sourceId: "dirA/a.ts", name: "../dirB/missing" });
+  });
+
+  test("below-threshold input is byte-identical to the un-batched analysis", () => {
+    const files = {
+      "src/util.ts": `
+        export interface Shape { area(): number; }
+        export class Circle implements Shape { area() { return 1; } }
+        export function helper() { return 2; }
+      `,
+      "src/App.tsx": `
+        import { helper } from "./util";
+        export function App() { helper(); return <div>hi</div>; }
+      `,
+      "react-app/Button.tsx": `export const Button = () => <button>ok</button>;`,
+    };
+
+    const baseline = analyzeSources(files).graph;
+    // A high threshold keeps us on the single-project path; output must match exactly.
+    const explicit = analyzeSources(files, { batchThreshold: 100000 }).graph;
+
+    expect(explicit.nodes).toEqual(baseline.nodes);
+    expect(explicit.edges).toEqual(baseline.edges);
+  });
+
+  test("intra-batch type-resolved edges (calls/inheritance) still work under batching", () => {
+    // Two files in the same directory land in the same batch, so the checker still
+    // resolves the call edge between them.
+    const { graph } = analyzeSources(
+      {
+        "pkg/a.ts": `export function handle() { return 1; }`,
+        "pkg/b.ts": `import { handle } from "./a"; export function caller() { handle(); }`,
+        "other/c.ts": `export const c = 1;`,
+      },
+      { batchThreshold: 0, batchSize: 1000 },
+    );
+    expect(hasEdge(graph, "pkg/b.ts#caller", "pkg/a.ts#handle", "call")).toBe(true);
+    expect(hasEdge(graph, "pkg/b.ts", "pkg/a.ts", "import")).toBe(true);
+  });
+});
