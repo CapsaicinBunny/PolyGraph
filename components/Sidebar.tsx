@@ -3,6 +3,7 @@
 import { type ReactNode, useState } from "react";
 import { Box, Flex, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import type { ViewEdgeKind } from "@/lib/aggregate";
+import { type Level, LEVELS } from "@/lib/graph/levels/types";
 import type { SavedSearch } from "@/lib/graph/query-language";
 import { QueryBar, type QueryMode } from "./QueryBar";
 import {
@@ -31,6 +32,9 @@ import {
 } from "@/lib/layout";
 
 interface SidebarProps {
+  level: Level;
+  onLevel: (level: Level) => void;
+  packageCount: number;
   search: string;
   onSearch: (value: string) => void;
   queryMode: QueryMode;
@@ -291,7 +295,18 @@ function LegendItem({ color, label }: { color: string; label: string }) {
   );
 }
 
+const LEVEL_META: Record<Level, { label: string; glyph: string }> = {
+  workspace: { label: "Workspace", glyph: "▦" },
+  package: { label: "Package", glyph: "📦" },
+  directory: { label: "Directory", glyph: "🗀" },
+  file: { label: "File", glyph: "🗎" },
+  symbol: { label: "Symbol", glyph: "◇" },
+};
+
 export function Sidebar({
+  level,
+  onLevel,
+  packageCount,
   search,
   onSearch,
   queryMode,
@@ -358,6 +373,25 @@ export function Sidebar({
         onDelete={onDeleteSearch}
         onReset={onResetFilters}
       />
+
+      <Section title="Abstraction level">
+        <ChipRow>
+          {LEVELS.map((lv) => (
+            <Chip
+              key={lv}
+              label={LEVEL_META[lv].label}
+              glyph={LEVEL_META[lv].glyph}
+              active={level === lv}
+              onClick={() => onLevel(lv)}
+            />
+          ))}
+        </ChipRow>
+        {(level === "package" || level === "workspace") && (
+          <Text fontSize="10px" color="fg.subtle" mt="2">
+            {packageCount} package{packageCount === 1 ? "" : "s"} detected from manifests.
+          </Text>
+        )}
+      </Section>
 
       <Section title="Layout">
         <ChipRow>

@@ -131,6 +131,8 @@ export function buildSceneStructure(
   focusedIds: Set<string> | null = null,
   /** Restrict to these base-node ids (query "filter" mode); intersects with filters. */
   queryIds: Set<string> | null = null,
+  /** Package/Workspace projection: nodes aren't files, so skip the facet gates. */
+  projected = false,
 ): SceneStructure {
   const {
     showExternal,
@@ -148,6 +150,9 @@ export function buildSceneStructure(
     if (focusedIds) return focusedIds.has(n.id);
     // Query filter mode narrows on top of (intersected with) the checkbox filters.
     if (queryIds && !queryIds.has(n.id)) return false;
+    // Projected (package/workspace) nodes aren't files/symbols — show them all; the
+    // projection itself is the chosen view, and external deps are first-class here.
+    if (projected) return true;
     if (n.kind === "external") return showExternal;
     // Folder + language gate — applies to files and the symbols inside them.
     if (!enabledFolders.has(topFolderOf(n.filePath))) return false;
@@ -212,6 +217,7 @@ export function buildSceneStructure(
     `cc${communityCollapse ? 1 : 0}`,
     focusedIds ? `focus:${[...focusedIds].sort().join(",")}` : "focus:none",
     queryIds ? `q:${[...queryIds].sort().join(",")}` : "q:none",
+    `p${projected ? 1 : 0}`,
   ].join("|");
 
   const symbolCount = new Map<string, number>();
