@@ -1,0 +1,44 @@
+# PolyGraph architecture rules — enforced by `polygraph check .` (see the CLI in
+# cli/index.ts and the config format in lib/config/load.ts).
+#
+# A rule is one of:
+#   - dependency: { name, from: <selector>, disallow: <selector>, severity? }
+#   - cycle:      { name, scope?: <selector>, cycles: error|warning }
+# A <selector> is a glob string, a list of globs, or an object with any of:
+#   path / kind / role / environment / category  (each a value or list).
+
+rules:
+  # The analysis core is a pure, UI-agnostic library. It must never reach "up"
+  # into the Next.js app or the React component layer — dependencies flow the
+  # other way (UI imports the core, never the reverse).
+  - name: Analysis core must not depend on UI
+    from:
+      path:
+        - lib/graph/**
+        - lib/kernel/**
+        - lib/analyzer/**
+        - lib/layout/**
+        - lib/rules/**
+        - lib/diff/**
+        - lib/server/**
+    disallow:
+      - app/**
+      - components/**
+
+  # The CLI is a backend tool; it must not pull in browser/UI modules.
+  - name: CLI must not depend on UI
+    from: cli/**
+    disallow:
+      - app/**
+      - components/**
+
+  # No import cycles within the shared library. Currently a `warning` because a
+  # pre-existing (largely `import type`) cycle exists in lib/layout; tighten to
+  # `error` — or gate CI with `--baseline main` — once it is resolved.
+  - name: No circular dependencies in lib
+    scope: lib/**
+    cycles: warning
+
+thresholds:
+  maxFanOut: 40
+  maxDependencyDepth: 25

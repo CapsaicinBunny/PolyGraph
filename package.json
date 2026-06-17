@@ -3,8 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0 OR MIT",
+  "bin": {
+    "polygraph": "cli/index.ts"
+  },
   "type": "module",
   "scripts": {
+    "polygraph": "bun run cli/index.ts",
+    "check": "bun run cli/index.ts check .",
     "dev": "bun scripts/dev.mjs",
     "dev:next": "next dev -p 3003",
     "dev:sidecar": "bun run sidecar/server.ts",
