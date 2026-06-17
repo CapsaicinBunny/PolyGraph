@@ -3,11 +3,51 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
+/// Launch an external program (e.g. an editor or the file manager) detached from
+/// the app. The command + args are built by lib/editor/commands.ts on the JS
+/// side; this just runs them so editor integration works cross-platform.
+#[tauri::command]
+fn spawn_detached(program: String, args: Vec<String>) -> Result<(), String> {
+  std::process::Command::new(&program)
+    .args(&args)
+    .spawn()
+    .map(|_| ())
+    .map_err(|e| format!("failed to launch {program}: {e}"))
+}
+
+/// Read lines [start, end] (1-based, inclusive) of a file — the source-preview
+/// snippet. Bounds are clamped so out-of-range requests return what exists.
+/// Reads are constrained to `root` (the scanned project) as a path-traversal
+/// guard, since the requested path originates in the webview.
+#[tauri::command]
+fn read_source_slice(
+  root: String,
+  path: String,
+  start: usize,
+  end: usize,
+) -> Result<String, String> {
+  let canon_root =
+    std::fs::canonicalize(&root).map_err(|e| format!("bad project root {root}: {e}"))?;
+  let canon_path = std::fs::canonicalize(&path).map_err(|e| format!("read {path}: {e}"))?;
+  if !canon_path.starts_with(&canon_root) {
+    return Err(format!("refusing to read outside the project: {path}"));
+  }
+  let content = std::fs::read_to_string(&canon_path).map_err(|e| format!("read {path}: {e}"))?;
+  let lines: Vec<&str> = content.lines().collect();
+  let s = start.saturating_sub(1).min(lines.len());
+  let e = end.min(lines.len());
+  if e <= s {
+    return Ok(String::new());
+  }
+  Ok(lines[s..e].join("\n"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let builder = tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
+    .invoke_handler(tauri::generate_handler![spawn_detached, read_source_slice])
     // Logging is on in every build (Info in debug, Warn+ in release) so a
     // packaged-app failure leaves a diagnostic trail.
     .plugin(

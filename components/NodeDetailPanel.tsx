@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge, Box, Button, CloseButton, Heading, HStack, Stack, Text } from "@chakra-ui/react";
 import {
   type BlastRadius,
@@ -11,10 +11,17 @@ import {
 } from "@/lib/graph/query";
 import type { GraphEdge, GraphModel } from "@/lib/graph/types";
 import { EDGE_STYLES, EXTERNAL_STYLES, NODE_STYLES, ROLE_STYLES } from "@/lib/graph/visual";
+import { isTauri } from "@/lib/client/env";
+import { openInEditor, revealInFileManager } from "@/lib/client/native";
+import { copyText } from "@/lib/client/download";
+import { symbolPath } from "@/lib/editor/commands";
+import { SourcePreview } from "./SourcePreview";
 
 interface NodeDetailPanelProps {
   graph: GraphModel;
   selectedId: string;
+  /** Absolute path of the scanned project, for editor/reveal actions. "" when unknown. */
+  projectPath: string;
   onSelect: (id: string) => void;
   onFocus: (ids: Set<string>) => void;
   onClose: () => void;
@@ -28,6 +35,7 @@ interface Related {
 export function NodeDetailPanel({
   graph,
   selectedId,
+  projectPath,
   onSelect,
   onFocus,
   onClose,
@@ -35,6 +43,21 @@ export function NodeDetailPanel({
   const node = graph.nodes.find((n) => n.id === selectedId);
   const nodeById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
   const [depth, setDepth] = useState(2);
+  // isTauri() only resolves in the browser; compute after mount to avoid an SSR mismatch.
+  const [tauri, setTauri] = useState(false);
+  useEffect(() => setTauri(isTauri()), []);
+  const [actionNote, setActionNote] = useState("");
+
+  const runAction = (label: string, fn: () => Promise<void> | void) => {
+    void (async () => {
+      try {
+        await fn();
+        setActionNote(label);
+      } catch (e) {
+        setActionNote(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  };
   // Tag the on-demand blast-radius readout with the node it was computed for, so it
   // doesn't linger when the selection changes.
   const [blast, setBlast] = useState<{ id: string; data: BlastRadius } | null>(null);
@@ -56,6 +79,7 @@ export function NodeDetailPanel({
   const EdgeRow = ({ rel, direction }: { rel: Related; direction: "out" | "in" }) => {
     const other = nodeById.get(rel.otherId);
     const eStyle = EDGE_STYLES[rel.edge.kind];
+    const occurrence = rel.edge.occurrences[0];
     return (
       <HStack
         gap="2"
@@ -72,6 +96,23 @@ export function NodeDetailPanel({
         <Text fontSize="sm" color="fg" truncate title={other?.label ?? rel.otherId}>
           {other?.label ?? rel.otherId}
         </Text>
+        {tauri && projectPath && occurrence && (
+          <Button
+            size="2xs"
+            variant="ghost"
+            ml="auto"
+            title={`Open call site ${occurrence.filePath}:${occurrence.line}`}
+            aria-label="Open call site in editor"
+            onClick={(e) => {
+              e.stopPropagation();
+              runAction("Opened call site", () =>
+                openInEditor("vscode", projectPath, occurrence.filePath, occurrence.line),
+              );
+            }}
+          >
+            ↗
+          </Button>
+        )}
       </HStack>
     );
   };
@@ -225,6 +266,66 @@ export function NodeDetailPanel({
               {node.filePath}
               {node.line > 0 ? `:${node.line}` : ""}
             </Text>
+            <HStack gap="1.5" wrap="wrap" mt="2">
+              {tauri && projectPath && (
+                <>
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={() =>
+                      runAction("Opened in VS Code", () =>
+                        openInEditor("vscode", projectPath, node.filePath, node.line),
+                      )
+                    }
+                  >
+                    VS Code
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={() =>
+                      runAction("Opened in JetBrains", () =>
+                        openInEditor("jetbrains", projectPath, node.filePath, node.line),
+                      )
+                    }
+                  >
+                    JetBrains
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={() =>
+                      runAction("Revealed in file manager", () =>
+                        revealInFileManager(projectPath, node.filePath),
+                      )
+                    }
+                  >
+                    Reveal
+                  </Button>
+                </>
+              )}
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => runAction("Copied path", () => copyText(symbolPath(node)))}
+              >
+                Copy path
+              </Button>
+            </HStack>
+            {actionNote && (
+              <Text fontSize="xs" color="fg.muted" mt="1">
+                {actionNote}
+              </Text>
+            )}
+            {node.line > 0 && (
+              <Box mt="2">
+                <SourcePreview
+                  projectRoot={projectPath}
+                  filePath={node.filePath}
+                  line={node.line}
+                />
+              </Box>
+            )}
           </Box>
 
           <Box>

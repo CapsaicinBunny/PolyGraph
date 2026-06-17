@@ -596,6 +596,7 @@ export function Explorer() {
           <NodeDetailPanel
             graph={graph}
             selectedId={selectedId}
+            projectPath={projectPath}
             onSelect={handleSelect}
             onFocus={setFocusedIds}
             onClose={() => setSelectedId(null)}
