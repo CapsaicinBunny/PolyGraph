@@ -43,6 +43,7 @@ export function Explorer() {
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
   const [enabledEdgeKinds, setEnabledEdgeKinds] = useState<Set<ViewEdgeKind>>(
     () => new Set(FILTERABLE_EDGE_KINDS),
   );
@@ -103,6 +104,7 @@ export function Explorer() {
       setResult(res);
       setStats(s);
       setExpanded(new Set());
+      setCollapsedClusters(new Set());
       setSelectedId(null);
       setSearch("");
       resetFileFilters(res.graph);
@@ -127,6 +129,15 @@ export function Explorer() {
       const next = new Set(prev);
       if (next.has(fileId)) next.delete(fileId);
       else next.add(fileId);
+      return next;
+    });
+  }, []);
+
+  const handleToggleCollapse = useCallback((clusterId: string) => {
+    setCollapsedClusters((prev) => {
+      const next = new Set(prev);
+      if (next.has(clusterId)) next.delete(clusterId);
+      else next.add(clusterId);
       return next;
     });
   }, []);
@@ -312,8 +323,10 @@ export function Explorer() {
             enabledRuntimes={enabledRuntimes}
             enabledFolders={enabledFolders}
             enabledLanguages={enabledLanguages}
+            collapsedClusters={collapsedClusters}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
+            onToggleCollapse={handleToggleCollapse}
           />
         </Box>
         {filtersOpen && (

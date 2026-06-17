@@ -32,10 +32,11 @@ export function useScene(
   filters: SceneFilters,
   algorithm: LayoutAlgorithm,
   direction: LayoutDirection,
+  collapsedClusters: Set<string>,
 ): { scene: Scene; layingOut: boolean } {
   const structure = useMemo(
-    () => buildSceneStructure(graph, expanded, filters, algorithm, direction),
-    [graph, expanded, filters, algorithm, direction],
+    () => buildSceneStructure(graph, expanded, filters, algorithm, direction, collapsedClusters),
+    [graph, expanded, filters, algorithm, direction, collapsedClusters],
   );
 
   const initial = layoutCacheGet(structure.signature);

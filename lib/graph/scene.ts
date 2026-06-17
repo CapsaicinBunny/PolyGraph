@@ -17,6 +17,7 @@ import type {
   NodeRole,
   Runtime,
 } from "./types";
+import { collapseClusters } from "./collapse";
 import { fileLanguage, topFolderOf } from "./filters";
 import {
   EDGE_STYLES,
@@ -116,6 +117,7 @@ export function buildSceneStructure(
   filters: SceneFilters,
   algorithm: LayoutAlgorithm,
   direction: LayoutDirection,
+  collapsedClusters: Set<string> = new Set(),
 ): SceneStructure {
   const {
     showExternal,
@@ -139,10 +141,13 @@ export function buildSceneStructure(
     return enabledNodeKinds.has(n.kind) && (!n.category || enabledCategories.has(n.category));
   };
   const keptIds = new Set(graph.nodes.filter(visible).map((n) => n.id));
-  const sourceGraph = {
+  const filteredGraph = {
     nodes: graph.nodes.filter(visible),
     edges: graph.edges.filter((e) => keptIds.has(e.source) && keptIds.has(e.target)),
   };
+  // Semantic reduction: collapse chosen directories into aggregate cards before
+  // building the view, so the layout/renderer treat them as ordinary nodes.
+  const sourceGraph = collapseClusters(filteredGraph, collapsedClusters);
   const view = buildView(sourceGraph, expanded);
   const visibleEdges = view.edges.filter(
     (e) => e.kind === "contains" || enabledEdgeKinds.has(e.kind),
@@ -161,6 +166,7 @@ export function buildSceneStructure(
     ser(enabledEdgeKinds),
     ser(enabledFolders),
     ser(enabledLanguages),
+    ser(collapsedClusters),
   ].join("|");
 
   const symbolCount = new Map<string, number>();

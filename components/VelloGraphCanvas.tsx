@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Box } from "@chakra-ui/react";
 import { useTheme } from "next-themes";
 import type { ViewEdgeKind } from "@/lib/aggregate";
+import { clusterIdOfAggregate, isAggregateId } from "@/lib/graph/collapse";
 import type { SceneFilters } from "@/lib/graph/scene";
 import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
 import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
@@ -26,8 +27,10 @@ export interface GraphViewProps {
   enabledRuntimes: Set<Runtime>;
   enabledFolders: Set<string>;
   enabledLanguages: Set<string>;
+  collapsedClusters: Set<string>;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
+  onToggleCollapse: (clusterId: string) => void;
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -65,8 +68,10 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     enabledRuntimes,
     enabledFolders,
     enabledLanguages,
+    collapsedClusters,
     onSelect,
     onToggleExpand,
+    onToggleCollapse,
   } = props;
 
   const filters: SceneFilters = useMemo(
@@ -92,7 +97,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     ],
   );
 
-  const { scene, layingOut } = useScene(graph, expanded, filters, algorithm, direction);
+  const { scene, layingOut } = useScene(
+    graph,
+    expanded,
+    filters,
+    algorithm,
+    direction,
+    collapsedClusters,
+  );
   const { resolvedTheme } = useTheme();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -101,8 +113,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const cam = useRef({ x: 0, y: 0, scale: 1 });
   const dpr = useRef(1);
   const isFile = useRef(new Map<string, boolean>());
-  const handlers = useRef({ onSelect, onToggleExpand });
-  handlers.current = { onSelect, onToggleExpand };
+  const handlers = useRef({ onSelect, onToggleExpand, onToggleCollapse });
+  handlers.current = { onSelect, onToggleExpand, onToggleCollapse };
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -138,6 +150,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       })
       .filter(Boolean);
     const clusters = scene.clusters.map((c) => ({
+      id: c.id,
       x: c.x,
       y: c.y,
       w: c.width,
@@ -234,8 +247,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         (e.clientY - rect.top) * dpr.current,
       );
       if (id) {
-        if (isFile.current.get(id)) handlers.current.onToggleExpand(id);
-        handlers.current.onSelect(id);
+        if (id.startsWith("cluster:")) {
+          handlers.current.onToggleCollapse(id.slice("cluster:".length)); // collapse a directory
+        } else if (isAggregateId(id)) {
+          handlers.current.onToggleCollapse(clusterIdOfAggregate(id)); // expand an aggregate card
+        } else {
+          if (isFile.current.get(id)) handlers.current.onToggleExpand(id);
+          handlers.current.onSelect(id);
+        }
       }
     };
 

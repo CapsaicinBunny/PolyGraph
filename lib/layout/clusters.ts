@@ -8,7 +8,7 @@ export interface ClusterTreeNode {
   nodeIds: string[];
 }
 
-const EXTERNAL_DIR = "«external»";
+export const EXTERNAL_DIR = "«external»";
 
 /** Directory segments a node belongs to (external nodes group under one synthetic dir). */
 function dirSegments(node: { id: string; kind: string }): string[] {
