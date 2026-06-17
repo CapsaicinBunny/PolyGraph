@@ -29,6 +29,8 @@ interface UploadDropzoneProps {
     result: AnalyzeResult,
     stats: { fileCount: number; skipped: number },
     manifests: PackageManifest[],
+    /** Absolute path that was scanned (empty for the in-browser fallback). */
+    scannedPath?: string,
   ) => void;
 }
 
@@ -217,6 +219,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         skipped?: number;
         oversize?: boolean;
         manifests?: PackageManifest[];
+        root?: string;
       };
       console.info(`[polygraph] /scan round-trip ${(performance.now() - t0).toFixed(0)}ms`);
       // Large scan — let the user confirm before we run the heavy analysis.
@@ -232,6 +235,8 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         { graph: data.graph, errors: data.errors ?? [], unresolved: data.unresolved ?? [] },
         { fileCount: data.fileCount ?? data.graph.nodes.length, skipped: data.skipped ?? 0 },
         data.manifests ?? [],
+        // The server scan returns the resolved root; fall back to the typed path.
+        data.root ?? trimmed,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
