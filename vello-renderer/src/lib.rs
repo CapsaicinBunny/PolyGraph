@@ -38,6 +38,7 @@ const FONT_SIZE: f32 = 13.0;
 const GLYPH_SIZE: f32 = 13.0;
 const BADGE_SIZE: f32 = 9.0; // language-code text size inside file icons
 const LABEL_MIN_SCALE: f64 = 0.5; // only lay out labels/icons when readable
+const EDGE_DASH_BUDGET: usize = 300; // above this many edges, draw solid (dashing overruns the allocator)
 const ICON_R: f64 = 6.0; // icon half-size in world units
 
 #[wasm_bindgen(start)]
@@ -366,6 +367,11 @@ impl VelloCanvas {
         // Each segment is clipped to a padded viewport BEFORE dashing — an
         // off-screen endpoint at high zoom would otherwise yield a multi-million
         // pixel line and dashing it would exhaust the wasm allocator.
+        // Marching-ants dashing tessellates each curve into many short segments; on a
+        // large, zoomed-out graph the cumulative dash geometry overruns the wasm
+        // allocator (memory access out of bounds). Past an edge budget, fall back to
+        // cheap solid strokes — still readable, and it keeps big graphs from crashing.
+        let solid_mode = self.data.edges.len() > EDGE_DASH_BUDGET;
         const PAD: f64 = 120.0;
         let (cx, cy, cs) = (self.cam_x, self.cam_y, self.cam_scale);
         // Only draw the ×N multiplicity labels when zoomed in enough to read them.
@@ -391,10 +397,16 @@ impl VelloCanvas {
                 fade,
             ]);
             // Thicker stroke for repeated relationships — log-scaled so a few very
-            // heavy edges don't swamp the rest, and capped so it stays a line.
+            // heavy edges don't swamp the rest, and capped so it stays a line. Past the
+            // edge budget, drop the marching-ants dashes (solid) to avoid the allocator
+            // overrun on huge graphs.
             let count = e.count.max(1);
             let weight = (1.4 + (count as f64).ln() * 0.9).min(6.0);
-            let dash = Stroke::new(weight).with_dashes(self.dash_phase, [6.0, 6.0]);
+            let stroke = if solid_mode {
+                Stroke::new(weight)
+            } else {
+                Stroke::new(weight).with_dashes(self.dash_phase, [6.0, 6.0])
+            };
             if self.data.routing == "orthogonal" {
                 // Right-angle elbow: turn once on the dominant axis' midpoint.
                 let mut path = BezPath::new();
@@ -410,7 +422,7 @@ impl VelloCanvas {
                 }
                 path.line_to((sx2, sy2));
                 self.scene
-                    .stroke(&dash, Affine::IDENTITY, color, None, &path);
+                    .stroke(&stroke, Affine::IDENTITY, color, None, &path);
             } else {
                 // Smooth S-curve: pull control points along the dominant axis.
                 let (c1, c2) = if dx.abs() >= dy.abs() {
@@ -422,7 +434,7 @@ impl VelloCanvas {
                 };
                 let curve = CubicBez::new(Point::new(sx1, sy1), c1, c2, Point::new(sx2, sy2));
                 self.scene
-                    .stroke(&dash, Affine::IDENTITY, color, None, &curve);
+                    .stroke(&stroke, Affine::IDENTITY, color, None, &curve);
             }
 
             // `×N` multiplicity label at the screen-space midpoint, on a small pill
