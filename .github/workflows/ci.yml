@@ -30,8 +30,15 @@ jobs:
       - name: Format check
         run: bun run format:check
 
+      # Golden-graph + layout-stability snapshots run inside `bun test` above and
+      # hard-gate correctness. The perf numbers below are reported (not gated): absolute
+      # timings are runner-dependent, so `bench:check` is an opt-in local gate — to gate
+      # in CI, refresh baselines on this runner via the bench:update workflow first.
       - name: Test
         run: bun test
+
+      - name: Benchmark (report)
+        run: bun run bench
 
       - name: Build sidecar
         run: bun run build:sidecar

@@ -1,0 +1,148 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`golden graphs sample-ts structural snapshot 1`] = `
+{
+  "cycles": [
+    [
+      "src/cycle-a.ts",
+      "src/cycle-b.ts",
+    ],
+    [
+      "src/cycle-a.ts#fromA",
+      "src/cycle-b.ts#fromB",
+    ],
+  ],
+  "edgesByKind": {
+    "call": 11,
+    "has": 1,
+    "implements": 4,
+    "import": 8,
+    "instantiates": 3,
+  },
+  "hash": "0e860c00",
+  "nodesByKind": {
+    "class": 3,
+    "external": 1,
+    "file": 7,
+    "function": 9,
+    "interface": 2,
+  },
+  "topHubs": [
+    [
+      "src/shapes.ts#Drawing",
+      4,
+    ],
+    [
+      "src/types.ts#Shape",
+      3,
+    ],
+    [
+      "src/app.ts#buildDrawing",
+      2,
+    ],
+    [
+      "src/geometry.ts",
+      2,
+    ],
+    [
+      "src/geometry.ts#circleArea",
+      2,
+    ],
+    [
+      "src/types.ts#Named",
+      2,
+    ],
+    [
+      "external:module:node:path",
+      1,
+    ],
+    [
+      "src/app.ts",
+      1,
+    ],
+    [
+      "src/cycle-a.ts",
+      1,
+    ],
+    [
+      "src/cycle-a.ts#fromA",
+      1,
+    ],
+  ],
+  "totalEdges": 27,
+  "totalNodes": 22,
+}
+`;
+
+exports[`golden graphs sample-py structural snapshot 1`] = `
+{
+  "cycles": [],
+  "edgesByKind": {
+    "call": 4,
+    "import": 1,
+  },
+  "hash": "da1ad344",
+  "nodesByKind": {
+    "file": 2,
+    "function": 5,
+  },
+  "topHubs": [
+    [
+      "app.py#total",
+      1,
+    ],
+    [
+      "geometry.py",
+      1,
+    ],
+    [
+      "geometry.py#circle_area",
+      1,
+    ],
+    [
+      "geometry.py#rect_area",
+      1,
+    ],
+    [
+      "geometry.py#square",
+      1,
+    ],
+  ],
+  "totalEdges": 5,
+  "totalNodes": 7,
+}
+`;
+
+exports[`golden graphs sample-go structural snapshot 1`] = `
+{
+  "cycles": [],
+  "edgesByKind": {
+    "call": 4,
+  },
+  "hash": "7ccc2e7b",
+  "nodesByKind": {
+    "file": 2,
+    "function": 5,
+  },
+  "topHubs": [
+    [
+      "app.go#Total",
+      1,
+    ],
+    [
+      "geometry.go#CircleArea",
+      1,
+    ],
+    [
+      "geometry.go#RectArea",
+      1,
+    ],
+    [
+      "geometry.go#Square",
+      1,
+    ],
+  ],
+  "totalEdges": 4,
+  "totalNodes": 7,
+}
+`;
