@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use napi_derive::napi;
 use serde::Serialize;
 use streaming_iterator::StreamingIterator;
+use rayon::prelude::*;
 use tree_sitter::{Node, Parser, Query, QueryCursor};
 use tree_sitter_language::LanguageFn;
 
@@ -536,22 +537,39 @@ pub fn analyze(
 ) -> napi::Result<String> {
     let language = language_for(&grammar)
         .ok_or_else(|| napi::Error::from_reason(format!("unknown grammar: {grammar}")))?;
-    let mut parser = Parser::new();
-    parser
+    // Validate the grammar + query once so a malformed pack returns a clean error
+    // rather than panicking inside a worker thread below.
+    Parser::new()
         .set_language(&language)
         .map_err(|e| napi::Error::from_reason(format!("set_language: {e}")))?;
-    let query = Query::new(&language, &query_src)
+    Query::new(&language, &query_src)
         .map_err(|e| napi::Error::from_reason(format!("query: {e:?}")))?;
 
     let files: HashMap<String, String> = serde_json::from_str(&files_json)
         .map_err(|e| napi::Error::from_reason(format!("bad files json: {e}")))?;
 
-    let mut per_file: HashMap<String, FileExtract> = HashMap::new();
-    for (path, source) in &files {
-        let norm = norm_path(path);
-        let fx = extract_file(&norm, source, &mut parser, &query);
-        per_file.insert(norm, fx);
-    }
+    // Parse + extract each file in parallel — tree-sitter parsing is independent
+    // per file. map_init builds one Parser + Query per worker thread and reuses
+    // them across that thread's files. Cross-file resolution (build_graph) stays
+    // serial since it needs every file's definitions.
+    let per_file: HashMap<String, FileExtract> = files
+        .par_iter()
+        .map_init(
+            || {
+                let mut parser = Parser::new();
+                parser
+                    .set_language(&language)
+                    .expect("set_language (validated above)");
+                let query = Query::new(&language, &query_src).expect("query (validated above)");
+                (parser, query)
+            },
+            |(parser, query), (path, source)| {
+                let norm = norm_path(path);
+                let fx = extract_file(&norm, source, parser, query);
+                (norm, fx)
+            },
+        )
+        .collect();
 
     let output = build_graph(&per_file, &import_style);
     serde_json::to_string(&output).map_err(|e| napi::Error::from_reason(e.to_string()))
