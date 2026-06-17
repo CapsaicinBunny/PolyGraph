@@ -17,12 +17,23 @@ afterAll(async () => {
 
 test("runScan returns a graph for a real directory", async () => {
   const r = await runScan(dir);
-  expect(r.ok).toBe(true);
-  if (r.ok) {
+  expect(r.ok && "graph" in r.value).toBe(true);
+  if (r.ok && "graph" in r.value) {
     expect(r.value.fileCount).toBe(1);
     expect(r.value.root).toBe(dir);
     expect(r.value.graph.nodes.length).toBeGreaterThan(0);
   }
+});
+
+test("runScan asks for confirmation past the threshold", async () => {
+  const r = await runScan(dir, { confirmThreshold: 0 });
+  expect(r.ok && "oversize" in r.value).toBe(true);
+  if (r.ok && "oversize" in r.value) expect(r.value.fileCount).toBe(1);
+});
+
+test("runScan with force bypasses the over-size gate", async () => {
+  const r = await runScan(dir, { confirmThreshold: 0, force: true });
+  expect(r.ok && "graph" in r.value).toBe(true);
 });
 
 test("runScan rejects a blank path", async () => {

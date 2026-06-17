@@ -141,7 +141,8 @@ function shelfPack(boxes: Box[], gap: number): XYPosition[] {
   const offsets: XYPosition[] = boxes.map(() => ({ x: 0, y: 0 }));
   if (boxes.length === 0) return offsets;
   const totalArea = boxes.reduce((a, b) => a + (b.width + gap) * (b.height + gap), 0);
-  const maxWidth = Math.max(...boxes.map((b) => b.width));
+  let maxWidth = 0;
+  for (const b of boxes) if (b.width > maxWidth) maxWidth = b.width;
   // Roughly square overall, but never narrower than the widest component.
   const rowWidth = Math.max(maxWidth, Math.sqrt(totalArea) * 1.4);
   const order = boxes.map((_, i) => i).sort((a, b) => boxes[b].height - boxes[a].height);
@@ -248,7 +249,8 @@ function radialLayout(view: LayoutInput): Positions {
     }
   }
   // Disconnected nodes land on an extra outer ring.
-  const maxDepth = Math.max(0, ...depth.values());
+  let maxDepth = 0;
+  for (const d of depth.values()) if (d > maxDepth) maxDepth = d;
   for (const n of view.nodes) if (!depth.has(n.id)) depth.set(n.id, maxDepth + 1);
 
   const byDepth = new Map<number, string[]>();

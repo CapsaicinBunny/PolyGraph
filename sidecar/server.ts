@@ -36,8 +36,8 @@ export function startServer(port = Number(process.env.POLYGRAPH_PORT) || 0): Run
       if (req.method === "GET" && pathname === "/health") return json({ ok: true });
 
       if (req.method === "POST" && pathname === "/scan") {
-        const body = (await req.json().catch(() => ({}))) as { path?: string };
-        const r = await runScan(body.path);
+        const body = (await req.json().catch(() => ({}))) as { path?: string; force?: boolean };
+        const r = await runScan(body.path, { force: body.force });
         return r.ok ? json(r.value) : json({ error: r.error }, r.status);
       }
 
