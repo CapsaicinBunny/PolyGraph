@@ -37,6 +37,7 @@ export function useScene(
   groupBy: GroupBy,
   density: number,
   communityCollapse: boolean,
+  focusedIds: Set<string> | null,
 ): { scene: Scene; layingOut: boolean } {
   const structure = useMemo(
     () =>
@@ -50,6 +51,7 @@ export function useScene(
         groupBy,
         density,
         communityCollapse,
+        focusedIds,
       ),
     [
       graph,
@@ -61,6 +63,7 @@ export function useScene(
       groupBy,
       density,
       communityCollapse,
+      focusedIds,
     ],
   );
 

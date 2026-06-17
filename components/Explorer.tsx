@@ -70,6 +70,7 @@ export function Explorer() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [edgeRouting, setEdgeRouting] = useState<"curved" | "orthogonal">("curved");
   const [communityCollapse, setCommunityCollapse] = useState(false);
+  const [focusedIds, setFocusedIds] = useState<Set<string> | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const graph = result?.graph ?? null;
@@ -115,6 +116,7 @@ export function Explorer() {
       setSearch("");
       setEdgeRouting("curved");
       setCommunityCollapse(false);
+      setFocusedIds(null);
       resetFileFilters(res.graph);
     },
     [resetFileFilters],
@@ -300,6 +302,17 @@ export function Explorer() {
         <Button size="sm" variant="outline" onClick={() => setResult(null)}>
           Analyze another
         </Button>
+        {focusedIds && (
+          <Button
+            size="sm"
+            variant="subtle"
+            colorPalette="yellow"
+            ml="auto"
+            onClick={() => setFocusedIds(null)}
+          >
+            Focusing {focusedIds.size} · Clear ✕
+          </Button>
+        )}
       </HStack>
 
       <Flex flex="1" minH="0">
@@ -348,6 +361,7 @@ export function Explorer() {
             collapsedClusters={collapsedClusters}
             communityCollapse={communityCollapse}
             edgeRouting={edgeRouting}
+            focusedIds={focusedIds}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
             onToggleCollapse={handleToggleCollapse}
@@ -380,6 +394,7 @@ export function Explorer() {
             graph={graph}
             selectedId={selectedId}
             onSelect={handleSelect}
+            onFocus={setFocusedIds}
             onClose={() => setSelectedId(null)}
           />
         )}

@@ -1,7 +1,14 @@
 "use client";
 
-import { useMemo } from "react";
-import { Badge, Box, CloseButton, Heading, HStack, Stack, Text } from "@chakra-ui/react";
+import { useMemo, useState } from "react";
+import { Badge, Box, Button, CloseButton, Heading, HStack, Stack, Text } from "@chakra-ui/react";
+import {
+  type BlastRadius,
+  blastRadius,
+  dependencies,
+  dependents,
+  neighborhood,
+} from "@/lib/graph/query";
 import type { GraphEdge, GraphModel } from "@/lib/graph/types";
 import { EDGE_STYLES, EXTERNAL_STYLES, NODE_STYLES, ROLE_STYLES } from "@/lib/graph/visual";
 
@@ -9,6 +16,7 @@ interface NodeDetailPanelProps {
   graph: GraphModel;
   selectedId: string;
   onSelect: (id: string) => void;
+  onFocus: (ids: Set<string>) => void;
   onClose: () => void;
 }
 
@@ -17,9 +25,20 @@ interface Related {
   otherId: string;
 }
 
-export function NodeDetailPanel({ graph, selectedId, onSelect, onClose }: NodeDetailPanelProps) {
+export function NodeDetailPanel({
+  graph,
+  selectedId,
+  onSelect,
+  onFocus,
+  onClose,
+}: NodeDetailPanelProps) {
   const node = graph.nodes.find((n) => n.id === selectedId);
   const nodeById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
+  const [depth, setDepth] = useState(2);
+  // Tag the on-demand blast-radius readout with the node it was computed for, so it
+  // doesn't linger when the selection changes.
+  const [blast, setBlast] = useState<{ id: string; data: BlastRadius } | null>(null);
+  const blastData = blast?.id === selectedId ? blast.data : null;
 
   const { outgoing, incoming } = useMemo(() => {
     const outgoing: Related[] = [];
@@ -95,6 +114,80 @@ export function NodeDetailPanel({ graph, selectedId, onSelect, onClose }: NodeDe
         </Stack>
         <CloseButton size="sm" onClick={onClose} />
       </HStack>
+
+      <Box>
+        <Text fontSize="xs" color="fg.muted" mb="1.5">
+          Impact / focus
+        </Text>
+        <HStack gap="1.5" wrap="wrap">
+          <Button
+            size="xs"
+            variant="subtle"
+            onClick={() => onFocus(new Set([selectedId, ...dependencies(graph, selectedId)]))}
+          >
+            Dependencies
+          </Button>
+          <Button
+            size="xs"
+            variant="subtle"
+            onClick={() => onFocus(new Set([selectedId, ...dependents(graph, selectedId)]))}
+          >
+            Dependents
+          </Button>
+          <Button
+            size="xs"
+            variant="subtle"
+            onClick={() => onFocus(neighborhood(graph, selectedId, depth))}
+          >
+            Neighborhood
+          </Button>
+          <Button
+            size="xs"
+            variant="subtle"
+            onClick={() => setBlast({ id: selectedId, data: blastRadius(graph, selectedId) })}
+          >
+            Blast radius
+          </Button>
+        </HStack>
+        <HStack gap="1" mt="2" align="center">
+          <Text fontSize="xs" color="fg.muted">
+            Depth
+          </Text>
+          {[1, 2, 3, 4, 5].map((d) => (
+            <Button
+              key={d}
+              size="xs"
+              variant={depth === d ? "solid" : "ghost"}
+              colorPalette={depth === d ? "blue" : "gray"}
+              onClick={() => setDepth(d)}
+            >
+              {d}
+            </Button>
+          ))}
+        </HStack>
+        {blastData && (
+          <Box mt="2" fontSize="xs" color="fg.muted">
+            <Text>
+              Blast radius: <b>{blastData.total}</b> affected node{blastData.total === 1 ? "" : "s"}
+            </Text>
+            <Text>
+              By package:{" "}
+              {Object.entries(blastData.byPackage)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5)
+                .map(([k, v]) => `${k} (${v})`)
+                .join(", ") || "—"}
+            </Text>
+            <Text>
+              By relationship:{" "}
+              {Object.entries(blastData.byKind)
+                .sort((a, b) => b[1] - a[1])
+                .map(([k, v]) => `${k} (${v})`)
+                .join(", ") || "—"}
+            </Text>
+          </Box>
+        )}
+      </Box>
 
       {node.kind === "external" ? (
         <Box>
