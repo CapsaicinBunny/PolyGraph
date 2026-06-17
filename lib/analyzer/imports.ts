@@ -19,6 +19,22 @@ function isProjectSpecifier(spec: string): boolean {
   );
 }
 
+/**
+ * Resolve a module-specifier string literal (the argument of `import(...)` /
+ * `require(...)`) to the project file it points at, using the same type-system
+ * resolution as a static `import`: the literal's symbol declares the target
+ * source file. This is O(1) per call and precise — it never substring-matches an
+ * unrelated path (e.g. `./a` falsely matching `x/ab/...`).
+ */
+function specifierSourceFile(arg: Node): SourceFile | undefined {
+  const symbol = arg.getSymbol();
+  if (!symbol) return undefined;
+  for (const decl of symbol.getDeclarations()) {
+    if (Node.isSourceFile(decl)) return decl;
+  }
+  return undefined;
+}
+
 function pushImport(
   builder: EdgeBuilder,
   fromFile: string,
@@ -74,11 +90,9 @@ function collectFromFile(
 
     const arg = call.getArguments()[0];
     if (!arg || !Node.isStringLiteral(arg)) continue;
-    const resolved = file.getReferencedSourceFiles().find((sf) => {
-      const rel = toRelativePath(sf.getFilePath());
-      return rel.includes(arg.getLiteralValue().replace(/^\.\//, ""));
-    });
-    pushImport(builder, fromFile, resolved, call);
+    // Resolve the specifier precisely via its symbol (same path as static
+    // imports), not by substring-scanning every referenced file.
+    pushImport(builder, fromFile, specifierSourceFile(arg), call);
   }
 }
 

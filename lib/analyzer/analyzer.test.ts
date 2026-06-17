@@ -74,6 +74,48 @@ describe("import edges", () => {
   });
 });
 
+describe("dynamic import() edges", () => {
+  test("resolves a dynamic import precisely to its target file", () => {
+    const { graph } = analyzeSources({
+      "a.ts": `export async function load() { return import("./feature/panel"); }`,
+      "feature/panel.ts": `export const panel = 1;`,
+    });
+    expect(hasEdge(graph, "a.ts", "feature/panel.ts", "import")).toBe(true);
+  });
+
+  test("resolves to the exact target, not a path that merely contains the specifier", () => {
+    // The old resolver substring-scanned referenced files and returned the first
+    // one whose path *contained* the literal. Here "aaa-b-helper.ts" contains the
+    // substring "b", so `import("./b")` wrongly resolved to it instead of "b.ts".
+    // Symbol-based resolution must land on the real "b.ts".
+    const { graph } = analyzeSources({
+      "a.ts": `import { h } from "./aaa-b-helper";
+        export async function load() { const b = await import("./b"); return [h, b]; }`,
+      "aaa-b-helper.ts": `export const h = 1;`,
+      "b.ts": `export const b = 2;`,
+    });
+    // The dynamic import must edge to the real target.
+    expect(hasEdge(graph, "a.ts", "b.ts", "import")).toBe(true);
+    // ...and the static import keeps its own (correct) edge to the helper.
+    expect(hasEdge(graph, "a.ts", "aaa-b-helper.ts", "import")).toBe(true);
+  });
+
+  test("a dynamic import that resolves to no project file yields no edge", () => {
+    const { graph } = analyzeSources({
+      "a.ts": `export async function load() { return import("./missing"); }`,
+    });
+    expect(graph.edges.some((e) => e.kind === "import")).toBe(false);
+  });
+
+  test("resolves a dynamic import through a path alias", () => {
+    const { graph } = analyzeSources({
+      "a.ts": `export async function load() { return import("@/feature/panel"); }`,
+      "feature/panel.ts": `export const panel = 1;`,
+    });
+    expect(hasEdge(graph, "a.ts", "feature/panel.ts", "import")).toBe(true);
+  });
+});
+
 describe("call edges (type-resolved)", () => {
   test("disambiguates two functions with the same name across files", () => {
     const { graph } = analyzeSources({
