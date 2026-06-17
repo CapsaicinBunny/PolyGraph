@@ -10,6 +10,7 @@
   "scripts": {
     "polygraph": "bun run cli/index.ts",
     "check": "bun run cli/index.ts check .",
+    "diff": "bun run cli/index.ts diff .",
     "dev": "bun scripts/dev.mjs",
     "dev:next": "next dev -p 3003",
     "dev:sidecar": "bun run sidecar/server.ts",

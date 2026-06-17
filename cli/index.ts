@@ -1,14 +1,18 @@
 #!/usr/bin/env bun
 // PolyGraph CLI entry point. Turns the analyzer into an architectural guardrail
-// (`check`) that teams can run in CI.
+// (`check`) and a PR-review diff tool (`diff`) that teams can run in CI.
 //
 //   polygraph check .                     evaluate .polygraph.yml against the tree
 //   polygraph check . --format sarif      emit SARIF 2.1.0 for code scanning
 //   polygraph check . --baseline main     only fail on violations new vs. main
+//   polygraph diff .                      summarize changes from main → working tree
+//   polygraph diff . --base v1 --head v2  diff two revisions
+//   polygraph diff . --format json        emit the structured diff payload
 
 import { resolve } from "node:path";
 import { parseArgs } from "../lib/cli/args";
 import { runCheck } from "../lib/cli/check";
+import { runDiff, WORKING_TREE } from "../lib/cli/diff-cmd";
 import { DEFAULT_CONFIG_FILENAME } from "../lib/config/load";
 
 const VERSION = "0.1.0";
@@ -17,11 +21,17 @@ const USAGE = `polygraph ${VERSION}
 
 Usage:
   polygraph check [path] [options]      Check architecture rules (.polygraph.yml)
+  polygraph diff  [path] [options]      Diff two scans / revisions
 
 check options:
   --config <file>     Config file (default: <path>/${DEFAULT_CONFIG_FILENAME})
   --format <fmt>      text | sarif (default: text)
   --baseline <rev>    Only report violations new vs. this git revision
+
+diff options:
+  --base <rev>        Revision to compare from (default: main)
+  --head <rev>        Revision to compare to (default: working tree)
+  --format <fmt>      text | json (default: text)
 
 Exit codes:
   check  1 if any error-severity violation, else 0
@@ -56,6 +66,17 @@ async function main(): Promise<number> {
       configPath: flags.config ?? resolve(root, DEFAULT_CONFIG_FILENAME),
       format: oneOf(flags.format, ["text", "sarif"] as const, "text"),
       baseline: flags.baseline,
+    });
+    process.stdout.write(outcome.stdout);
+    return outcome.exitCode;
+  }
+
+  if (command === "diff") {
+    const outcome = await runDiff({
+      root,
+      base: flags.base ?? "main",
+      head: flags.head ?? WORKING_TREE,
+      format: oneOf(flags.format, ["text", "json"] as const, "text"),
     });
     process.stdout.write(outcome.stdout);
     return outcome.exitCode;
