@@ -1,8 +1,10 @@
 "use client";
 
 import { type ReactNode, useState } from "react";
-import { Box, Button, Flex, HStack, Input, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import type { ViewEdgeKind } from "@/lib/aggregate";
+import type { SavedSearch } from "@/lib/graph/query-language";
+import { QueryBar, type QueryMode } from "./QueryBar";
 import {
   EDGE_STYLES,
   EXTERNAL_STYLES,
@@ -31,6 +33,15 @@ import {
 interface SidebarProps {
   search: string;
   onSearch: (value: string) => void;
+  queryMode: QueryMode;
+  onQueryMode: (mode: QueryMode) => void;
+  queryError?: string;
+  matchCount?: number;
+  builtinSearches: readonly SavedSearch[];
+  savedSearches: SavedSearch[];
+  onApplySearch: (query: string) => void;
+  onSaveSearch: () => void;
+  onDeleteSearch: (name: string) => void;
   enabledEdgeKinds: Set<ViewEdgeKind>;
   onToggleEdgeKind: (kind: ViewEdgeKind) => void;
   enabledNodeKinds: Set<NodeKind>;
@@ -283,6 +294,15 @@ function LegendItem({ color, label }: { color: string; label: string }) {
 export function Sidebar({
   search,
   onSearch,
+  queryMode,
+  onQueryMode,
+  queryError,
+  matchCount,
+  builtinSearches,
+  savedSearches,
+  onApplySearch,
+  onSaveSearch,
+  onDeleteSearch,
   enabledEdgeKinds,
   onToggleEdgeKind,
   enabledNodeKinds,
@@ -324,24 +344,20 @@ export function Sidebar({
       borderColor="border"
       overflowY="auto"
     >
-      <HStack gap="2">
-        <Input
-          size="sm"
-          rounded="lg"
-          placeholder="Search nodes…"
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-        />
-        <Button
-          size="sm"
-          variant="ghost"
-          colorPalette="gray"
-          onClick={onResetFilters}
-          flexShrink={0}
-        >
-          Reset
-        </Button>
-      </HStack>
+      <QueryBar
+        query={search}
+        onQuery={onSearch}
+        mode={queryMode}
+        onMode={onQueryMode}
+        error={queryError}
+        matchCount={matchCount}
+        builtins={builtinSearches}
+        saved={savedSearches}
+        onApply={onApplySearch}
+        onSaveCurrent={onSaveSearch}
+        onDelete={onDeleteSearch}
+        onReset={onResetFilters}
+      />
 
       <Section title="Layout">
         <ChipRow>
