@@ -115,11 +115,10 @@ a file is expanded.
 Layout runs **off the main thread** in `lib/layout.worker.ts`, keyed by a scene signature so an
 unchanged scene reuses its positions. Several engines back the `LayoutAlgorithm` enum:
 
-- **smart** (`semanticMultilevel`) — nested package/community containers, adaptive per-cluster
-  layout, strongly-connected-component collapse, semantic reduction, and optional edge
-  routing/bundling. See `lib/layout/` (community detection, scc, smart).
-- **layered** (the current default in the UI), **tree** — dagre, with top-down / left-right /
-  bottom-up / right-left directions.
+- **smart** (`semanticMultilevel`) — the default. Nested package/community containers, adaptive
+  per-cluster layout, strongly-connected-component collapse, semantic reduction, and optional
+  edge routing/bundling. See `lib/layout/` (community detection, scc, smart).
+- **layered**, **tree** — dagre, with top-down / left-right / bottom-up / right-left directions.
 - **radial**, **circular**, **grid**, **force** — custom engines (force uses d3-force).
 
 So the view is **not** laid out exclusively through dagre: dagre powers the layered/tree
