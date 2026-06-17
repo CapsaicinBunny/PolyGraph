@@ -100,8 +100,20 @@ function layoutCluster(
     itemEdges.set(`${su} ${sv}`, { source: su, target: sv });
   }
 
-  // 4. Place items.
-  const centers = dagreItems(items, [...itemEdges.values()], direction);
+  // 4. Place items. Sort the item-edges so the layout is invariant to the input
+  // edge order (dagre's output can otherwise depend on edge insertion order).
+  const sortedEdges = [...itemEdges.values()].sort((a, b) =>
+    a.source < b.source
+      ? -1
+      : a.source > b.source
+        ? 1
+        : a.target < b.target
+          ? -1
+          : a.target > b.target
+            ? 1
+            : 0,
+  );
+  const centers = dagreItems(items, sortedEdges, direction);
 
   // 5. Convert to top-lefts; place direct nodes; offset child contents.
   const positions = new Map<string, XYPosition>();

@@ -399,19 +399,6 @@ export function layoutCacheSet(signature: string, entry: LayoutCacheEntry): void
   }
 }
 
-/** layoutView, memoized by an externally supplied signature that uniquely identifies the view. */
-export function layoutViewCached(
-  signature: string,
-  view: LayoutInput,
-  options: LayoutOptions = {},
-): Positions {
-  const cached = layoutCacheGet(signature);
-  if (cached) return cached.positions;
-  const positions = layoutView(view, options);
-  layoutCacheSet(signature, { positions, clusters: [] });
-  return positions;
-}
-
 /**
  * Compute node positions for a view using the chosen algorithm. Returns top-left
  * positions keyed by node id. Deterministic for a given input.

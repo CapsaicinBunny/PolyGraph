@@ -264,7 +264,8 @@ impl VelloCanvas {
         };
 
         // Package containers (Smart layout): under the edges + cards, parents first
-        // so deeper boxes nest visibly on top. Opaque depth-tinted fill + thin border.
+        // so deeper boxes nest visibly on top. Faint depth-tinted fill blended over
+        // the canvas + a thin border.
         {
             let mut clusters: Vec<&ClusterData> = self.data.clusters.iter().collect();
             clusters.sort_by_key(|c| c.depth);
@@ -277,15 +278,12 @@ impl VelloCanvas {
                 if !on_screen(c.x, c.y, c.w, c.h) {
                     continue;
                 }
-                let d = c.depth.min(4) as u8;
+                // Slate tint, low alpha so nested boxes layer into deeper panels.
+                let alpha = (0.05 + 0.03 * c.depth as f32).min(0.16);
                 let fill = if self.dark {
-                    Color::from_rgb8(28 + d * 6, 31 + d * 6, 38 + d * 6)
+                    Color::new([148.0 / 255.0, 163.0 / 255.0, 184.0 / 255.0, alpha])
                 } else {
-                    Color::from_rgb8(
-                        230u8.saturating_sub(d * 5),
-                        233u8.saturating_sub(d * 5),
-                        240u8.saturating_sub(d * 5),
-                    )
+                    Color::new([100.0 / 255.0, 116.0 / 255.0, 139.0 / 255.0, alpha])
                 };
                 let rect = RoundedRect::new(c.x, c.y, c.x + c.w, c.y + c.h, 14.0);
                 self.scene.fill(Fill::NonZero, camera, fill, None, &rect);
