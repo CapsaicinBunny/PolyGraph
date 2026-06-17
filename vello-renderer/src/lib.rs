@@ -77,6 +77,10 @@ struct EdgeData {
     x2: f64,
     y2: f64,
     color: [u8; 3],
+    /// Aggregated occurrence count for this relationship (1 when not aggregated).
+    /// Drives edge thickness and the `×N` multiplicity label.
+    #[serde(default)]
+    count: u32,
 }
 
 #[derive(Deserialize, Default)]
@@ -367,15 +371,11 @@ impl VelloCanvas {
         // large, zoomed-out graph the cumulative dash geometry overruns the wasm
         // allocator (memory access out of bounds). Past an edge budget, fall back to
         // cheap solid strokes — still readable, and it keeps big graphs from crashing.
-        let dash = Stroke::new(1.4).with_dashes(self.dash_phase, [6.0, 6.0]);
-        let solid = Stroke::new(1.2);
-        let edge_stroke = if self.data.edges.len() <= EDGE_DASH_BUDGET {
-            &dash
-        } else {
-            &solid
-        };
+        let solid_mode = self.data.edges.len() > EDGE_DASH_BUDGET;
         const PAD: f64 = 120.0;
         let (cx, cy, cs) = (self.cam_x, self.cam_y, self.cam_scale);
+        // Only draw the ×N multiplicity labels when zoomed in enough to read them.
+        let show_counts = self.cam_scale >= LABEL_MIN_SCALE;
         for e in &self.data.edges {
             let (ax, ay) = (e.x1 * cs + cx, e.y1 * cs + cy);
             let (bx, by) = (e.x2 * cs + cx, e.y2 * cs + cy);
@@ -396,6 +396,17 @@ impl VelloCanvas {
                 e.color[2] as f32 / 255.0,
                 fade,
             ]);
+            // Thicker stroke for repeated relationships — log-scaled so a few very
+            // heavy edges don't swamp the rest, and capped so it stays a line. Past the
+            // edge budget, drop the marching-ants dashes (solid) to avoid the allocator
+            // overrun on huge graphs.
+            let count = e.count.max(1);
+            let weight = (1.4 + (count as f64).ln() * 0.9).min(6.0);
+            let stroke = if solid_mode {
+                Stroke::new(weight)
+            } else {
+                Stroke::new(weight).with_dashes(self.dash_phase, [6.0, 6.0])
+            };
             if self.data.routing == "orthogonal" {
                 // Right-angle elbow: turn once on the dominant axis' midpoint.
                 let mut path = BezPath::new();
@@ -411,7 +422,7 @@ impl VelloCanvas {
                 }
                 path.line_to((sx2, sy2));
                 self.scene
-                    .stroke(edge_stroke, Affine::IDENTITY, color, None, &path);
+                    .stroke(&stroke, Affine::IDENTITY, color, None, &path);
             } else {
                 // Smooth S-curve: pull control points along the dominant axis.
                 let (c1, c2) = if dx.abs() >= dy.abs() {
@@ -423,7 +434,40 @@ impl VelloCanvas {
                 };
                 let curve = CubicBez::new(Point::new(sx1, sy1), c1, c2, Point::new(sx2, sy2));
                 self.scene
-                    .stroke(edge_stroke, Affine::IDENTITY, color, None, &curve);
+                    .stroke(&stroke, Affine::IDENTITY, color, None, &curve);
+            }
+
+            // `×N` multiplicity label at the screen-space midpoint, on a small pill
+            // so it reads over both edges and cards. Constant size (screen space).
+            if count > 1 && show_counts {
+                let mx = (sx1 + sx2) * 0.5;
+                let my = (sy1 + sy2) * 0.5;
+                let text = format!("\u{00d7}{count}");
+                let tw: f64 = text
+                    .chars()
+                    .filter_map(|c| charmap.map(c))
+                    .map(|gid| metrics.advance_width(gid).unwrap_or(0.0) as f64)
+                    .sum();
+                let pill = RoundedRect::new(mx - tw / 2.0 - 3.0, my - 8.0, mx + tw / 2.0 + 3.0, my + 8.0, 5.0);
+                self.scene
+                    .fill(Fill::NonZero, Affine::IDENTITY, card_fill, None, &pill);
+                let mut gx = mx - tw / 2.0;
+                let baseline = my + 4.0;
+                let glyphs: Vec<Glyph> = text
+                    .chars()
+                    .filter_map(|c| {
+                        let gid = charmap.map(c)?;
+                        let g = Glyph { id: gid.to_u32(), x: gx as f32, y: baseline as f32 };
+                        gx += metrics.advance_width(gid).unwrap_or(0.0) as f64;
+                        Some(g)
+                    })
+                    .collect();
+                self.scene
+                    .draw_glyphs(&self.font)
+                    .font_size(FONT_SIZE)
+                    .transform(Affine::IDENTITY)
+                    .brush(BADGE)
+                    .draw(Fill::NonZero, glyphs.into_iter());
             }
         }
 
