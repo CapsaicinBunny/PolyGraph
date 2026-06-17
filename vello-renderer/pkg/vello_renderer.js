@@ -37,7 +37,8 @@ export class VelloCanvas {
     }
     /**
      * Return what's under a screen point: a cluster header as `"cluster:<id>"`
-     * (deepest wins), else the topmost node id, else None.
+     * (deepest wins), else the topmost node id, else a nearby edge as `"edge:<id>"`,
+     * else None.
      * @param {number} px
      * @param {number} py
      * @returns {string | undefined}

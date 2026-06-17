@@ -10,6 +10,7 @@ import {
   type XYPosition,
 } from "../layout";
 import type {
+  EdgeEvidence,
   Environment,
   ExternalKind,
   GraphModel,
@@ -73,6 +74,8 @@ export interface SceneEdge {
   color: string;
   dashed: boolean;
   toExternal: boolean;
+  occurrences: EdgeEvidence[];
+  count: number;
 }
 
 /** Geometry-free scene: nodes (unpositioned) + edges + the inputs to compute a layout. */
@@ -247,6 +250,8 @@ export function buildSceneStructure(
       color: toExternal ?? EDGE_STYLES[e.kind].color,
       dashed: e.kind === "contains",
       toExternal: toExternal !== undefined,
+      occurrences: e.occurrences,
+      count: e.count,
     };
   });
 

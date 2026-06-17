@@ -69,6 +69,8 @@ struct NodeData {
 
 #[derive(Deserialize, Default)]
 struct EdgeData {
+    #[serde(default)]
+    id: String,
     x1: f64,
     y1: f64,
     x2: f64,
@@ -234,7 +236,8 @@ impl VelloCanvas {
     }
 
     /// Return what's under a screen point: a cluster header as `"cluster:<id>"`
-    /// (deepest wins), else the topmost node id, else None.
+    /// (deepest wins), else the topmost node id, else a nearby edge as `"edge:<id>"`,
+    /// else None.
     pub fn pick(&self, px: f64, py: f64) -> Option<String> {
         let wx = (px - self.cam_x) / self.cam_scale;
         let wy = (py - self.cam_y) / self.cam_scale;
@@ -255,7 +258,19 @@ impl VelloCanvas {
                 return Some(n.id.clone());
             }
         }
-        None
+        // Edges last: hit within ~6 screen px of the straight center-to-center segment.
+        let tol = 6.0 / self.cam_scale;
+        let mut closest: Option<(f64, &str)> = None;
+        for e in &self.data.edges {
+            if e.id.is_empty() {
+                continue;
+            }
+            let d = point_segment_dist(wx, wy, e.x1, e.y1, e.x2, e.y2);
+            if d <= tol && closest.map_or(true, |(best, _)| d < best) {
+                closest = Some((d, &e.id));
+            }
+        }
+        closest.map(|(_, id)| format!("edge:{id}"))
     }
 
     pub fn render(&mut self) -> Result<(), JsValue> {
@@ -568,6 +583,21 @@ impl VelloCanvas {
         frame.present();
         Ok(())
     }
+}
+
+/// Shortest distance from point (px,py) to the segment (x1,y1)-(x2,y2).
+fn point_segment_dist(px: f64, py: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 == 0.0 {
+        0.0
+    } else {
+        (((px - x1) * dx + (py - y1) * dy) / len2).clamp(0.0, 1.0)
+    };
+    let cx = x1 + t * dx;
+    let cy = y1 + t * dy;
+    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
 }
 
 /// Liang–Barsky line clip to an axis-aligned rect. Returns the clipped segment, or
