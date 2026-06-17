@@ -50,25 +50,14 @@ jobs:
         uses: tauri-apps/tauri-action@action-v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Updater signing — required to produce verifiable update artifacts.
-          # See docs/RELEASING.md for how to generate and store these.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code signing + notarization — optional; bundles are unsigned if unset.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          # On a version tag, publish a draft GitHub Release with the installers +
-          # the updater manifest (latest.json); otherwise just build the bundles.
+          # On a version tag, publish a draft GitHub Release with the unsigned
+          # installers; otherwise just build the bundles (uploaded as artifacts
+          # below). Bundles are unsigned — auto-update is not enabled.
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('PolyGraph {0}', github.ref_name) || '' }}
           releaseDraft: true
           prerelease: false
-          includeUpdaterJson: true
 
       - name: Upload bundles as workflow artifacts
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}

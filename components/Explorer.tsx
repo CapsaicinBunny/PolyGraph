@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Badge, Box, Button, Flex, Heading, HStack, Image, Text } from "@chakra-ui/react";
 import dynamic from "next/dynamic";
 import type { ViewEdgeKind } from "@/lib/aggregate";
@@ -13,7 +13,6 @@ import type {
 } from "@/lib/graph/types";
 import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "@/lib/graph/visual";
 import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
-import { checkForUpdates } from "@/lib/client/updates";
 import {
   availableFolders,
   availableLanguages,
@@ -65,11 +64,6 @@ export function Explorer() {
   const [enabledFolders, setEnabledFolders] = useState<Set<string>>(() => new Set());
   const [enabledLanguages, setEnabledLanguages] = useState<Set<string>>(() => new Set());
   const [filtersOpen, setFiltersOpen] = useState(false);
-
-  // Check for desktop-app updates once on mount (no-op outside Tauri).
-  useEffect(() => {
-    void checkForUpdates();
-  }, []);
 
   const graph = result?.graph ?? null;
 

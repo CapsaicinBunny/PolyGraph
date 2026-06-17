@@ -26,8 +26,6 @@
     "@emotion/react": "^11.14.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
-    "@tauri-apps/plugin-process": "^2",
-    "@tauri-apps/plugin-updater": "^2",
     "d3-force": "^3.0.0",
     "next": "^15.5.0",
     "next-themes": "^0.4.6",

@@ -3,11 +3,5 @@
   "identifier": "default",
   "description": "enables the default permissions",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    "dialog:default",
-    "shell:allow-spawn",
-    "updater:default",
-    "process:allow-restart"
-  ]
+  "permissions": ["core:default", "dialog:default", "shell:allow-spawn"]
 }

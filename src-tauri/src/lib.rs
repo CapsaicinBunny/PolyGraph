@@ -20,13 +20,6 @@ pub fn run() {
         .build(),
     );
 
-  // Auto-update (desktop only): the updater checks the configured endpoint and
-  // process::restart relaunches after an update is installed.
-  #[cfg(desktop)]
-  let builder = builder
-    .plugin(tauri_plugin_updater::Builder::new().build())
-    .plugin(tauri_plugin_process::init());
-
   builder
     .setup(|app| {
       // bun build --compile produces a self-contained binary; it does NOT bundle
