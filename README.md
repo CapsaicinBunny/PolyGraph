@@ -23,7 +23,7 @@ Drop in a project folder and PolyGraph builds an interactive node graph of its m
 interfaces, structs, traits, functions, and components — and the relationships between them: imports,
 calls, inheritance, instantiation, composition, dependency injection, and JSX component usage. Then
 go further: trace impact, enforce architecture rules in CI, diff two revisions, query the graph,
-export it, and jump straight to the source. It runs **entirely locally**.
+export it, and jump straight to the source. It runs **entirely locally** — nothing is uploaded.
 
 Supports TypeScript/JavaScript, Python, Java, Kotlin, Rust, Go, Scala, C#, F#, C, C++, Objective-C,
 Swift, Zig, Haskell, Ruby, PHP, Bash, Lua, Dart, Julia, R, Nix, OCaml, SQL, and WebAssembly text.
@@ -51,6 +51,25 @@ Swift, Zig, Haskell, Ruby, PHP, Bash, Lua, Dart, Julia, R, Nix, OCaml, SQL, and 
 | 🧮 **Query**          | A small query language for selecting and isolating subgraphs                  |
 | 📤 **Export**         | DOT, GraphML, Mermaid, JSON, SVG, standalone HTML report                      |
 | ✏️ **Open in editor** | Inline source preview + jump to the exact line in VS Code / JetBrains         |
+
+## Install
+
+PolyGraph ships as a **desktop app** for Windows, macOS, and Linux — no toolchain required.
+
+1. Download the latest installer from the
+   [**Releases**](https://github.com/CapsaicinBunny/PolyGraph/releases) page:
+   - **Windows** — `.msi` or `.exe`
+   - **macOS** — `.dmg`
+   - **Linux** — `.AppImage` or `.deb`
+2. Install and open it. Builds are **unsigned**, so Windows ("unknown publisher") and macOS
+   (Gatekeeper) will warn on first launch — allow it to run.
+3. Paste an absolute project folder path into **Scan a folder** and explore. The app reads the
+   folder directly from disk; nothing is uploaded or copied.
+
+Optionally verify your download against the release's `SHA256SUMS-<os>.txt`.
+
+> The graph canvas is GPU-rendered (WebGPU); the desktop app draws it through your system's webview.
+> Want to build from source or run the web/CLI version instead? See [Development](#development).
 
 ## The graph
 
@@ -121,7 +140,8 @@ polygraph check . --format sarif     # SARIF 2.1.0 for GitHub code scanning
 polygraph check . --baseline main    # only fail on violations new vs. main
 ```
 
-See [docs/CLI.md](docs/CLI.md) for the rule schema and full option reference.
+The `check` / `diff` commands run through the CLI — see [Development → CLI](#cli) for how to run it,
+and [docs/CLI.md](docs/CLI.md) for the rule schema and full option reference.
 
 ## Graph diffing
 
@@ -173,32 +193,37 @@ In the desktop app, a node's detail panel shows an inline **source preview** (sy
 via Shiki) and an **Open in editor** action that jumps to the exact file and line in **VS Code** or
 **JetBrains** IDEs. Source reads are constrained to the scanned project root.
 
-## Getting started
+## Development
+
+Everything below is for building from source or running the web/CLI version — end users just
+[install the app](#install). Requires [Bun](https://bun.sh) (and a Rust toolchain only if you
+rebuild the native `analyzer-core` / `vello-renderer`; prebuilt artifacts are committed).
 
 ```bash
 bun install
 bun run dev      # Next.js dev server → http://localhost:3003  ·  sidecar → http://localhost:4319
 ```
 
-Open the app, paste an absolute folder path into **Scan a folder**, and explore. The sidecar reads
-that folder directly from disk — nothing is uploaded or copied. (An in-browser folder picker is
-also available as a fallback.)
+Open <http://localhost:3003>, paste an absolute folder path into **Scan a folder**, and explore.
+(An in-browser folder picker is also available as a fallback.)
 
-> Requires a WebGPU-capable browser (recent Chrome or Edge) for the graph canvas.
+> The web version requires a WebGPU-capable browser (recent Chrome or Edge) for the graph canvas.
 
 ### CLI
 
-The same multi-language kernel powers a CLI (`check` / `diff`):
+The same multi-language kernel powers the `check` / `diff` CLI. Run it from source:
 
 ```bash
-bun run cli/index.ts check .         # or, via the package "bin": polygraph check .
+bun run cli/index.ts check .         # architecture rules
+bun run cli/index.ts diff .          # graph diff vs. HEAD
+# convenience scripts: `bun run check` / `bun run diff`
 ```
 
-> The package is `"private": true` and the `polygraph` bin runs from this repo and inside the
-> desktop app. Publishing to a registry for `bunx polygraph` / `npx polygraph` would require
+> The package is `"private": true`, so the `polygraph` bin runs from this repo (and inside the
+> desktop app), not from a registry. Publishing for `bunx polygraph` / `npx polygraph` would require
 > removing `"private"` and publishing the package.
 
-## Scripts
+### Scripts
 
 ```bash
 bun run dev            # Next dev server (port 3003) + analysis sidecar (port 4319)
@@ -210,9 +235,13 @@ bun run diff           # graph diff of the current directory vs. HEAD
 bun test               # analyzer + view unit tests
 bun run lint           # oxlint
 bun run format         # oxfmt
+bun run tauri          # Tauri CLI (desktop shell)
 ```
 
-## How it works
+Building the cross-platform desktop installers is handled by CI — see
+[docs/RELEASING.md](docs/RELEASING.md).
+
+### How it works
 
 For the full design — kernel, providers, the native Rust core, language packs, layouts, and the
 renderer — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -239,12 +268,12 @@ thread** in a worker (`lib/layout.worker.ts`) — dagre for the layered/tree lay
 for smart/radial/circular/grid/force — and renders it on a **Vello WebGPU vector canvas**
 (`vello-renderer/`, Rust→WASM).
 
-## Stack
+### Stack
 
 | Concern       | Choice                                                              |
 | ------------- | ------------------------------------------------------------------- |
 | App           | Next.js (App Router, static export) + Chakra UI v3                  |
-| Desktop       | Tauri v2 (optional desktop shell)                                   |
+| Desktop       | Tauri v2                                                            |
 | Analysis      | Bun sidecar (`sidecar/server.ts`) over loopback                     |
 | Runtime / PM  | Bun                                                                 |
 | Graph render  | Vello (Rust→WASM, WebGPU) vector renderer                           |
@@ -252,7 +281,7 @@ for smart/radial/circular/grid/force — and renders it on a **Vello WebGPU vect
 | Code analysis | ts-morph (TS/JS) + native tree-sitter core (Rust, napi-rs)          |
 | Lint / format | oxlint / oxfmt                                                      |
 
-## Project layout
+### Project layout
 
 ```
 lib/
