@@ -10,6 +10,7 @@ import type {
   GraphEdge,
   GraphNode,
   SourceFileMap,
+  UnresolvedRef,
 } from "../graph/types";
 import type { PackageDeps } from "../server/package-deps";
 import type { LanguageProvider } from "./provider";
@@ -72,6 +73,7 @@ export async function analyzeProject(
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
   const errors: AnalyzeError[] = [];
+  const unresolved: UnresolvedRef[] = [];
   // Append with loops, not `push(...arr)` — spreading a huge array as call
   // arguments overflows the engine's argument limit ("Maximum call stack size
   // exceeded") on very large codebases.
@@ -79,6 +81,7 @@ export async function analyzeProject(
     for (const n of r.nodes) nodes.push(n);
     for (const e of r.edges) edges.push(e);
     for (const er of r.errors) errors.push(er);
+    if (r.unresolved) for (const u of r.unresolved) unresolved.push(u);
   }
 
   const dedupedNodes = dedupeById(nodes);
@@ -87,5 +90,5 @@ export async function analyzeProject(
     (e) => nodeIds.has(e.source) && nodeIds.has(e.target),
   );
 
-  return { graph: { nodes: dedupedNodes, edges: validEdges }, errors };
+  return { graph: { nodes: dedupedNodes, edges: validEdges }, errors, unresolved };
 }

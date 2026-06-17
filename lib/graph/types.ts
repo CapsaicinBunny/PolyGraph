@@ -149,9 +149,30 @@ export interface AnalyzeError {
   message: string;
 }
 
+/**
+ * A reference PolyGraph could not resolve to a node in the scanned set — e.g. a
+ * relative/alias import whose target file isn't present. Surfaced so the graph's
+ * gaps are visible rather than silently dropped. Bare specifiers (`react`) are
+ * externals, not unresolved.
+ */
+export interface UnresolvedRef {
+  /** File node id where the unresolved reference appears. */
+  sourceId: string;
+  /** The unresolved specifier (e.g. `./missing`). */
+  name: string;
+  /** Relative path of the referencing file. */
+  filePath: string;
+  /** 1-based line of the reference. */
+  line: number;
+  /** 1-based column, when available. */
+  column?: number;
+}
+
 export interface AnalyzeResult {
   graph: GraphModel;
   errors: AnalyzeError[];
+  /** References that resolved to nothing in the scanned set. */
+  unresolved: UnresolvedRef[];
 }
 
 /** A map of relative file path to its source text — the upload payload. */

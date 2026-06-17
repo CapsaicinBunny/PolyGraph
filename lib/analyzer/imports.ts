@@ -1,8 +1,23 @@
 import { Node, type Project, type SourceFile, SyntaxKind } from "ts-morph";
-import { fileNodeId, type GraphEdge } from "../graph/types";
+import { fileNodeId, type GraphEdge, type UnresolvedRef } from "../graph/types";
 import { EdgeBuilder } from "./edge-accumulator";
 import { nodeEvidence } from "./evidence";
 import { toRelativePath } from "./project";
+
+/**
+ * A specifier that should resolve to a project file: relative (`./`, `../`, `/`)
+ * or a known path alias (`@/`, `~/`). Bare specifiers like `react` are externals
+ * (handled elsewhere), not unresolved references.
+ */
+function isProjectSpecifier(spec: string): boolean {
+  return (
+    spec.startsWith("./") ||
+    spec.startsWith("../") ||
+    spec.startsWith("/") ||
+    spec.startsWith("@/") ||
+    spec.startsWith("~/")
+  );
+}
 
 function pushImport(
   builder: EdgeBuilder,
@@ -18,16 +33,36 @@ function pushImport(
   builder.add(source, dest, "import", nodeEvidence(at, "exact"));
 }
 
-function collectFromFile(file: SourceFile, builder: EdgeBuilder): void {
+/** Record a project-style specifier that resolved to no file in the scanned set. */
+function pushUnresolved(out: UnresolvedRef[], fromFile: string, spec: string, at: Node): void {
+  if (!isProjectSpecifier(spec)) return; // bare specifier → external, not unresolved
+  const sf = at.getSourceFile();
+  const { line, column } = sf.getLineAndColumnAtPos(at.getStart());
+  out.push({ sourceId: fileNodeId(fromFile), name: spec, filePath: fromFile, line, column });
+}
+
+function collectFromFile(
+  file: SourceFile,
+  builder: EdgeBuilder,
+  unresolved: UnresolvedRef[],
+): void {
   const fromFile = toRelativePath(file.getFilePath());
 
   for (const decl of file.getImportDeclarations()) {
-    pushImport(builder, fromFile, decl.getModuleSpecifierSourceFile(), decl);
+    const target = decl.getModuleSpecifierSourceFile();
+    if (target) pushImport(builder, fromFile, target, decl);
+    else pushUnresolved(unresolved, fromFile, decl.getModuleSpecifierValue(), decl);
   }
 
   // Re-exports: `export { x } from "./y"` / `export * from "./y"`
   for (const decl of file.getExportDeclarations()) {
-    pushImport(builder, fromFile, decl.getModuleSpecifierSourceFile(), decl);
+    const target = decl.getModuleSpecifierSourceFile();
+    if (target) pushImport(builder, fromFile, target, decl);
+    else {
+      // `export { x }` with no `from` has no specifier — skip those.
+      const spec = decl.getModuleSpecifierValue();
+      if (spec) pushUnresolved(unresolved, fromFile, spec, decl);
+    }
   }
 
   // Dynamic import() and require()
@@ -47,11 +82,17 @@ function collectFromFile(file: SourceFile, builder: EdgeBuilder): void {
   }
 }
 
-/** Build module-level import edges between files. */
-export function analyzeImports(project: Project): GraphEdge[] {
+export interface ImportAnalysis {
+  edges: GraphEdge[];
+  unresolved: UnresolvedRef[];
+}
+
+/** Build module-level import edges between files, plus broken project imports. */
+export function analyzeImports(project: Project): ImportAnalysis {
   const builder = new EdgeBuilder();
+  const unresolved: UnresolvedRef[] = [];
   for (const file of project.getSourceFiles()) {
-    collectFromFile(file, builder);
+    collectFromFile(file, builder, unresolved);
   }
-  return builder.build();
+  return { edges: builder.build(), unresolved };
 }

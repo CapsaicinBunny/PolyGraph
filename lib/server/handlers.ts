@@ -5,7 +5,7 @@
 // not just TypeScript.
 
 import { stat } from "node:fs/promises";
-import type { AnalyzeError, GraphModel, SourceFileMap } from "../graph/types";
+import type { AnalyzeError, GraphModel, SourceFileMap, UnresolvedRef } from "../graph/types";
 import { analyzeProject } from "../kernel";
 import { readPackageDeps } from "./package-deps";
 import { scanDirectory } from "./scan-dir";
@@ -13,6 +13,7 @@ import { scanDirectory } from "./scan-dir";
 export interface ScanData {
   graph: GraphModel;
   errors: AnalyzeError[];
+  unresolved: UnresolvedRef[];
   fileCount: number;
   skipped: number;
   root: string;
@@ -21,6 +22,7 @@ export interface ScanData {
 export interface AnalyzeData {
   graph: GraphModel;
   errors: AnalyzeError[];
+  unresolved: UnresolvedRef[];
 }
 
 /** Returned when a scan is large enough to warrant explicit confirmation. */
@@ -78,12 +80,12 @@ export async function runScan(
     }
     const packages = await readPackageDeps(root);
     const tAnalyze = performance.now();
-    const { graph, errors } = await analyzeProject(files, { packages });
+    const { graph, errors, unresolved } = await analyzeProject(files, { packages });
     const analyzeMs = performance.now() - tAnalyze;
     console.error(
       `[scan] ${fileCount} files | read ${scanMs.toFixed(0)}ms | analyze ${analyzeMs.toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges`,
     );
-    return { ok: true, value: { graph, errors, fileCount, skipped, root } };
+    return { ok: true, value: { graph, errors, unresolved, fileCount, skipped, root } };
   } catch (err) {
     return { ok: false, status: 500, error: err instanceof Error ? err.message : "Scan failed" };
   }
@@ -96,11 +98,11 @@ export async function runAnalyze(files: SourceFileMap | undefined): Promise<Hand
   }
   try {
     const t = performance.now();
-    const { graph, errors } = await analyzeProject(files);
+    const { graph, errors, unresolved } = await analyzeProject(files);
     console.error(
       `[analyze] ${Object.keys(files).length} files | ${(performance.now() - t).toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges`,
     );
-    return { ok: true, value: { graph, errors } };
+    return { ok: true, value: { graph, errors, unresolved } };
   } catch (err) {
     return {
       ok: false,

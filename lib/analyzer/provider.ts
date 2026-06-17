@@ -23,7 +23,7 @@ export const tsProvider: LanguageProvider = {
   id: "typescript",
   extensions: EXTENSIONS,
   analyze(files: Record<string, string>, ctx: ProviderContext): ProviderResult {
-    const { graph, errors } = analyzeSources(files, { packages: ctx.packages });
-    return { nodes: graph.nodes, edges: graph.edges, errors };
+    const { graph, errors, unresolved } = analyzeSources(files, { packages: ctx.packages });
+    return { nodes: graph.nodes, edges: graph.edges, errors, unresolved };
   },
 };

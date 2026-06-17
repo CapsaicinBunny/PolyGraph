@@ -3,7 +3,7 @@
 
 import { stronglyConnectedComponents } from "../layout/scc";
 import { buildAdjacency } from "./query";
-import type { GraphModel } from "./types";
+import type { GraphModel, UnresolvedRef } from "./types";
 
 export type InsightKind =
   | "cycle"
@@ -14,7 +14,9 @@ export type InsightKind =
   | "client-server"
   | "undeclared"
   | "deep-chain"
-  | "instability";
+  | "instability"
+  | "ambiguous"
+  | "unresolved";
 
 export interface Insight {
   id: string;
@@ -213,7 +215,39 @@ export function analyzeInsights(graph: GraphModel): Insight[] {
     }
   }
 
+  // 10. Ambiguous resolutions — a reference that resolved to more than one candidate
+  // (its evidence is marked "ambiguous"). The drawn target may not be the real one.
+  let ambiguous = 0;
+  for (const e of graph.edges) {
+    if (e.occurrences.some((o) => o.confidence === "ambiguous") && ambiguous++ < MAX_PER_KIND) {
+      insights.push({
+        id: `ambiguous:${e.id}`,
+        kind: "ambiguous",
+        severity: "warning",
+        title: `Ambiguous ${e.kind}: ${nodeById.get(e.source)?.label ?? e.source} → ${nodeById.get(e.target)?.label ?? e.target}`,
+        detail: "Resolved to one of several candidates — the drawn target may be wrong.",
+        nodeIds: [e.source, e.target],
+      });
+    }
+  }
+
   return insights;
+}
+
+/**
+ * Convert unresolved references (gathered by the analyzer, not derived from the
+ * graph) into Insights so the Problems panel can show "what PolyGraph couldn't
+ * prove" alongside the graph-derived findings. Clicking one focuses its file.
+ */
+export function unresolvedToInsights(refs: UnresolvedRef[]): Insight[] {
+  return refs.slice(0, MAX_PER_KIND).map((r) => ({
+    id: `unresolved:${r.sourceId}:${r.name}:${r.line}`,
+    kind: "unresolved",
+    severity: "warning",
+    title: `Unresolved import "${r.name}" in ${r.filePath}`,
+    detail: `Line ${r.line} — points to no file in the scanned set.`,
+    nodeIds: [r.sourceId],
+  }));
 }
 
 /** Longest path over the SCC condensation, returned as representative node ids. */

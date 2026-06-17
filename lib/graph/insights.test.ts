@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { analyzeInsights, type InsightKind } from "./insights";
+import { analyzeInsights, type InsightKind, unresolvedToInsights } from "./insights";
 import { type GraphModel, type GraphNode, makeEdge } from "./types";
 
 const node = (id: string, extra: Partial<GraphNode> = {}): GraphNode => ({
@@ -65,6 +65,29 @@ describe("insights", () => {
     };
     const fanIn = kinds(g, "fan-in");
     expect(fanIn.some((i) => i.nodeIds[0] === "hub.ts")).toBe(true);
+  });
+
+  test("flags an ambiguous resolution from edge evidence", () => {
+    const g: GraphModel = {
+      nodes: [node("a"), node("b")],
+      edges: [
+        makeEdge("a", "b", "call", [
+          { filePath: "a", line: 1, provider: "TypeScript", confidence: "ambiguous" },
+        ]),
+      ],
+    };
+    const amb = kinds(g, "ambiguous");
+    expect(amb).toHaveLength(1);
+    expect(amb[0].nodeIds).toEqual(["a", "b"]);
+  });
+
+  test("turns unresolved references into focusable findings", () => {
+    const out = unresolvedToInsights([
+      { sourceId: "src/a.ts", name: "./missing", filePath: "src/a.ts", line: 3, column: 8 },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].kind).toBe("unresolved");
+    expect(out[0].nodeIds).toEqual(["src/a.ts"]);
   });
 
   test("detects a deep dependency chain", () => {

@@ -14,12 +14,16 @@ const KIND_LABEL: Record<InsightKind, string> = {
   undeclared: "Undeclared dependencies",
   "deep-chain": "Deep dependency chains",
   instability: "Instability (SDP) violations",
+  ambiguous: "Ambiguous resolutions",
+  unresolved: "Unresolved imports",
 };
 // Stable display order.
 const ORDER: InsightKind[] = [
   "cycle",
   "client-server",
   "undeclared",
+  "unresolved",
+  "ambiguous",
   "bottleneck",
   "fan-in",
   "fan-out",
