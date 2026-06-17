@@ -14,6 +14,12 @@ import type {
 import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "@/lib/graph/visual";
 import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import { checkForUpdates } from "@/lib/client/updates";
+import {
+  availableFolders,
+  availableLanguages,
+  DEFAULT_HIDDEN_LANGUAGES,
+} from "@/lib/graph/filters";
+import { FiltersPanel } from "./FiltersPanel";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 import { Sidebar } from "./Sidebar";
 import { ThemeToggle } from "./ThemeToggle";
@@ -56,6 +62,9 @@ export function Explorer() {
   const [algorithm, setAlgorithm] = useState<LayoutAlgorithm>("layered");
   const [direction, setDirection] = useState<LayoutDirection>("LR");
   const [showExternal, setShowExternal] = useState(false);
+  const [enabledFolders, setEnabledFolders] = useState<Set<string>>(() => new Set());
+  const [enabledLanguages, setEnabledLanguages] = useState<Set<string>>(() => new Set());
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Check for desktop-app updates once on mount (no-op outside Tauri).
   useEffect(() => {
@@ -63,6 +72,21 @@ export function Explorer() {
   }, []);
 
   const graph = result?.graph ?? null;
+
+  const folders = useMemo(() => (graph ? availableFolders(graph) : []), [graph]);
+  const languages = useMemo(() => (graph ? availableLanguages(graph) : []), [graph]);
+
+  const resetFileFilters = useCallback((g: typeof graph) => {
+    if (!g) return;
+    setEnabledFolders(new Set(availableFolders(g).map((f) => f.name)));
+    setEnabledLanguages(
+      new Set(
+        availableLanguages(g)
+          .filter((l) => !DEFAULT_HIDDEN_LANGUAGES.has(l.key))
+          .map((l) => l.key),
+      ),
+    );
+  }, []);
 
   const parentOf = useMemo(() => {
     const map = new Map<string, string>();
@@ -80,13 +104,17 @@ export function Explorer() {
     setExpanded(allExpanded ? new Set() : new Set(fileIds));
   }, [allExpanded, fileIds]);
 
-  const handleResult = useCallback((res: AnalyzeResult, s: Stats) => {
-    setResult(res);
-    setStats(s);
-    setExpanded(new Set());
-    setSelectedId(null);
-    setSearch("");
-  }, []);
+  const handleResult = useCallback(
+    (res: AnalyzeResult, s: Stats) => {
+      setResult(res);
+      setStats(s);
+      setExpanded(new Set());
+      setSelectedId(null);
+      setSearch("");
+      resetFileFilters(res.graph);
+    },
+    [resetFileFilters],
+  );
 
   const handleSelect = useCallback(
     (id: string) => {
@@ -165,6 +193,33 @@ export function Explorer() {
     });
   }, []);
 
+  const handleToggleFolder = useCallback((name: string) => {
+    setEnabledFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
+
+  const handleToggleLanguage = useCallback((key: string) => {
+    setEnabledLanguages((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const handleSetFolders = useCallback(
+    (on: boolean) => setEnabledFolders(on ? new Set(folders.map((f) => f.name)) : new Set()),
+    [folders],
+  );
+  const handleSetLanguages = useCallback(
+    (on: boolean) => setEnabledLanguages(on ? new Set(languages.map((l) => l.key)) : new Set()),
+    [languages],
+  );
+
   const handleResetFilters = useCallback(() => {
     setSearch("");
     setEnabledEdgeKinds(new Set(FILTERABLE_EDGE_KINDS));
@@ -173,7 +228,8 @@ export function Explorer() {
     setEnabledEnvironments(new Set(ALL_ENVIRONMENTS));
     setEnabledRuntimes(new Set(ALL_RUNTIMES));
     setShowExternal(false);
-  }, []);
+    resetFileFilters(graph);
+  }, [graph, resetFileFilters]);
 
   if (!result || !graph) {
     return (
@@ -211,6 +267,14 @@ export function Explorer() {
         </Button>
         <Button size="sm" variant="subtle" onClick={handleToggleExpandAll}>
           {allExpanded ? "Collapse all" : "Expand all"}
+        </Button>
+        <Button
+          size="sm"
+          variant={filtersOpen ? "subtle" : "ghost"}
+          colorPalette={filtersOpen ? "blue" : "gray"}
+          onClick={() => setFiltersOpen((v) => !v)}
+        >
+          Filters
         </Button>
         <Button size="sm" variant="outline" onClick={() => setResult(null)}>
           Analyze another
@@ -252,10 +316,25 @@ export function Explorer() {
             enabledCategories={enabledCategories}
             enabledEnvironments={enabledEnvironments}
             enabledRuntimes={enabledRuntimes}
+            enabledFolders={enabledFolders}
+            enabledLanguages={enabledLanguages}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
           />
         </Box>
+        {filtersOpen && (
+          <FiltersPanel
+            folders={folders}
+            languages={languages}
+            enabledFolders={enabledFolders}
+            enabledLanguages={enabledLanguages}
+            onToggleFolder={handleToggleFolder}
+            onToggleLanguage={handleToggleLanguage}
+            onSetFolders={handleSetFolders}
+            onSetLanguages={handleSetLanguages}
+            onClose={() => setFiltersOpen(false)}
+          />
+        )}
         {selectedId && (
           <NodeDetailPanel
             graph={graph}
