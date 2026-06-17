@@ -61,6 +61,7 @@ const RUNTIMES: { value: Runtime; label: string; color: string }[] = [
 ];
 
 const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
+  { value: "smart", label: "Smart", glyph: "✦" },
   { value: "layered", label: "Layered", glyph: "▤" },
   { value: "tree", label: "Tree", glyph: "⌄" },
   { value: "radial", label: "Radial", glyph: "◎" },

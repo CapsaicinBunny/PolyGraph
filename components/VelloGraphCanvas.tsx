@@ -137,7 +137,15 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         return { x1: a[0], y1: a[1], x2: b[0], y2: b[1], color: hexToRgb(e.color) };
       })
       .filter(Boolean);
-    return JSON.stringify({ nodes, edges });
+    const clusters = scene.clusters.map((c) => ({
+      x: c.x,
+      y: c.y,
+      w: c.width,
+      h: c.height,
+      depth: c.depth,
+      label: c.label,
+    }));
+    return JSON.stringify({ nodes, edges, clusters });
   }, [scene]);
 
   // One-time Vello/WebGPU setup + camera interaction.
