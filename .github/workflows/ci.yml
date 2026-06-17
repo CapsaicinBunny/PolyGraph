@@ -1,8 +1,11 @@
 name: CI
 
+# Validate every pull request and every push to main/release. The expensive
+# cross-platform desktop build stays in release.yml (release branch + version tags).
 on:
+  pull_request:
   push:
-    branches: [release]
+    branches: [main, release]
   workflow_dispatch:
 
 jobs:

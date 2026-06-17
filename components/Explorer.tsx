@@ -79,7 +79,7 @@ export function Explorer() {
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<SceneEdge | null>(null);
-  const [algorithm, setAlgorithm] = useState<LayoutAlgorithm>("layered");
+  const [algorithm, setAlgorithm] = useState<LayoutAlgorithm>("smart");
   const [direction, setDirection] = useState<LayoutDirection>("LR");
   const [groupBy, setGroupBy] = useState<GroupBy>("directory");
   const [density, setDensity] = useState(1);
