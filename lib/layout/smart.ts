@@ -1,5 +1,13 @@
 import dagre from "@dagrejs/dagre";
 import {
+  forceCenter,
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  type SimulationNodeDatum,
+} from "d3-force";
+import {
   type ClusterBox,
   type LayoutDirection,
   type LayoutInput,
@@ -8,9 +16,13 @@ import {
   type XYPosition,
 } from "../layout";
 import { buildClusterTree, type ClusterTreeNode } from "./clusters";
+import { stronglyConnectedComponents } from "./scc";
 
 const PADDING = 24;
 const HEADER_H = 26;
+
+type Item = { id: string; width: number; height: number };
+type Centers = Map<string, XYPosition>;
 
 interface ClusterLayout {
   width: number;
@@ -60,6 +72,88 @@ function dagreItems(
   return centers;
 }
 
+/** Row-major grid of items (centers), sized to the largest item so none overlap. Used when a cluster has no internal edges. */
+function gridItems(items: Item[]): Centers {
+  const centers: Centers = new Map();
+  const n = items.length;
+  if (n === 0) return centers;
+  const cols = Math.ceil(Math.sqrt(n));
+  let cellW = 0;
+  let cellH = 0;
+  for (const it of items) {
+    cellW = Math.max(cellW, it.width);
+    cellH = Math.max(cellH, it.height);
+  }
+  const stepX = cellW + 40;
+  const stepY = cellH + 40;
+  items.forEach((it, i) => {
+    centers.set(it.id, { x: (i % cols) * stepX, y: Math.floor(i / cols) * stepY });
+  });
+  return centers;
+}
+
+/** Items evenly spaced on a ring around the origin (centers). Used inside SCC super-items. */
+function circularItems(items: Item[]): Centers {
+  const centers: Centers = new Map();
+  const n = items.length;
+  if (n === 0) return centers;
+  if (n === 1) {
+    centers.set(items[0].id, { x: 0, y: 0 });
+    return centers;
+  }
+  let extent = 0;
+  for (const it of items) extent = Math.max(extent, Math.hypot(it.width, it.height));
+  // Radius from a per-item arc allowance so cards never crowd on the ring.
+  const radius = Math.max(160, (n * (extent + 30)) / (2 * Math.PI));
+  items.forEach((it, i) => {
+    const angle = (i / n) * Math.PI * 2;
+    centers.set(it.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+  });
+  return centers;
+}
+
+interface SimNode extends SimulationNodeDatum {
+  id: string;
+}
+
+/** Force-directed placement of items (centers) via fixed synchronous ticks. Deterministic (no RNG). */
+function forceItems(items: Item[], edges: { source: string; target: string }[]): Centers {
+  const centers: Centers = new Map();
+  if (items.length === 0) return centers;
+  const simNodes: SimNode[] = items.map((it) => ({ id: it.id }));
+  const ids = new Set(items.map((it) => it.id));
+  const links = edges
+    .filter((e) => ids.has(e.source) && ids.has(e.target))
+    .map((e) => ({ source: e.source, target: e.target }));
+  let radius = 60;
+  for (const it of items) radius = Math.max(radius, Math.hypot(it.width, it.height) / 2 + 20);
+
+  const sim = forceSimulation(simNodes)
+    .force("charge", forceManyBody().strength(-1200).distanceMax(2200))
+    .force(
+      "link",
+      forceLink<SimNode, { source: string; target: string }>(links)
+        .id((d) => d.id)
+        .distance(radius * 2.2)
+        .strength(0.4),
+    )
+    .force("center", forceCenter(0, 0))
+    .force("collide", forceCollide(radius))
+    .stop();
+  for (let i = 0; i < 400; i++) sim.tick();
+  items.forEach((it, i) => centers.set(it.id, { x: simNodes[i].x ?? 0, y: simNodes[i].y ?? 0 }));
+  return centers;
+}
+
+type Mode = "grid" | "force" | "layered";
+
+/** Pick a cluster's internal layout from its (acyclic) item-graph shape. */
+function chooseMode(n: number, m: number): Mode {
+  if (m === 0) return "grid"; // nothing connects — tile tidily
+  if (m > n * 1.6) return "force"; // dense/tangled — dagre would sprawl
+  return "layered"; // a clean DAG — dagre ranks it well
+}
+
 function layoutCluster(
   node: ClusterTreeNode,
   depth: number,
@@ -79,8 +173,8 @@ function layoutCluster(
   }
 
   // 2. Items = child clusters (box sizes) + direct nodes (node sizes).
-  type Item = { id: string; width: number; height: number; child?: ClusterTreeNode };
-  const items: Item[] = [];
+  type LItem = Item & { child?: ClusterTreeNode };
+  const items: LItem[] = [];
   for (const key of childKeys) {
     const child = node.children.get(key)!;
     const cl = childLayouts.get(child.id)!;
@@ -100,9 +194,9 @@ function layoutCluster(
     itemEdges.set(`${su} ${sv}`, { source: su, target: sv });
   }
 
-  // 4. Place items. Sort the item-edges so the layout is invariant to the input
-  // edge order (dagre's output can otherwise depend on edge insertion order).
-  const sortedEdges = [...itemEdges.values()].sort((a, b) =>
+  // Sort item-edges so layout is invariant to input edge order (dagre/Tarjan can
+  // otherwise depend on insertion order).
+  const cmpEdge = (a: { source: string; target: string }, b: { source: string; target: string }) =>
     a.source < b.source
       ? -1
       : a.source > b.source
@@ -111,9 +205,74 @@ function layoutCluster(
           ? -1
           : a.target > b.target
             ? 1
-            : 0,
+            : 0;
+  const sortedEdges = [...itemEdges.values()].sort(cmpEdge);
+
+  // 4. Collapse cyclic items (SCCs) into ring super-items, lay out the acyclic
+  // condensation with an adaptively chosen mode, then expand the rings.
+  const sizeOf = new Map(items.map((it) => [it.id, { width: it.width, height: it.height }]));
+  const comps = stronglyConnectedComponents(
+    items.map((it) => it.id),
+    sortedEdges,
   );
-  const centers = dagreItems(items, sortedEdges, direction);
+  const memberToSuper = new Map<string, string>();
+  const superRing = new Map<string, { centers: Centers; cx: number; cy: number }>();
+  const condItems: Item[] = [];
+  for (const comp of comps) {
+    if (comp.members.length === 1) {
+      const s = sizeOf.get(comp.members[0])!;
+      condItems.push({ id: comp.members[0], width: s.width, height: s.height });
+      continue;
+    }
+    const memberItems: Item[] = comp.members.map((id) => ({ id, ...sizeOf.get(id)! }));
+    const ring = circularItems(memberItems);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const mi of memberItems) {
+      const c = ring.get(mi.id)!;
+      minX = Math.min(minX, c.x - mi.width / 2);
+      minY = Math.min(minY, c.y - mi.height / 2);
+      maxX = Math.max(maxX, c.x + mi.width / 2);
+      maxY = Math.max(maxY, c.y + mi.height / 2);
+    }
+    superRing.set(comp.id, { centers: ring, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 });
+    for (const m of comp.members) memberToSuper.set(m, comp.id);
+    condItems.push({ id: comp.id, width: maxX - minX, height: maxY - minY });
+  }
+
+  // Condensation edges: remap endpoints to their super-item, drop self/dups, sort.
+  const condEdgeMap = new Map<string, { source: string; target: string }>();
+  for (const e of sortedEdges) {
+    const s = memberToSuper.get(e.source) ?? e.source;
+    const t = memberToSuper.get(e.target) ?? e.target;
+    if (s === t) continue;
+    condEdgeMap.set(`${s} ${t}`, { source: s, target: t });
+  }
+  const condEdges = [...condEdgeMap.values()].sort(cmpEdge);
+
+  const mode = chooseMode(condItems.length, condEdges.length);
+  const condCenters =
+    mode === "grid"
+      ? gridItems(condItems)
+      : mode === "force"
+        ? forceItems(condItems, condEdges)
+        : dagreItems(condItems, condEdges, direction);
+
+  // Expand super-items: each original item id → world-ish center (cluster-local).
+  const centers: Centers = new Map();
+  for (const ci of condItems) {
+    const cc = condCenters.get(ci.id) ?? { x: 0, y: 0 };
+    const ring = superRing.get(ci.id);
+    if (ring) {
+      for (const [mid, mc] of ring.centers) {
+        centers.set(mid, { x: cc.x + (mc.x - ring.cx), y: cc.y + (mc.y - ring.cy) });
+      }
+    } else {
+      centers.set(ci.id, cc);
+    }
+  }
 
   // 5. Convert to top-lefts; place direct nodes; offset child contents.
   const positions = new Map<string, XYPosition>();
