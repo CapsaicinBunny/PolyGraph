@@ -180,17 +180,27 @@ export function analyzeInsights(graph: GraphModel): Insight[] {
     });
   }
 
-  // 9. Instability (SDP) violations: a stable node depending on a less-stable one.
+  // 9. Instability (SDP) violations: a stable module depending on a less-stable one.
+  // Martin's metric is about *coupling*, so compute it over import edges only
+  // (mixing call/extends/renders degrees would make I swing for unrelated reasons).
   let unstable = 0;
+  const impOut = new Map<string, number>();
+  const impIn = new Map<string, number>();
+  for (const e of graph.edges) {
+    if (e.kind !== "import") continue;
+    impOut.set(e.source, (impOut.get(e.source) ?? 0) + 1);
+    impIn.set(e.target, (impIn.get(e.target) ?? 0) + 1);
+  }
   const instability = (id: string): number => {
-    const ce = (out.get(id) ?? []).length;
-    const ca = (inc.get(id) ?? []).length;
+    const ce = impOut.get(id) ?? 0;
+    const ca = impIn.get(id) ?? 0;
     return ca + ce === 0 ? 0 : ce / (ca + ce);
   };
   for (const e of graph.edges) {
+    if (e.kind !== "import") continue;
     const si = instability(e.source);
     const ti = instability(e.target);
-    const deg = (out.get(e.source) ?? []).length + (inc.get(e.source) ?? []).length;
+    const deg = (impOut.get(e.source) ?? 0) + (impIn.get(e.source) ?? 0);
     if (ti - si > INSTABILITY_MARGIN && deg >= DEGREE_FLOOR && unstable++ < MAX_PER_KIND) {
       insights.push({
         id: `instability:${e.id}`,
@@ -233,27 +243,34 @@ function longestChain(
       if (b && a !== b) cadj.get(a)?.add(b);
     }
   }
-  // Longest path via memoized DFS (condensation is a DAG).
+  // Longest path via explicit-stack post-order DFS (iterative — the condensation
+  // can be a deep line of singletons, so recursion would overflow the stack on
+  // large graphs, the same hazard lib/layout/scc.ts avoids).
   const best = new Map<string, string[]>();
-  const visiting = new Set<string>();
-  const dfs = (s: string): string[] => {
-    const cached = best.get(s);
-    if (cached) return cached;
-    if (visiting.has(s)) return [s]; // guard (shouldn't happen on a DAG)
-    visiting.add(s);
-    let longest: string[] = [];
-    for (const nb of [...(cadj.get(s) ?? [])].sort()) {
-      const sub = dfs(nb);
-      if (sub.length > longest.length) longest = sub;
+  for (const root of sccs.map((s) => s.id)) {
+    if (best.has(root)) continue;
+    const work: { node: string; i: number; succ: string[] }[] = [
+      { node: root, i: 0, succ: [...(cadj.get(root) ?? [])].sort() },
+    ];
+    while (work.length > 0) {
+      const f = work[work.length - 1];
+      if (f.i < f.succ.length) {
+        const nb = f.succ[f.i++];
+        if (!best.has(nb)) work.push({ node: nb, i: 0, succ: [...(cadj.get(nb) ?? [])].sort() });
+      } else {
+        let longest: string[] = [];
+        for (const nb of f.succ) {
+          const sub = best.get(nb) ?? [];
+          if (sub.length > longest.length) longest = sub;
+        }
+        best.set(f.node, [f.node, ...longest]);
+        work.pop();
+      }
     }
-    visiting.delete(s);
-    const path = [s, ...longest];
-    best.set(s, path);
-    return path;
-  };
+  }
   let overall: string[] = [];
   for (const scc of sccs) {
-    const p = dfs(scc.id);
+    const p = best.get(scc.id) ?? [];
     if (p.length > overall.length) overall = p;
   }
   return overall.map((sccId) => repOf.get(sccId) as string);
