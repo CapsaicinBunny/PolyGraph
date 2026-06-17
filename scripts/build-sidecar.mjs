@@ -1,12 +1,11 @@
 // Compile the analysis sidecar into the target-triple-named binary Tauri expects
 // as an externalBin (src-tauri/binaries/polygraph-sidecar-<triple>[.exe]). Used
 // locally and in release CI before `tauri build`.
-import { execSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { $ } from "bun";
 
 let rustcOutput;
 try {
-  rustcOutput = execSync("rustc -vV").toString();
+  rustcOutput = await $`rustc -vV`.text();
 } catch {
   console.error("Could not run `rustc -vV` — is Rust installed and on your PATH?");
   process.exit(1);
@@ -19,11 +18,11 @@ if (!triple) {
 }
 
 const ext = process.platform === "win32" ? ".exe" : "";
-mkdirSync("src-tauri/binaries", { recursive: true });
 const out = `src-tauri/binaries/polygraph-sidecar-${triple}${ext}`;
 
 try {
-  execSync(`bun build --compile sidecar/server.ts --outfile "${out}"`, { stdio: "inherit" });
+  await $`mkdir -p src-tauri/binaries`;
+  await $`bun build --compile sidecar/server.ts --outfile ${out}`;
 } catch {
   console.error(
     `Failed to compile the sidecar to ${out}. Is bun installed and sidecar/server.ts present?`,
