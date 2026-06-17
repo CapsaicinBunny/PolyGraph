@@ -9,6 +9,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use napi::bindgen_prelude::{AsyncTask, Task};
+use napi::{Env, Result as NapiResult};
 use napi_derive::napi;
 use serde::Serialize;
 use streaming_iterator::StreamingIterator;
@@ -595,16 +597,18 @@ fn build_graph(
     }
 }
 
-/// Analyze a bucket of same-language files. `files_json` is a JSON object of
-/// relative path -> source text. Returns a JSON `{ nodes, edges, errors }`.
-#[napi]
-pub fn analyze(
-    grammar: String,
-    query_src: String,
-    import_style: String,
-    files_json: String,
+/// The heavy parse + build pass. Runs entirely off the JS thread (see
+/// `AnalyzeTask::compute`), so the multi-minute work never blocks Bun's event
+/// loop and concurrent language buckets actually overlap. All inputs are owned
+/// `String`s and the output is the same JSON `String` the synchronous version
+/// returned, so the JS side is unchanged in shape.
+fn run_analyze(
+    grammar: &str,
+    query_src: &str,
+    import_style: &str,
+    files_json: &str,
 ) -> napi::Result<String> {
-    let language = language_for(&grammar)
+    let language = language_for(grammar)
         .ok_or_else(|| napi::Error::from_reason(format!("unknown grammar: {grammar}")))?;
     // Validate the grammar once so a malformed pack returns a clean error rather
     // than panicking inside a worker thread below.
@@ -617,11 +621,11 @@ pub fn analyze(
     // redundant validation pass). Compiling here also means a malformed query is
     // reported as a clean napi error, never as a panic on a worker thread.
     let query = Arc::new(
-        Query::new(&language, &query_src)
+        Query::new(&language, query_src)
             .map_err(|e| napi::Error::from_reason(format!("query: {e:?}")))?,
     );
 
-    let files: HashMap<String, String> = serde_json::from_str(&files_json)
+    let files: HashMap<String, String> = serde_json::from_str(files_json)
         .map_err(|e| napi::Error::from_reason(format!("bad files json: {e}")))?;
 
     // Parse + extract each file in parallel — tree-sitter parsing is independent
@@ -679,6 +683,56 @@ pub fn analyze(
         }
     }
 
-    let output = build_graph(&per_file, &import_style, errors);
+    let output = build_graph(&per_file, import_style, errors);
     serde_json::to_string(&output).map_err(|e| napi::Error::from_reason(e.to_string()))
+}
+
+/// libuv-threadpool task wrapping [`run_analyze`]. napi runs `compute` on a
+/// background worker (not the JS thread) and `resolve` back on the JS thread,
+/// so `analyze` returns a `Promise<string>` to JS. Multiple buckets dispatched
+/// via `Promise.all` therefore parse concurrently instead of serializing on the
+/// single synchronous call.
+pub struct AnalyzeTask {
+    grammar: String,
+    query_src: String,
+    import_style: String,
+    files_json: String,
+}
+
+impl Task for AnalyzeTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> NapiResult<Self::Output> {
+        run_analyze(
+            &self.grammar,
+            &self.query_src,
+            &self.import_style,
+            &self.files_json,
+        )
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> NapiResult<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Analyze a bucket of same-language files. `files_json` is a JSON object of
+/// relative path -> source text. Returns a `Promise` that resolves to a JSON
+/// `{ nodes, edges, errors }` string. The heavy work runs off the JS thread on
+/// napi's libuv threadpool (see [`AnalyzeTask`]); the inputs and the resolved
+/// JSON shape are identical to the previous synchronous binding.
+#[napi(ts_return_type = "Promise<string>")]
+pub fn analyze(
+    grammar: String,
+    query_src: String,
+    import_style: String,
+    files_json: String,
+) -> AsyncTask<AnalyzeTask> {
+    AsyncTask::new(AnalyzeTask {
+        grammar,
+        query_src,
+        import_style,
+        files_json,
+    })
 }
