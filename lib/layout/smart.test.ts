@@ -100,6 +100,24 @@ describe("smartLayout adaptive (Phase B)", () => {
     }
   });
 
+  test("a cross-directory cycle rings the child-cluster boxes without overlap", () => {
+    // dirA/x ⇄ dirB/y — at the root, items "dirA" and "dirB" form a 2-cycle, so
+    // they become a ring of child-cluster boxes (the trickiest expansion path).
+    const cross = {
+      nodes: [N("dirA/x.ts"), N("dirB/y.ts")],
+      edges: [E("dirA/x.ts", "dirB/y.ts"), E("dirB/y.ts", "dirA/x.ts")],
+    };
+    const { nodes, clusters } = smartLayout(cross, { direction: "LR" });
+    const a = boxOf(clusters, "dirA");
+    const b = boxOf(clusters, "dirB");
+    expect(overlaps(a, b)).toBe(false);
+    expect(within(nodes.get("dirA/x.ts")!, a, 200, 56)).toBe(true);
+    expect(within(nodes.get("dirB/y.ts")!, b, 200, 56)).toBe(true);
+    const again = smartLayout(cross, { direction: "LR" });
+    expect([...nodes.entries()]).toEqual([...again.nodes.entries()]);
+    expect(clusters).toEqual(again.clusters);
+  });
+
   test("a dense acyclic cluster (force) keeps nodes inside its box and is deterministic", () => {
     const ids = ["d/a.ts", "d/b.ts", "d/c.ts", "d/e.ts", "d/f.ts"];
     const edges: { source: string; target: string }[] = [];
