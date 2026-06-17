@@ -16,6 +16,7 @@ import type {
   NodeRole,
   Runtime,
 } from "./types";
+import { fileLanguage, topFolderOf } from "./filters";
 import {
   EDGE_STYLES,
   glyphFor,
@@ -33,6 +34,8 @@ export interface SceneFilters {
   enabledEnvironments: Set<Environment>;
   enabledRuntimes: Set<Runtime>;
   enabledEdgeKinds: Set<ViewEdgeKind>;
+  enabledFolders: Set<string>;
+  enabledLanguages: Set<string>;
 }
 
 export interface SceneNode {
@@ -119,10 +122,15 @@ export function buildSceneStructure(
     enabledEnvironments,
     enabledRuntimes,
     enabledEdgeKinds,
+    enabledFolders,
+    enabledLanguages,
   } = filters;
 
   const visible = (n: GraphModel["nodes"][number]) => {
     if (n.kind === "external") return showExternal;
+    // Folder + language gate — applies to files and the symbols inside them.
+    if (!enabledFolders.has(topFolderOf(n.filePath))) return false;
+    if (!enabledLanguages.has(fileLanguage(n.filePath).key)) return false;
     if (n.environment && !enabledEnvironments.has(n.environment)) return false;
     if (n.runtimes?.length && !n.runtimes.some((r) => enabledRuntimes.has(r))) return false;
     if (n.kind === "file") return true;
@@ -149,6 +157,8 @@ export function buildSceneStructure(
     ser(enabledEnvironments),
     ser(enabledRuntimes),
     ser(enabledEdgeKinds),
+    ser(enabledFolders),
+    ser(enabledLanguages),
   ].join("|");
 
   const symbolCount = new Map<string, number>();
