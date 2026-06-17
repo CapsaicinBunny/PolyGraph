@@ -20,7 +20,7 @@ export const clusterIdOfAggregate = (id: string): string => id.slice(0, -AGG_SUF
  * Directory prefixes of a node, outermost-first: `"a/b/c.ts#x"` → `["a", "a/b"]`.
  * External nodes group under the synthetic `«external»` cluster (mirrors clusters.ts).
  */
-function dirPrefixes(node: { id: string; kind: string }): string[] {
+export function dirPrefixes(node: { id: string; kind: string }): string[] {
   if (node.kind === "external") return [EXTERNAL_DIR];
   const hash = node.id.indexOf("#");
   const filePath = hash === -1 ? node.id : node.id.slice(0, hash);

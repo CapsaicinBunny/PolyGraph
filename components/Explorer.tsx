@@ -26,6 +26,7 @@ import {
   availableLanguages,
   DEFAULT_HIDDEN_LANGUAGES,
 } from "@/lib/graph/filters";
+import { autoCollapseDirs } from "@/lib/graph/auto-collapse";
 import { FiltersPanel } from "./FiltersPanel";
 import type { SceneEdge } from "@/lib/graph/scene";
 import { EdgeDetailPanel } from "./EdgeDetailPanel";
@@ -48,6 +49,9 @@ const VelloGraphCanvas = dynamic(
 const ALL_ENVIRONMENTS: Environment[] = ["client", "server"];
 const ALL_RUNTIMES: Runtime[] = ["node", "deno", "bun"];
 const ALL_CATEGORIES: NodeCategory[] = ["ui", "feature"];
+// Above this many file nodes, auto-collapse directories so the initial scene the
+// renderer receives stays drawable (LOD v0; see docs/SCALE-100K.md).
+const AUTO_COLLAPSE_MAX_CARDS = 2000;
 
 interface Stats {
   fileCount: number;
@@ -202,7 +206,13 @@ export function Explorer() {
       setStats(s);
       setProjectPath(scannedPath);
       setExpanded(new Set());
-      setCollapsedClusters(new Set());
+      // LOD: a huge repo (e.g. linux/drivers) would produce 100k cards the renderer
+      // can't draw, so seed the collapsed set with a directory depth that keeps the
+      // initial scene to ~AUTO_COLLAPSE_MAX_CARDS aggregate cards. The user can expand
+      // any aggregate from here. See docs/SCALE-100K.md.
+      setCollapsedClusters(
+        autoCollapseDirs(res.graph, AUTO_COLLAPSE_MAX_CARDS)?.collapsed ?? new Set(),
+      );
       setSelectedId(null);
       setSelectedEdge(null);
       setSearch("");
