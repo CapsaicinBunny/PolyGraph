@@ -292,6 +292,13 @@ impl VelloCanvas {
             } else {
                 CARD_BORDER_LIGHT
             };
+            // Theme-aware header text — the default LABEL is dark slate (for white
+            // cards) and would vanish on the dark container fill in dark mode.
+            let header_text = if self.dark {
+                Color::from_rgb8(148, 163, 184)
+            } else {
+                Color::from_rgb8(71, 85, 105)
+            };
             for c in &clusters {
                 if !on_screen(c.x, c.y, c.w, c.h) {
                     continue;
@@ -329,7 +336,7 @@ impl VelloCanvas {
                         .draw_glyphs(&self.font)
                         .font_size(FONT_SIZE)
                         .transform(camera)
-                        .brush(LABEL)
+                        .brush(header_text)
                         .draw(Fill::NonZero, glyphs.into_iter());
                 }
             }
