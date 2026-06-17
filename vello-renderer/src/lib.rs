@@ -360,7 +360,16 @@ impl VelloCanvas {
                 (Point::new(sx1, mid), Point::new(sx2, mid))
             };
             let curve = CubicBez::new(Point::new(sx1, sy1), c1, c2, Point::new(sx2, sy2));
-            let color = Color::from_rgb8(e.color[0], e.color[1], e.color[2]);
+            // Fade long-distance edges so a dense graph's local structure stays
+            // legible: full opacity up to ~600 world units, easing to 0.3 by ~4000.
+            let world_len = ((e.x2 - e.x1).powi(2) + (e.y2 - e.y1).powi(2)).sqrt();
+            let fade = (1.0 - ((world_len - 600.0) / 3400.0).clamp(0.0, 1.0) * 0.7) as f32;
+            let color = Color::new([
+                e.color[0] as f32 / 255.0,
+                e.color[1] as f32 / 255.0,
+                e.color[2] as f32 / 255.0,
+                fade,
+            ]);
             self.scene
                 .stroke(&dash, Affine::IDENTITY, color, None, &curve);
         }
