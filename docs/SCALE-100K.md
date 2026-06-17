@@ -69,11 +69,18 @@ feeds Vello. TS shrinks to orchestration + analysis + UI.
 - **[child] layout guard** — cap/ban `dagre` above a node threshold (fall back to
   a near-linear layout) and add a worker timeout so layout always terminates.
 
-### v1 — adaptive LOD in Rust (the Nanite step)
+### v1 — adaptive LOD, all in TypeScript (renderer untouched)
 
-- Ship the cluster **hierarchy** (bboxes + aggregate cards + child pointers +
-  bundled edges) to the renderer once; Rust does per-frame **cut-selection +
-  culling**; replace the JSON bridge with **typed arrays**.
+A parallel design+feasibility workflow (3 proposals + 4 code-grounded probes +
+a synthesis judge) chose the lowest-risk architecture: the cut is computed in
+**pure TypeScript** and only changes WHICH directories are collapsed as the
+camera zooms — the Vello renderer is byte-for-byte unchanged. Each visible
+directory's box is read **straight from the live scene**, so the cut decision is
+in the renderer's exact coordinate space and reuses the existing collapse→reflow
+path. The camera is preserved on a recut (fit only on new graph/level/filters).
+The typed-array bridge and a Rust-side cut were **deferred** — feasibility
+confirmed the bridge isn't a v1 prerequisite once the cut holds card count
+~constant (a few hundred nodes; `serde_json` is not the bottleneck).
 
 ### v2 — lazy hierarchical layout in Rust
 
@@ -83,11 +90,18 @@ feeds Vello. TS shrinks to orchestration + analysis + UI.
 
 ## Status
 
-v0 (make it render now) — child PRs open against this epic:
+v0 (make it render now) — child PRs against this epic:
 
 - [x] renderer quick wins — edge cap + font hoist (#46)
 - [x] adaptive auto-collapse — directory-depth LOD seed (#47)
 - [x] layout guard — size cap + worker timeout (#48)
 
-v1 / v2 — not started (see the phased plan above). The master PR (#45) tracks the
-live checklist.
+v1 (adaptive cut, renderer untouched):
+
+- [x] LOD core — directory hierarchy + pure adaptive cut, fully unit-tested (#49)
+- [x] camera-driven cut wiring behind an `adaptiveLod` flag, default off (#50)
+- [ ] desktop calibration of the thresholds (`LOD_OPEN_PX`, `LOD_MAX_CARDS`,
+      band step) and flip the flag default — needs a WebGPU run
+
+v2 — not started. The typed-array bridge is also deferred (see v1). The master
+PR (#45) tracks the live checklist.
