@@ -4,7 +4,14 @@ import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "./visual";
 import { buildSceneStructure, type SceneFilters } from "./scene";
 
 function fileNode(filePath: string) {
-  return { id: filePath, kind: "file" as const, label: filePath, filePath, line: 0, parentFile: filePath };
+  return {
+    id: filePath,
+    kind: "file" as const,
+    label: filePath,
+    filePath,
+    line: 0,
+    parentFile: filePath,
+  };
 }
 
 const graph: GraphModel = {
@@ -32,12 +39,24 @@ test("all files visible when every folder + language is enabled", () => {
 });
 
 test("disabling a folder hides its files", () => {
-  const s = buildSceneStructure(graph, new Set(), filters({ enabledFolders: new Set(["src", "/"]) }), "force", "LR");
+  const s = buildSceneStructure(
+    graph,
+    new Set(),
+    filters({ enabledFolders: new Set(["src", "/"]) }),
+    "force",
+    "LR",
+  );
   expect(s.nodes.map((n) => n.id)).not.toContain("lib/b.rs");
   expect(s.nodes.map((n) => n.id)).toContain("src/a.ts");
 });
 
 test("disabling a language hides its files (JSON off)", () => {
-  const s = buildSceneStructure(graph, new Set(), filters({ enabledLanguages: new Set(["TS", "RS"]) }), "force", "LR");
+  const s = buildSceneStructure(
+    graph,
+    new Set(),
+    filters({ enabledLanguages: new Set(["TS", "RS"]) }),
+    "force",
+    "LR",
+  );
   expect(s.nodes.map((n) => n.id)).not.toContain("pkg.json");
 });

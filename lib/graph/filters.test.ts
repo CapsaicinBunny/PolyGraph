@@ -32,12 +32,7 @@ function fileNode(filePath: string): GraphNode {
 
 test("availableFolders + availableLanguages count file nodes", () => {
   const graph: GraphModel = {
-    nodes: [
-      fileNode("src/a.ts"),
-      fileNode("src/b.ts"),
-      fileNode("lib/c.rs"),
-      fileNode("pkg.json"),
-    ],
+    nodes: [fileNode("src/a.ts"), fileNode("src/b.ts"), fileNode("lib/c.rs"), fileNode("pkg.json")],
     edges: [],
   };
   expect(availableFolders(graph)).toEqual([
