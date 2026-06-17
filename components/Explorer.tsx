@@ -32,10 +32,12 @@ import { EdgeDetailPanel } from "./EdgeDetailPanel";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 import { analyzeInsights, unresolvedToInsights } from "@/lib/graph/insights";
 import { ProblemsPanel } from "./ProblemsPanel";
+import { ExportPanel } from "./ExportPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { Sidebar } from "./Sidebar";
 import { ThemeToggle } from "./ThemeToggle";
 import { UploadDropzone } from "./UploadDropzone";
+import type { ExplorerWorkspaceState } from "@/lib/workspace/schema";
 
 // Vello renders via WebGPU (browser-only), so load it client-side.
 const VelloGraphCanvas = dynamic(
@@ -90,6 +92,8 @@ export function Explorer() {
   const [focusedIds, setFocusedIds] = useState<Set<string> | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [problemsOpen, setProblemsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [projectPath, setProjectPath] = useState("");
 
   const baseGraph = result?.graph ?? null;
 
@@ -191,11 +195,12 @@ export function Explorer() {
   }, [allExpanded, fileIds]);
 
   const handleResult = useCallback(
-    (res: AnalyzeResult, s: Stats, m: PackageManifest[]) => {
+    (res: AnalyzeResult, s: Stats, m: PackageManifest[], scannedPath = "") => {
       setResult(res);
       setManifests(m);
       setLevel("file");
       setStats(s);
+      setProjectPath(scannedPath);
       setExpanded(new Set());
       setCollapsedClusters(new Set());
       setSelectedId(null);
@@ -221,6 +226,29 @@ export function Explorer() {
     },
     [fileIds],
   );
+
+  // Apply a loaded/imported workspace's view state onto the current graph.
+  const applyWorkspace = useCallback((s: ExplorerWorkspaceState) => {
+    setSelectedId(s.selectedId);
+    setExpanded(s.expanded);
+    setCollapsedClusters(s.collapsedClusters);
+    setFocusedIds(s.focusedIds);
+    setShowExternal(s.showExternal);
+    setSearch(s.search);
+    setEnabledEdgeKinds(s.enabledEdgeKinds);
+    setEnabledNodeKinds(s.enabledNodeKinds);
+    setEnabledCategories(s.enabledCategories);
+    setEnabledEnvironments(s.enabledEnvironments);
+    setEnabledRuntimes(s.enabledRuntimes);
+    setEnabledFolders(s.enabledFolders);
+    setEnabledLanguages(s.enabledLanguages);
+    setAlgorithm(s.algorithm);
+    setDirection(s.direction);
+    setGroupBy(s.groupBy);
+    setDensity(s.density);
+    setEdgeRouting(s.edgeRouting);
+    setCommunityCollapse(s.communityCollapse);
+  }, []);
 
   const handleSelect = useCallback(
     (id: string) => {
@@ -413,6 +441,14 @@ export function Explorer() {
         >
           Problems{insights.length > 0 ? ` (${insights.length})` : ""}
         </Button>
+        <Button
+          size="sm"
+          variant={exportOpen ? "subtle" : "ghost"}
+          colorPalette={exportOpen ? "green" : "gray"}
+          onClick={() => setExportOpen((v) => !v)}
+        >
+          Export
+        </Button>
         <Button size="sm" variant="outline" onClick={() => setResult(null)}>
           Analyze another
         </Button>
@@ -524,6 +560,36 @@ export function Explorer() {
             insights={insights}
             onFocus={setFocusedIds}
             onClose={() => setProblemsOpen(false)}
+          />
+        )}
+        {exportOpen && (
+          <ExportPanel
+            graph={graph}
+            insights={insights}
+            state={{
+              projectPath,
+              selectedId,
+              expanded,
+              collapsedClusters,
+              focusedIds,
+              showExternal,
+              search,
+              enabledEdgeKinds,
+              enabledNodeKinds,
+              enabledCategories,
+              enabledEnvironments,
+              enabledRuntimes,
+              enabledFolders,
+              enabledLanguages,
+              algorithm,
+              direction,
+              groupBy,
+              density,
+              edgeRouting,
+              communityCollapse,
+            }}
+            onApplyWorkspace={applyWorkspace}
+            onClose={() => setExportOpen(false)}
           />
         )}
         {selectedId && (
