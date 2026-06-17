@@ -27,7 +27,7 @@ import {
   DEFAULT_HIDDEN_LANGUAGES,
 } from "@/lib/graph/filters";
 import { FiltersPanel } from "./FiltersPanel";
-import type { SceneEdge } from "@/lib/graph/scene";
+import { graphKeyFor, type SceneEdge } from "@/lib/graph/scene";
 import { EdgeDetailPanel } from "./EdgeDetailPanel";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 import { analyzeInsights, unresolvedToInsights } from "@/lib/graph/insights";
@@ -94,6 +94,9 @@ export function Explorer() {
   const [problemsOpen, setProblemsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [projectPath, setProjectPath] = useState("");
+  // Adaptive level-of-detail (LOD): recompute the collapsed cut as the camera
+  // zooms so a huge repo stays drawable. Off by default — see docs/SCALE-100K.md.
+  const [adaptiveLod, setAdaptiveLod] = useState(false);
 
   const baseGraph = result?.graph ?? null;
 
@@ -150,6 +153,56 @@ export function Explorer() {
     queryResult && !queryResult.error && !queryResult.empty ? queryResult.nodeIds : null;
   const queryIds = queryMode === "filter" ? matchedIds : null;
   const highlightIds = queryMode === "highlight" ? matchedIds : null;
+
+  // Signature of everything that should re-frame the camera (new graph, level,
+  // filters, focus) but NOT collapsedClusters — so the adaptive cut preserves the
+  // user's zoom. Undefined when adaptive LOD is off (renderer then always fits).
+  const fitSignature = useMemo(() => {
+    if (!adaptiveLod || !graph) return undefined;
+    const set = (s: Set<string>) => [...s].sort().join(",");
+    return [
+      graphKeyFor(graph),
+      level,
+      algorithm,
+      direction,
+      groupBy,
+      density,
+      edgeRouting,
+      showExternal ? 1 : 0,
+      communityCollapse ? 1 : 0,
+      set(enabledEdgeKinds as Set<string>),
+      set(enabledNodeKinds as Set<string>),
+      set(enabledCategories as Set<string>),
+      set(enabledEnvironments as Set<string>),
+      set(enabledRuntimes as Set<string>),
+      set(enabledFolders),
+      set(enabledLanguages),
+      set(expanded),
+      focusedIds ? set(focusedIds) : "",
+      queryIds ? set(queryIds) : "",
+    ].join("|");
+  }, [
+    adaptiveLod,
+    graph,
+    level,
+    algorithm,
+    direction,
+    groupBy,
+    density,
+    edgeRouting,
+    showExternal,
+    communityCollapse,
+    enabledEdgeKinds,
+    enabledNodeKinds,
+    enabledCategories,
+    enabledEnvironments,
+    enabledRuntimes,
+    enabledFolders,
+    enabledLanguages,
+    expanded,
+    focusedIds,
+    queryIds,
+  ]);
 
   const handleSaveSearch = useCallback(() => {
     const q = search.trim();
@@ -408,6 +461,15 @@ export function Explorer() {
         <ThemeToggle ml="auto" />
         <Button
           size="sm"
+          variant={adaptiveLod ? "subtle" : "ghost"}
+          colorPalette={adaptiveLod ? "teal" : "gray"}
+          onClick={() => setAdaptiveLod((v) => !v)}
+          title="Adaptive level-of-detail: open directories into detail as you zoom in (experimental)"
+        >
+          {adaptiveLod ? "Adaptive LOD: on" : "Adaptive LOD: off"}
+        </Button>
+        <Button
+          size="sm"
           variant={showExternal ? "subtle" : "ghost"}
           colorPalette={showExternal ? "purple" : "gray"}
           onClick={() => setShowExternal((v) => !v)}
@@ -531,6 +593,9 @@ export function Explorer() {
             onToggleExpand={handleToggleExpand}
             onToggleCollapse={handleToggleCollapse}
             onSelectEdge={handleSelectEdge}
+            adaptiveLod={adaptiveLod}
+            onCut={setCollapsedClusters}
+            fitSignature={fitSignature}
           />
         </Box>
         {filtersOpen && (
