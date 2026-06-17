@@ -50,6 +50,37 @@ function hexToRgb(hex: string): [number, number, number] {
   return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
 }
 
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const [r, g, b] =
+    h < 60
+      ? [c, x, 0]
+      : h < 120
+        ? [x, c, 0]
+        : h < 180
+          ? [0, c, x]
+          : h < 240
+            ? [0, x, c]
+            : h < 300
+              ? [x, 0, c]
+              : [c, 0, x];
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+}
+
+// Stable categorical color for a container box, keyed by its group id (directory /
+// package / community), so each functional area gets its own consistent hue. Mid
+// saturation/lightness keeps it readable on both light and dark canvases.
+function clusterColor(id: string): [number, number, number] {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return hslToRgb((h >>> 0) % 360, 0.5, 0.62);
+}
+
 // Muted gray for nodes/edges outside the highlight set (readable in both themes).
 const DIM_RGB: [number, number, number] = [90, 99, 112];
 
@@ -203,6 +234,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       h: c.height,
       depth: c.depth,
       label: c.label,
+      color: clusterColor(c.id),
     }));
     return JSON.stringify({ nodes, edges, clusters, routing: edgeRouting });
   }, [scene, edgeRouting, highlightIds]);
