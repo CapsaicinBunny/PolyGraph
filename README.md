@@ -312,9 +312,7 @@ components/             Explorer, VelloGraphCanvas, Sidebar, NodeDetailPanel, pa
 ## Releases & security
 
 See [docs/RELEASING.md](docs/RELEASING.md) for how desktop installers are built, and
-[SECURITY.md](SECURITY.md) for tracked advisories — notably the Linux-only `glib 0.18.5`
-RustSec advisory ([RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429), blocked
-upstream on Tauri's GTK4 migration; see [#4](https://github.com/CapsaicinBunny/PolyGraph/issues/4)).
+[SECURITY.md](SECURITY.md) for tracked advisories
 
 ## License
 
