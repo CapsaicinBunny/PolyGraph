@@ -20,6 +20,8 @@ import {
 } from "@/lib/graph/filters";
 import { FiltersPanel } from "./FiltersPanel";
 import { NodeDetailPanel } from "./NodeDetailPanel";
+import { analyzeInsights } from "@/lib/graph/insights";
+import { ProblemsPanel } from "./ProblemsPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { Sidebar } from "./Sidebar";
 import { ThemeToggle } from "./ThemeToggle";
@@ -72,11 +74,13 @@ export function Explorer() {
   const [communityCollapse, setCommunityCollapse] = useState(false);
   const [focusedIds, setFocusedIds] = useState<Set<string> | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [problemsOpen, setProblemsOpen] = useState(false);
 
   const graph = result?.graph ?? null;
 
   const folders = useMemo(() => (graph ? availableFolders(graph) : []), [graph]);
   const languages = useMemo(() => (graph ? availableLanguages(graph) : []), [graph]);
+  const insights = useMemo(() => (graph ? analyzeInsights(graph) : []), [graph]);
 
   const resetFileFilters = useCallback((g: typeof graph) => {
     if (!g) return;
@@ -299,6 +303,14 @@ export function Explorer() {
         >
           Settings
         </Button>
+        <Button
+          size="sm"
+          variant={problemsOpen ? "subtle" : "ghost"}
+          colorPalette={problemsOpen ? "orange" : insights.length > 0 ? "orange" : "gray"}
+          onClick={() => setProblemsOpen((v) => !v)}
+        >
+          Problems{insights.length > 0 ? ` (${insights.length})` : ""}
+        </Button>
         <Button size="sm" variant="outline" onClick={() => setResult(null)}>
           Analyze another
         </Button>
@@ -387,6 +399,13 @@ export function Explorer() {
             communityCollapse={communityCollapse}
             onCommunityCollapse={setCommunityCollapse}
             onClose={() => setSettingsOpen(false)}
+          />
+        )}
+        {problemsOpen && (
+          <ProblemsPanel
+            insights={insights}
+            onFocus={setFocusedIds}
+            onClose={() => setProblemsOpen(false)}
           />
         )}
         {selectedId && (
