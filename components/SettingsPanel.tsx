@@ -96,7 +96,7 @@ export function SettingsPanel({
           {communityCollapse ? "On" : "Off"}
         </Button>
         <Text fontSize="xs" color="fg.muted" mt="2">
-          Only affects the Smart layout&apos;s Community grouping.
+          Folds every detected community into one card. Smart layout, Community grouping only.
         </Text>
       </Box>
     </Stack>

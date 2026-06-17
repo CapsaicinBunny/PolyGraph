@@ -160,12 +160,20 @@ export function buildSceneStructure(
           filteredGraph.edges,
         )
       : undefined;
-  // Semantic reduction: collapse chosen directories (and, when opted in, community
-  // groups) into aggregate cards before building the view, so the layout/renderer
-  // treat them as ordinary nodes.
+  // Semantic reduction: collapse chosen directories into aggregate cards before
+  // building the view. When "collapse community groups" is on (Community mode), fold
+  // EVERY multi-member community into one card — the toggle does the work directly,
+  // so the user never has to hit a thin cluster header.
+  let effectiveCollapsed = collapsedClusters;
+  if (groupBy === "community" && communityCollapse && communityOf) {
+    const sizes = new Map<string, number>();
+    for (const c of communityOf.values()) sizes.set(c, (sizes.get(c) ?? 0) + 1);
+    effectiveCollapsed = new Set(collapsedClusters);
+    for (const [community, size] of sizes) if (size > 1) effectiveCollapsed.add(community);
+  }
   const sourceGraph = collapseClusters(
     filteredGraph,
-    collapsedClusters,
+    effectiveCollapsed,
     groupBy === "community" && communityCollapse ? communityOf : undefined,
   );
   const view = buildView(sourceGraph, expanded);
