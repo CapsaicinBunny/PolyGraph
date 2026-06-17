@@ -88,4 +88,65 @@ describe("collapseClusters", () => {
     expect(out.nodes).toHaveLength(1);
     expect(out.nodes[0].id).toBe(aggregateNodeId("a"));
   });
+
+  test("collapses a community group into one aggregate, rerouting edges", () => {
+    // Two files in "Community 1", one outside. The community spans directories,
+    // so directory collapse can't express it — only the community map can.
+    const communityOf = new Map<string, string>([
+      ["src/a.ts", "Community 1"],
+      ["lib/x.ts", "Community 1"],
+      ["lib/y.ts", "Community 2"],
+      ["lib/x.ts#foo", "Community 1"],
+    ]);
+    const out = collapseClusters(graph, new Set(["Community 1"]), communityOf);
+    const agg = aggregateNodeId("Community 1");
+    // src/a.ts and lib/x.ts (+ its symbol) fold into the community aggregate.
+    expect(out.nodes.some((n) => n.id === agg)).toBe(true);
+    expect(out.nodes.some((n) => n.id === "src/a.ts")).toBe(false);
+    expect(out.nodes.some((n) => n.id === "lib/x.ts")).toBe(false);
+    expect(out.nodes.some((n) => n.id === "lib/x.ts#foo")).toBe(false);
+    // lib/y.ts (Community 2, not collapsed) stays.
+    expect(out.nodes.some((n) => n.id === "lib/y.ts")).toBe(true);
+    // The aggregate counts the two absorbed *file* nodes.
+    const aggNode = out.nodes.find((n) => n.id === agg)!;
+    expect(aggNode.label).toBe("Community 1 · 2");
+    // src/a.ts → lib/x.ts is internal to the community → dropped; lib/x.ts → lib/y.ts
+    // reroutes to agg → lib/y.ts.
+    expect(out.edges).toEqual([
+      {
+        id: edgeId(agg, "lib/y.ts", "import"),
+        source: agg,
+        target: "lib/y.ts",
+        kind: "import",
+      },
+    ]);
+  });
+
+  test("directory collapse takes precedence over community membership", () => {
+    // lib/x.ts and lib/y.ts are under dir "lib" AND in a community; the dir wins.
+    const communityOf = new Map<string, string>([
+      ["lib/x.ts", "Community 1"],
+      ["lib/y.ts", "Community 1"],
+    ]);
+    const out = collapseClusters(graph, new Set(["lib"]), communityOf);
+    expect(out.nodes.some((n) => n.id === aggregateNodeId("lib"))).toBe(true);
+    expect(out.nodes.some((n) => n.id === aggregateNodeId("Community 1"))).toBe(false);
+  });
+
+  test("no communityOf leaves community-only members untouched", () => {
+    // Without the map, "Community 1" in the collapsed set matches no dir prefix,
+    // so the graph is returned unchanged.
+    const out = collapseClusters(graph, new Set(["Community 1"]));
+    expect(out).toBe(graph);
+  });
+
+  test("communityOf present but its id not in the collapsed set is a no-op", () => {
+    const communityOf = new Map<string, string>([
+      ["src/a.ts", "Community 1"],
+      ["lib/x.ts", "Community 1"],
+    ]);
+    // Collapsing a different community id absorbs nothing.
+    const out = collapseClusters(graph, new Set(["Community 2"]), communityOf);
+    expect(out).toBe(graph);
+  });
 });

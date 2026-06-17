@@ -346,7 +346,12 @@ function layoutCluster(
 /** Smart (semanticMultilevel) layout: group by directory / community / none, lay out by dependency flow. */
 export function smartLayout(
   view: LayoutInput,
-  options: { direction?: LayoutDirection; groupBy?: GroupBy; density?: number } = {},
+  options: {
+    direction?: LayoutDirection;
+    groupBy?: GroupBy;
+    density?: number;
+    communityOf?: Map<string, string>;
+  } = {},
 ): LayoutResult {
   const direction = options.direction ?? "TB";
   const groupBy = options.groupBy ?? "directory";
@@ -354,12 +359,21 @@ export function smartLayout(
 
   let groupOf: ((node: { id: string; kind: string }) => string[]) | undefined;
   if (groupBy === "community") {
-    const community = detectCommunities(
-      view.nodes.map((n) => n.id),
-      view.edges,
-    );
+    // Prefer the injected map (shared with the collapse transform) so rendered
+    // boxes and collapse targets stay consistent; else detect on the view.
+    const community =
+      options.communityOf ??
+      detectCommunities(
+        view.nodes.map((n) => n.id),
+        view.edges,
+      );
+    // Size communities over VIEW nodes only — the injected map may carry ids that
+    // aren't in the view (symbols, or nodes collapsed away).
     const sizes = new Map<string, number>();
-    for (const c of community.values()) sizes.set(c, (sizes.get(c) ?? 0) + 1);
+    for (const n of view.nodes) {
+      const c = community.get(n.id);
+      if (c) sizes.set(c, (sizes.get(c) ?? 0) + 1);
+    }
     groupOf = (n) => {
       const c = community.get(n.id);
       // Leave singleton communities at the root — avoids a sea of one-node boxes.

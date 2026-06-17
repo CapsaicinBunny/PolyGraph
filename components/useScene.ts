@@ -36,6 +36,7 @@ export function useScene(
   collapsedClusters: Set<string>,
   groupBy: GroupBy,
   density: number,
+  communityCollapse: boolean,
 ): { scene: Scene; layingOut: boolean } {
   const structure = useMemo(
     () =>
@@ -48,8 +49,19 @@ export function useScene(
         collapsedClusters,
         groupBy,
         density,
+        communityCollapse,
       ),
-    [graph, expanded, filters, algorithm, direction, collapsedClusters, groupBy, density],
+    [
+      graph,
+      expanded,
+      filters,
+      algorithm,
+      direction,
+      collapsedClusters,
+      groupBy,
+      density,
+      communityCollapse,
+    ],
   );
 
   const initial = layoutCacheGet(structure.signature);

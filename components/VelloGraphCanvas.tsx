@@ -30,6 +30,7 @@ export interface GraphViewProps {
   enabledFolders: Set<string>;
   enabledLanguages: Set<string>;
   collapsedClusters: Set<string>;
+  communityCollapse: boolean;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
@@ -73,6 +74,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     enabledFolders,
     enabledLanguages,
     collapsedClusters,
+    communityCollapse,
     onSelect,
     onToggleExpand,
     onToggleCollapse,
@@ -110,6 +112,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     collapsedClusters,
     groupBy,
     density,
+    communityCollapse,
   );
   const { resolvedTheme } = useTheme();
 

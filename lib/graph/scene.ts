@@ -18,6 +18,7 @@ import type {
   NodeRole,
   Runtime,
 } from "./types";
+import { detectCommunities } from "../layout/community";
 import { collapseClusters } from "./collapse";
 import { fileLanguage, topFolderOf } from "./filters";
 import {
@@ -121,6 +122,7 @@ export function buildSceneStructure(
   collapsedClusters: Set<string> = new Set(),
   groupBy: GroupBy = "directory",
   density = 1,
+  communityCollapse = false,
 ): SceneStructure {
   const {
     showExternal,
@@ -148,9 +150,24 @@ export function buildSceneStructure(
     nodes: graph.nodes.filter(visible),
     edges: graph.edges.filter((e) => keptIds.has(e.source) && keptIds.has(e.target)),
   };
-  // Semantic reduction: collapse chosen directories into aggregate cards before
-  // building the view, so the layout/renderer treat them as ordinary nodes.
-  const sourceGraph = collapseClusters(filteredGraph, collapsedClusters);
+  // Single source of truth for communities: detect once on the filtered graph,
+  // then feed the SAME map to both the collapse transform and the layout so the
+  // rendered "Community N" boxes and the collapse targets always agree.
+  const communityOf =
+    groupBy === "community"
+      ? detectCommunities(
+          filteredGraph.nodes.map((n) => n.id),
+          filteredGraph.edges,
+        )
+      : undefined;
+  // Semantic reduction: collapse chosen directories (and, when opted in, community
+  // groups) into aggregate cards before building the view, so the layout/renderer
+  // treat them as ordinary nodes.
+  const sourceGraph = collapseClusters(
+    filteredGraph,
+    collapsedClusters,
+    groupBy === "community" && communityCollapse ? communityOf : undefined,
+  );
   const view = buildView(sourceGraph, expanded);
   const visibleEdges = view.edges.filter(
     (e) => e.kind === "contains" || enabledEdgeKinds.has(e.kind),
@@ -172,6 +189,7 @@ export function buildSceneStructure(
     ser(collapsedClusters),
     groupBy,
     `d${density}`,
+    `cc${communityCollapse ? 1 : 0}`,
   ].join("|");
 
   const symbolCount = new Map<string, number>();
@@ -228,7 +246,7 @@ export function buildSceneStructure(
       nodes: view.nodes.map((n) => ({ id: n.id, kind: n.kind })),
       edges: visibleEdges.map((e) => ({ source: e.source, target: e.target })),
     },
-    options: { algorithm, direction, groupBy, density },
+    options: { algorithm, direction, groupBy, density, communityOf },
   };
 }
 

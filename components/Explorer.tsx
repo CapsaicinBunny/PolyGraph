@@ -346,6 +346,7 @@ export function Explorer() {
             enabledFolders={enabledFolders}
             enabledLanguages={enabledLanguages}
             collapsedClusters={collapsedClusters}
+            communityCollapse={communityCollapse}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
             onToggleCollapse={handleToggleCollapse}

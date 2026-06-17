@@ -50,6 +50,7 @@ function layoutSync(input: LayoutInput, options: LayoutOptions): WorkerLayout {
       direction: options.direction,
       groupBy: options.groupBy,
       density: options.density,
+      communityOf: options.communityOf,
     });
     return { positions: r.nodes, clusters: r.clusters };
   }
