@@ -80,7 +80,7 @@ export function analyzeExternals(
     const id = edgeId(source, target, kind);
     if (seenEdge.has(id)) return;
     seenEdge.add(id);
-    edges.push({ id, source, target, kind });
+    edges.push({ id, source, target, kind, occurrences: [], count: 0 });
   };
 
   for (const file of project.getSourceFiles()) {

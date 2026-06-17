@@ -23,6 +23,8 @@ const edge = (source: string, target: string) => ({
   source,
   target,
   kind: "import" as const,
+  occurrences: [],
+  count: 0,
 });
 
 const graph: GraphModel = {
@@ -56,7 +58,14 @@ describe("collapseClusters", () => {
     const agg = aggregateNodeId("lib");
     // src/a.ts → lib/x.ts becomes src/a.ts → agg; lib/x.ts → lib/y.ts is internal → dropped.
     expect(out.edges).toEqual([
-      { id: edgeId("src/a.ts", agg, "import"), source: "src/a.ts", target: agg, kind: "import" },
+      {
+        id: edgeId("src/a.ts", agg, "import"),
+        source: "src/a.ts",
+        target: agg,
+        kind: "import",
+        occurrences: [],
+        count: 0,
+      },
     ]);
   });
 
@@ -78,7 +87,14 @@ describe("collapseClusters", () => {
     expect(out.nodes.some((n) => n.id === agg)).toBe(true);
     expect(out.nodes.some((n) => n.kind === "external")).toBe(false);
     expect(out.edges).toEqual([
-      { id: edgeId("src/a.ts", agg, "import"), source: "src/a.ts", target: agg, kind: "import" },
+      {
+        id: edgeId("src/a.ts", agg, "import"),
+        source: "src/a.ts",
+        target: agg,
+        kind: "import",
+        occurrences: [],
+        count: 0,
+      },
     ]);
   });
 
@@ -118,6 +134,8 @@ describe("collapseClusters", () => {
         source: agg,
         target: "lib/y.ts",
         kind: "import",
+        occurrences: [],
+        count: 0,
       },
     ]);
   });

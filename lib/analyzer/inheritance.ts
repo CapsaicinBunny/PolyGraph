@@ -27,7 +27,7 @@ function pushEdge(
   const id = edgeId(source, target, kind);
   if (seen.has(id)) return;
   seen.add(id);
-  edges.push({ id, source, target, kind });
+  edges.push({ id, source, target, kind, occurrences: [], count: 0 });
 }
 
 /** Build extends/implements edges between classes and interfaces. */

@@ -53,7 +53,7 @@ export function analyzeCalls(project: Project, index: DeclIndex): GraphEdge[] {
       const id = edgeId(source, target, kind);
       if (seen.has(id)) continue;
       seen.add(id);
-      edges.push({ id, source, target, kind });
+      edges.push({ id, source, target, kind, occurrences: [], count: 0 });
     }
   }
 

@@ -37,7 +37,7 @@ export function analyzeComposition(project: Project, index: DeclIndex): GraphEdg
     const id = edgeId(source, target, kind);
     if (seen.has(id)) return;
     seen.add(id);
-    edges.push({ id, source, target, kind });
+    edges.push({ id, source, target, kind, occurrences: [], count: 0 });
   };
 
   for (const file of project.getSourceFiles()) {

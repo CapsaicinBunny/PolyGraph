@@ -109,12 +109,34 @@ export interface GraphNode {
   dependencyType?: DependencyType;
 }
 
+export type EdgeConfidence = "exact" | "inferred" | "ambiguous";
+
+/** One concrete occurrence of an edge: where the relationship was observed. */
+export interface EdgeEvidence {
+  /** Relative path of the occurrence. */
+  filePath: string;
+  /** 1-based line. */
+  line: number;
+  /** 1-based column; omitted when a provider can't supply it. */
+  column?: number;
+  /** Resolving provider, e.g. "TypeScript" or a language name for native packs. */
+  provider: string;
+  confidence: EdgeConfidence;
+}
+
+/** Max occurrences retained per edge; `count` may exceed this. */
+export const OCCURRENCE_CAP = 25;
+
 export interface GraphEdge {
   /** Stable id: `${source}->${target}:${kind}`. */
   id: string;
   source: string;
   target: string;
   kind: EdgeKind;
+  /** Captured occurrences, capped at OCCURRENCE_CAP. */
+  occurrences: EdgeEvidence[];
+  /** Exact total occurrences (may exceed occurrences.length). */
+  count: number;
 }
 
 export interface GraphModel {
@@ -150,4 +172,32 @@ export function symbolNodeId(filePath: string, symbolName: string): string {
 /** Build the canonical id for an edge. */
 export function edgeId(source: string, target: string, kind: EdgeKind): string {
   return `${source}->${target}:${kind}`;
+}
+
+/** Build a GraphEdge, deriving its id and count from the given occurrences. */
+export function makeEdge(
+  source: string,
+  target: string,
+  kind: EdgeKind,
+  occurrences: EdgeEvidence[] = [],
+): GraphEdge {
+  return {
+    id: edgeId(source, target, kind),
+    source,
+    target,
+    kind,
+    occurrences,
+    count: occurrences.length,
+  };
+}
+
+/** Append `from`'s occurrences into `into` up to OCCURRENCE_CAP; sum counts. */
+export function mergeEvidence(
+  into: { occurrences: EdgeEvidence[]; count: number },
+  from: { occurrences: EdgeEvidence[]; count: number },
+): void {
+  for (const ev of from.occurrences) {
+    if (into.occurrences.length < OCCURRENCE_CAP) into.occurrences.push(ev);
+  }
+  into.count += from.count;
 }

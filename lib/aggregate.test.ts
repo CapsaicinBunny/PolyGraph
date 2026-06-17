@@ -24,8 +24,22 @@ const graph: GraphModel = {
     },
   ],
   edges: [
-    { id: "a.ts->b.ts:import", source: "a.ts", target: "b.ts", kind: "import" },
-    { id: "a.ts#foo->b.ts#bar:call", source: "a.ts#foo", target: "b.ts#bar", kind: "call" },
+    {
+      id: "a.ts->b.ts:import",
+      source: "a.ts",
+      target: "b.ts",
+      kind: "import",
+      occurrences: [],
+      count: 0,
+    },
+    {
+      id: "a.ts#foo->b.ts#bar:call",
+      source: "a.ts#foo",
+      target: "b.ts#bar",
+      kind: "call",
+      occurrences: [],
+      count: 0,
+    },
   ],
 };
 

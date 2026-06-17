@@ -15,7 +15,7 @@ function pushImport(
   const id = edgeId(source, dest, "import");
   if (seen.has(id)) return;
   seen.add(id);
-  edges.push({ id, source, target: dest, kind: "import" });
+  edges.push({ id, source, target: dest, kind: "import", occurrences: [], count: 0 });
 }
 
 function collectFromFile(file: SourceFile, edges: GraphEdge[], seen: Set<string>): void {

@@ -49,7 +49,7 @@ export function analyzeComponents(project: Project, index: DeclIndex): GraphEdge
       const id = edgeId(source, target, "renders");
       if (seen.has(id)) continue;
       seen.add(id);
-      edges.push({ id, source, target, kind: "renders" });
+      edges.push({ id, source, target, kind: "renders", occurrences: [], count: 0 });
     }
   }
 
