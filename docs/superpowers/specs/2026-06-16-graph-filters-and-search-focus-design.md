@@ -41,3 +41,15 @@ The search effect already calls `set_search(query)` (yellow outline). Add: when 
 - Nested folder tree (top-level segments only).
 - Smooth camera tween (instant `set_camera` is fine).
 - Server-side re-scan from the panel (filtering is client-side on the loaded graph).
+
+## Follow-up (next effort, not this spec): "Smart" layout v1
+
+A semantic, multilevel layout — its own spec after this ships. v1 = **group-by-directory**:
+cluster nodes by top-level directory → lay each cluster out with dagre (directed flow) →
+pack cluster bounding boxes with the existing `shelfPack` (reuse the `layoutByComponents`
+substrate from `lib/layout.ts`, swapping connected-components for directory clusters). New
+**"Smart"** layout button (internal `semanticMultilevel`), `groupBy: "directory"`. The folder
+derivation built here (`topFolderOf`) is shared. **Deferred:** community detection (Louvain —
+low value on these sparse graphs), drawn package containers (needs a Vello/WASM renderer change),
+the full GROUP BY / FLOW / DENSITY / EDGE ROUTING control panel, edge bundling, and the
+stress-majorization / FM³ / ForceAtlas2 force upgrades.
