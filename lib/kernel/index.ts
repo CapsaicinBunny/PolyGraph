@@ -72,10 +72,13 @@ export async function analyzeProject(
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
   const errors: AnalyzeError[] = [];
+  // Append with loops, not `push(...arr)` — spreading a huge array as call
+  // arguments overflows the engine's argument limit ("Maximum call stack size
+  // exceeded") on very large codebases.
   for (const r of results) {
-    nodes.push(...r.nodes);
-    edges.push(...r.edges);
-    errors.push(...r.errors);
+    for (const n of r.nodes) nodes.push(n);
+    for (const e of r.edges) edges.push(e);
+    for (const er of r.errors) errors.push(er);
   }
 
   const dedupedNodes = dedupeById(nodes);

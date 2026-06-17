@@ -23,10 +23,32 @@ export interface AnalyzeData {
   errors: AnalyzeError[];
 }
 
+/** Returned when a scan is large enough to warrant explicit confirmation. */
+export interface OversizeResult {
+  oversize: true;
+  fileCount: number;
+}
+
+/**
+ * Above this many source files, analysis produces a graph that's slow to build
+ * and impractical to render, so the caller is asked to confirm before proceeding.
+ */
+export const SCAN_CONFIRM_THRESHOLD = 3000;
+
 export type Handled<T> = { ok: true; value: T } | { ok: false; status: number; error: string };
 
-/** Validate + scan a directory on disk, then analyze it. */
-export async function runScan(path: string | undefined): Promise<Handled<ScanData>> {
+export interface ScanOptions {
+  /** Skip the over-size confirmation gate and analyze regardless. */
+  force?: boolean;
+  /** Override the confirmation threshold (for tests). */
+  confirmThreshold?: number;
+}
+
+/** Validate + scan a directory on disk, then analyze it (unless it's over-size). */
+export async function runScan(
+  path: string | undefined,
+  opts: ScanOptions = {},
+): Promise<Handled<ScanData | OversizeResult>> {
   const root = path?.trim();
   if (!root) return { ok: false, status: 400, error: "Expected { path: string }" };
 
@@ -42,6 +64,12 @@ export async function runScan(path: string | undefined): Promise<Handled<ScanDat
     const fileCount = Object.keys(files).length;
     if (fileCount === 0) {
       return { ok: false, status: 400, error: "No source files found under that path." };
+    }
+    // Over-size gate: hand the count back so the caller can confirm before we run
+    // the (expensive) analysis on a huge codebase.
+    const threshold = opts.confirmThreshold ?? SCAN_CONFIRM_THRESHOLD;
+    if (!opts.force && fileCount > threshold) {
+      return { ok: true, value: { oversize: true, fileCount } };
     }
     const packages = await readPackageDeps(root);
     const { graph, errors } = await analyzeProject(files, { packages });

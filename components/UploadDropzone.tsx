@@ -151,6 +151,10 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [fileCount, setFileCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Set when a scan is large enough to need confirmation before we analyze it.
+  const [pendingConfirm, setPendingConfirm] = useState<{ path: string; fileCount: number } | null>(
+    null,
+  );
 
   const busy = phase !== "idle";
 
@@ -185,25 +189,34 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
   }
 
   // Primary path: the server reads the folder directly from disk (no upload).
-  async function scan(dirPath: string) {
+  // `force` skips the over-size confirmation gate.
+  async function scan(dirPath: string, force = false) {
     const trimmed = dirPath.trim();
     if (!trimmed) {
       setError("Enter a folder path to scan.");
       return;
     }
     setError(null);
+    setPendingConfirm(null);
     setPhase("scanning");
     try {
       const res = await fetch(`${apiBase()}/scan`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: trimmed }),
+        body: JSON.stringify({ path: trimmed, force }),
       });
       const data = (await res.json().catch(() => ({}))) as Partial<AnalyzeResult> & {
         error?: string;
         fileCount?: number;
         skipped?: number;
+        oversize?: boolean;
       };
+      // Large scan — let the user confirm before we run the heavy analysis.
+      if (res.ok && data.oversize) {
+        setPhase("idle");
+        setPendingConfirm({ path: trimmed, fileCount: data.fileCount ?? 0 });
+        return;
+      }
       if (!res.ok || !data.graph) {
         throw new Error(data.error ?? `Scan failed (${res.status})`);
       }
@@ -438,6 +451,40 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
               </>
             )}
           </>
+        )}
+
+        {pendingConfirm && !busy && (
+          <Box
+            bg="bg.panel"
+            borderWidth="1px"
+            borderColor="border.emphasized"
+            rounded="2xl"
+            p={{ base: "5", md: "6" }}
+            shadow="sm"
+          >
+            <Stack gap="3">
+              <Heading size="sm">Large project — scan anyway?</Heading>
+              <Text color="fg.muted" fontSize="sm">
+                Found {pendingConfirm.fileCount.toLocaleString()} source files. A scan this big can
+                take a while and may be heavy to render — scanning a subfolder is usually snappier.
+              </Text>
+              <HStack gap="2.5">
+                <Button
+                  colorPalette="blue"
+                  onClick={() => {
+                    const target = pendingConfirm.path;
+                    setPendingConfirm(null);
+                    void scan(target, true);
+                  }}
+                >
+                  Scan anyway
+                </Button>
+                <Button variant="ghost" colorPalette="gray" onClick={() => setPendingConfirm(null)}>
+                  Cancel
+                </Button>
+              </HStack>
+            </Stack>
+          </Box>
         )}
 
         {error && (
