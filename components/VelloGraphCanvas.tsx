@@ -32,6 +32,7 @@ export interface GraphViewProps {
   collapsedClusters: Set<string>;
   communityCollapse: boolean;
   edgeRouting: "curved" | "orthogonal";
+  focusedIds: Set<string> | null;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
@@ -77,6 +78,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     collapsedClusters,
     communityCollapse,
     edgeRouting,
+    focusedIds,
     onSelect,
     onToggleExpand,
     onToggleCollapse,
@@ -115,6 +117,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     groupBy,
     density,
     communityCollapse,
+    focusedIds,
   );
   const { resolvedTheme } = useTheme();
 

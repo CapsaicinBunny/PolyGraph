@@ -133,3 +133,19 @@ test("community grouping with the collapse toggle off keeps the individual nodes
   expect(s.nodes).toHaveLength(4);
   expect(s.nodes.some((n) => n.id.endsWith("#__agg__"))).toBe(false);
 });
+
+test("focusedIds shows exactly the focused subgraph, overriding other filters", () => {
+  const s = buildSceneStructure(
+    graph,
+    new Set(),
+    filters(),
+    "force",
+    "LR",
+    new Set(),
+    "directory",
+    1,
+    false,
+    new Set(["src/a.ts"]),
+  );
+  expect(s.nodes.map((n) => n.id)).toEqual(["src/a.ts"]);
+});

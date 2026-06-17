@@ -123,6 +123,7 @@ export function buildSceneStructure(
   groupBy: GroupBy = "directory",
   density = 1,
   communityCollapse = false,
+  focusedIds: Set<string> | null = null,
 ): SceneStructure {
   const {
     showExternal,
@@ -136,6 +137,8 @@ export function buildSceneStructure(
   } = filters;
 
   const visible = (n: GraphModel["nodes"][number]) => {
+    // Focus mode shows exactly the focused subgraph, overriding the other filters.
+    if (focusedIds) return focusedIds.has(n.id);
     if (n.kind === "external") return showExternal;
     // Folder + language gate — applies to files and the symbols inside them.
     if (!enabledFolders.has(topFolderOf(n.filePath))) return false;
@@ -198,6 +201,7 @@ export function buildSceneStructure(
     groupBy,
     `d${density}`,
     `cc${communityCollapse ? 1 : 0}`,
+    focusedIds ? `focus:${[...focusedIds].sort().join(",")}` : "focus:none",
   ].join("|");
 
   const symbolCount = new Map<string, number>();
