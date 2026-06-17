@@ -62,6 +62,7 @@ export function Explorer() {
   const [algorithm, setAlgorithm] = useState<LayoutAlgorithm>("layered");
   const [direction, setDirection] = useState<LayoutDirection>("LR");
   const [groupBy, setGroupBy] = useState<GroupBy>("directory");
+  const [density, setDensity] = useState(1);
   const [showExternal, setShowExternal] = useState(false);
   const [enabledFolders, setEnabledFolders] = useState<Set<string>>(() => new Set());
   const [enabledLanguages, setEnabledLanguages] = useState<Set<string>>(() => new Set());
@@ -309,6 +310,8 @@ export function Explorer() {
           onDirection={setDirection}
           groupBy={groupBy}
           onGroupBy={setGroupBy}
+          density={density}
+          onDensity={setDensity}
         />
         <Box flex="1" minW="0" position="relative">
           <VelloGraphCanvas
@@ -320,6 +323,7 @@ export function Explorer() {
             algorithm={algorithm}
             direction={direction}
             groupBy={groupBy}
+            density={density}
             showExternal={showExternal}
             enabledNodeKinds={enabledNodeKinds}
             enabledCategories={enabledCategories}

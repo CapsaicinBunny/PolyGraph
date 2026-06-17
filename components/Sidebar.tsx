@@ -49,6 +49,8 @@ interface SidebarProps {
   onDirection: (direction: LayoutDirection) => void;
   groupBy: GroupBy;
   onGroupBy: (groupBy: GroupBy) => void;
+  density: number;
+  onDensity: (density: number) => void;
 }
 
 const CATEGORIES: { value: NodeCategory; label: string; color: string }[] = [
@@ -81,6 +83,12 @@ const GROUP_BY: { value: GroupBy; label: string; glyph: string }[] = [
   { value: "directory", label: "Directory", glyph: "🗀" },
   { value: "community", label: "Community", glyph: "⬡" },
   { value: "none", label: "None", glyph: "∅" },
+];
+
+const DENSITIES: { value: number; label: string; glyph: string }[] = [
+  { value: 1.6, label: "Sparse", glyph: "↔" },
+  { value: 1.0, label: "Normal", glyph: "≡" },
+  { value: 0.6, label: "Dense", glyph: "▦" },
 ];
 
 const DIRECTIONS: { value: LayoutDirection; label: string; glyph: string }[] = [
@@ -293,6 +301,8 @@ export function Sidebar({
   onDirection,
   groupBy,
   onGroupBy,
+  density,
+  onDensity,
 }: SidebarProps) {
   const directionEnabled = DIRECTIONAL_ALGORITHMS.includes(algorithm);
 
@@ -374,6 +384,20 @@ export function Sidebar({
                 />
               ))}
             </ChipRow>
+            <Box mt="3">
+              <MiniLabel>Density</MiniLabel>
+              <ChipRow>
+                {DENSITIES.map((d) => (
+                  <Chip
+                    key={d.label}
+                    label={d.label}
+                    glyph={d.glyph}
+                    active={density === d.value}
+                    onClick={() => onDensity(d.value)}
+                  />
+                ))}
+              </ChipRow>
+            </Box>
           </Box>
         )}
       </Section>

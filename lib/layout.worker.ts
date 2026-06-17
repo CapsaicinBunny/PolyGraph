@@ -13,7 +13,11 @@ self.onmessage = (event: MessageEvent<Request>) => {
   const { id, input, options } = event.data;
   const result =
     options.algorithm === "smart"
-      ? smartLayout(input, { direction: options.direction, groupBy: options.groupBy })
+      ? smartLayout(input, {
+          direction: options.direction,
+          groupBy: options.groupBy,
+          density: options.density,
+        })
       : { nodes: layoutView(input, options), clusters: [] };
   const flat: [string, number, number][] = [];
   result.nodes.forEach((p, key) => flat.push([key, p.x, p.y]));

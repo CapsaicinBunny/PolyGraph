@@ -118,6 +118,13 @@ describe("smartLayout adaptive (Phase B)", () => {
     expect(clusters).toEqual(again.clusters);
   });
 
+  test("density widens (sparse) or tightens (dense) the layout", () => {
+    const sparse = smartLayout(view, { direction: "LR", density: 1.6 });
+    const dense = smartLayout(view, { direction: "LR", density: 0.6 });
+    // The 'pkg' box (with internal padding scaled by density) is larger when sparser.
+    expect(boxOf(sparse.clusters, "pkg").width).toBeGreaterThan(boxOf(dense.clusters, "pkg").width);
+  });
+
   test("a dense acyclic cluster (force) keeps nodes inside its box and is deterministic", () => {
     const ids = ["d/a.ts", "d/b.ts", "d/c.ts", "d/e.ts", "d/f.ts"];
     const edges: { source: string; target: string }[] = [];

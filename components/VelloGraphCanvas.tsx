@@ -21,6 +21,7 @@ export interface GraphViewProps {
   algorithm: LayoutAlgorithm;
   direction: LayoutDirection;
   groupBy: GroupBy;
+  density: number;
   showExternal: boolean;
   enabledNodeKinds: Set<NodeKind>;
   enabledCategories: Set<NodeCategory>;
@@ -63,6 +64,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     algorithm,
     direction,
     groupBy,
+    density,
     showExternal,
     enabledNodeKinds,
     enabledCategories,
@@ -107,6 +109,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     direction,
     collapsedClusters,
     groupBy,
+    density,
   );
   const { resolvedTheme } = useTheme();
 
