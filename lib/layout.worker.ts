@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 import { type LayoutInput, type LayoutOptions, layoutView } from "./layout";
+import { smartLayout } from "./layout/smart";
 
 interface Request {
   id: number;
@@ -7,12 +8,14 @@ interface Request {
   options: LayoutOptions;
 }
 
-// Run the (potentially expensive) dagre/d3-force layout off the main thread and
-// post back a flat [id, x, y] list (cheaper to clone than a Map of objects).
+// Run layout off the main thread and post back flat positions + cluster boxes.
 self.onmessage = (event: MessageEvent<Request>) => {
   const { id, input, options } = event.data;
-  const positions = layoutView(input, options);
+  const result =
+    options.algorithm === "smart"
+      ? smartLayout(input, { direction: options.direction })
+      : { nodes: layoutView(input, options), clusters: [] };
   const flat: [string, number, number][] = [];
-  positions.forEach((p, key) => flat.push([key, p.x, p.y]));
-  (self as unknown as Worker).postMessage({ id, positions: flat });
+  result.nodes.forEach((p, key) => flat.push([key, p.x, p.y]));
+  (self as unknown as Worker).postMessage({ id, positions: flat, clusters: result.clusters });
 };

@@ -7,6 +7,7 @@ import {
   forceSimulation,
   type SimulationNodeDatum,
 } from "d3-force";
+import { smartLayout } from "./layout/smart";
 
 export interface XYPosition {
   x: number;
@@ -38,14 +39,39 @@ export function nodeSize(kind: string): NodeSize {
 export type LayoutDirection = "LR" | "TB" | "RL" | "BT";
 
 /** Available layout algorithms. */
-export type LayoutAlgorithm = "layered" | "tree" | "radial" | "circular" | "grid" | "force";
+export type LayoutAlgorithm =
+  | "smart"
+  | "layered"
+  | "tree"
+  | "radial"
+  | "circular"
+  | "grid"
+  | "force";
 
 /** Algorithms for which the direction selector is meaningful. */
-export const DIRECTIONAL_ALGORITHMS: LayoutAlgorithm[] = ["layered", "tree"];
+export const DIRECTIONAL_ALGORITHMS: LayoutAlgorithm[] = ["smart", "layered", "tree"];
 
 export interface LayoutOptions {
   algorithm?: LayoutAlgorithm;
   direction?: LayoutDirection;
+}
+
+/** A directory/package container box emitted by the Smart layout. World-space, top-left origin. */
+export interface ClusterBox {
+  id: string;
+  parentId?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  depth: number;
+  label: string;
+}
+
+/** Smart layout output: node positions plus the nested container boxes. */
+export interface LayoutResult {
+  nodes: Map<string, XYPosition>;
+  clusters: ClusterBox[];
 }
 
 type Positions = Map<string, XYPosition>;
@@ -345,12 +371,17 @@ function forceLayout(view: LayoutInput): Positions {
 }
 
 // Small LRU of computed layouts, so toggling filters/algorithms back to a prior
-// state (or any re-render) reuses positions instead of re-running dagre/force.
+// state (or any re-render) reuses positions + cluster boxes instead of recomputing.
+export interface LayoutCacheEntry {
+  positions: Positions;
+  clusters: ClusterBox[];
+}
+
 const LAYOUT_CACHE_MAX = 24;
-const layoutCache = new Map<string, Positions>();
+const layoutCache = new Map<string, LayoutCacheEntry>();
 
 /** Look up a previously computed layout by signature (LRU refresh). */
-export function layoutCacheGet(signature: string): Positions | undefined {
+export function layoutCacheGet(signature: string): LayoutCacheEntry | undefined {
   const cached = layoutCache.get(signature);
   if (cached) {
     layoutCache.delete(signature);
@@ -360,8 +391,8 @@ export function layoutCacheGet(signature: string): Positions | undefined {
 }
 
 /** Store a computed layout, evicting the oldest entry past the cap. */
-export function layoutCacheSet(signature: string, positions: Positions): void {
-  layoutCache.set(signature, positions);
+export function layoutCacheSet(signature: string, entry: LayoutCacheEntry): void {
+  layoutCache.set(signature, entry);
   if (layoutCache.size > LAYOUT_CACHE_MAX) {
     const oldest = layoutCache.keys().next().value;
     if (oldest !== undefined) layoutCache.delete(oldest);
@@ -375,9 +406,9 @@ export function layoutViewCached(
   options: LayoutOptions = {},
 ): Positions {
   const cached = layoutCacheGet(signature);
-  if (cached) return cached;
+  if (cached) return cached.positions;
   const positions = layoutView(view, options);
-  layoutCacheSet(signature, positions);
+  layoutCacheSet(signature, { positions, clusters: [] });
   return positions;
 }
 
@@ -388,6 +419,8 @@ export function layoutViewCached(
 export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Positions {
   const { algorithm = "layered", direction = "LR" } = options;
   switch (algorithm) {
+    case "smart":
+      return smartLayout(view, { direction }).nodes;
     case "tree":
       return layoutByComponents(view, (sub) => dagreLayout(sub, direction, "tight-tree"));
     case "radial":

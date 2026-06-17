@@ -76,9 +76,23 @@ struct EdgeData {
 }
 
 #[derive(Deserialize, Default)]
+struct ClusterData {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    #[serde(default)]
+    depth: u32,
+    #[serde(default)]
+    label: String,
+}
+
+#[derive(Deserialize, Default)]
 struct SceneData {
     nodes: Vec<NodeData>,
     edges: Vec<EdgeData>,
+    #[serde(default)]
+    clusters: Vec<ClusterData>,
 }
 
 #[wasm_bindgen]
@@ -248,6 +262,62 @@ impl VelloCanvas {
         let on_screen = |x: f64, y: f64, w: f64, h: f64| -> bool {
             x + w >= left && x <= right && y + h >= top && y <= bottom
         };
+
+        // Package containers (Smart layout): under the edges + cards, parents first
+        // so deeper boxes nest visibly on top. Opaque depth-tinted fill + thin border.
+        {
+            let mut clusters: Vec<&ClusterData> = self.data.clusters.iter().collect();
+            clusters.sort_by_key(|c| c.depth);
+            let border = if self.dark {
+                Color::from_rgb8(51, 57, 68)
+            } else {
+                CARD_BORDER_LIGHT
+            };
+            for c in &clusters {
+                if !on_screen(c.x, c.y, c.w, c.h) {
+                    continue;
+                }
+                let d = c.depth.min(4) as u8;
+                let fill = if self.dark {
+                    Color::from_rgb8(28 + d * 6, 31 + d * 6, 38 + d * 6)
+                } else {
+                    Color::from_rgb8(
+                        230u8.saturating_sub(d * 5),
+                        233u8.saturating_sub(d * 5),
+                        240u8.saturating_sub(d * 5),
+                    )
+                };
+                let rect = RoundedRect::new(c.x, c.y, c.x + c.w, c.y + c.h, 14.0);
+                self.scene.fill(Fill::NonZero, camera, fill, None, &rect);
+                self.scene
+                    .stroke(&Stroke::new(1.0), camera, border, None, &rect);
+
+                if !c.label.is_empty() {
+                    let mut gx = c.x + 10.0;
+                    let baseline = c.y + 17.0;
+                    let glyphs: Vec<Glyph> = c
+                        .label
+                        .chars()
+                        .filter_map(|ch| {
+                            let gid = charmap.map(ch)?;
+                            let g = Glyph {
+                                id: gid.to_u32(),
+                                x: gx as f32,
+                                y: baseline as f32,
+                            };
+                            gx += metrics.advance_width(gid).unwrap_or(0.0) as f64;
+                            Some(g)
+                        })
+                        .collect();
+                    self.scene
+                        .draw_glyphs(&self.font)
+                        .font_size(FONT_SIZE)
+                        .transform(camera)
+                        .brush(LABEL)
+                        .draw(Fill::NonZero, glyphs.into_iter());
+                }
+            }
+        }
 
         // Edges first (under the cards). Drawn in screen space so line width and
         // dash size stay constant at any zoom; curved + animated marching ants.

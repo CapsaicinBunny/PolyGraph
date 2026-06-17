@@ -1,5 +1,6 @@
 import { buildView, type ViewEdgeKind } from "../aggregate";
 import {
+  type ClusterBox,
   type LayoutAlgorithm,
   type LayoutDirection,
   type LayoutInput,
@@ -84,6 +85,7 @@ export interface Scene {
   nodes: SceneNode[];
   edges: SceneEdge[];
   positions: Map<string, XYPosition>;
+  clusters: ClusterBox[];
 }
 
 let graphCounter = 0;
@@ -219,14 +221,15 @@ export function buildSceneStructure(
   };
 }
 
-/** Apply computed positions to a structure, producing a renderable scene. */
+/** Apply computed positions + cluster boxes to a structure, producing a renderable scene. */
 export function applyPositions(
   structure: SceneStructure,
   positions: Map<string, XYPosition>,
+  clusters: ClusterBox[] = [],
 ): Scene {
   const nodes = structure.nodes.map((n) => {
     const p = positions.get(n.id);
     return p ? { ...n, x: p.x, y: p.y } : n;
   });
-  return { nodes, edges: structure.edges, positions };
+  return { nodes, edges: structure.edges, positions, clusters };
 }
