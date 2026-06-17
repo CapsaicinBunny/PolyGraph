@@ -38,10 +38,21 @@ export async function analyzeProject(
 ): Promise<AnalyzeResult> {
   const providers = await getProviders();
 
+  // Precompute ext -> provider once so per-file lookup is O(1) instead of an
+  // O(providers) scan. Preserve find()'s semantics: the first provider (in
+  // registry order) that claims an extension wins, so only set keys not already
+  // present.
+  const providerByExt = new Map<string, LanguageProvider>();
+  for (const p of providers) {
+    for (const ext of p.extensions) {
+      if (!providerByExt.has(ext)) providerByExt.set(ext, p);
+    }
+  }
+
   const buckets = new Map<LanguageProvider, SourceFileMap>();
   for (const [path, text] of Object.entries(files)) {
     const ext = extensionOf(path);
-    const provider = providers.find((p) => p.extensions.includes(ext));
+    const provider = providerByExt.get(ext);
     if (!provider) continue;
     let bucket = buckets.get(provider);
     if (!bucket) {
