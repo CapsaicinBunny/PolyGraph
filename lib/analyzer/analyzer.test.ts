@@ -143,9 +143,33 @@ describe("component render edges", () => {
 
 describe("robustness", () => {
   test("empty input yields an empty graph and no errors", () => {
-    const { graph, errors } = analyzeSources({});
+    const { graph, errors, unresolved } = analyzeSources({});
     expect(graph.nodes.length).toBe(0);
     expect(graph.edges.length).toBe(0);
     expect(errors.length).toBe(0);
+    expect(unresolved.length).toBe(0);
+  });
+});
+
+describe("unresolved imports", () => {
+  test("reports a relative import that resolves to no file in the set", () => {
+    const { unresolved } = analyzeSources({
+      "src/a.ts": `import { thing } from "./missing";\nexport const x = 1;`,
+    });
+    expect(unresolved).toHaveLength(1);
+    expect(unresolved[0]).toMatchObject({
+      sourceId: "src/a.ts",
+      name: "./missing",
+      filePath: "src/a.ts",
+      line: 1,
+    });
+  });
+
+  test("does not report bare specifiers (externals) or resolved relative imports", () => {
+    const { unresolved } = analyzeSources({
+      "src/a.ts": `import { useState } from "react";\nimport { b } from "./b";\nexport const x = b;`,
+      "src/b.ts": `export const b = 1;`,
+    });
+    expect(unresolved).toHaveLength(0);
   });
 });

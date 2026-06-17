@@ -22,7 +22,7 @@ import { FiltersPanel } from "./FiltersPanel";
 import type { SceneEdge } from "@/lib/graph/scene";
 import { EdgeDetailPanel } from "./EdgeDetailPanel";
 import { NodeDetailPanel } from "./NodeDetailPanel";
-import { analyzeInsights } from "@/lib/graph/insights";
+import { analyzeInsights, unresolvedToInsights } from "@/lib/graph/insights";
 import { ProblemsPanel } from "./ProblemsPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { Sidebar } from "./Sidebar";
@@ -83,7 +83,11 @@ export function Explorer() {
 
   const folders = useMemo(() => (graph ? availableFolders(graph) : []), [graph]);
   const languages = useMemo(() => (graph ? availableLanguages(graph) : []), [graph]);
-  const insights = useMemo(() => (graph ? analyzeInsights(graph) : []), [graph]);
+  const insights = useMemo(
+    () =>
+      graph ? [...analyzeInsights(graph), ...unresolvedToInsights(result?.unresolved ?? [])] : [],
+    [graph, result],
+  );
 
   const resetFileFilters = useCallback((g: typeof graph) => {
     if (!g) return;

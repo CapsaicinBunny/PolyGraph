@@ -119,9 +119,10 @@ export function analyzeSources(files: SourceFileMap, options: AnalyzeOptions = {
 
   const index = buildDeclIndex(project);
   const externals = analyzeExternals(project, index, options.packages);
+  const imports = analyzeImports(project);
 
   const edges: GraphEdge[] = [
-    ...analyzeImports(project),
+    ...imports.edges,
     ...analyzeCalls(project, index),
     ...analyzeInheritance(project, index),
     ...analyzeComponents(project, index),
@@ -136,7 +137,7 @@ export function analyzeSources(files: SourceFileMap, options: AnalyzeOptions = {
   );
 
   const graph: GraphModel = { nodes, edges: validEdges };
-  const result: AnalyzeResult = { graph, errors };
+  const result: AnalyzeResult = { graph, errors, unresolved: imports.unresolved };
 
   analysisCache.set(signature, result);
   if (analysisCache.size > ANALYSIS_CACHE_MAX) {

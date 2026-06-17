@@ -223,7 +223,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         throw new Error(data.error ?? `Scan failed (${res.status})`);
       }
       onResult(
-        { graph: data.graph, errors: data.errors ?? [] },
+        { graph: data.graph, errors: data.errors ?? [], unresolved: data.unresolved ?? [] },
         { fileCount: data.fileCount ?? data.graph.nodes.length, skipped: data.skipped ?? 0 },
       );
     } catch (err) {

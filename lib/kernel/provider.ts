@@ -6,7 +6,7 @@
 // a language can start as a declarative pack and later graduate to a precise
 // code-backed provider without changing anything else.
 
-import type { AnalyzeError, GraphEdge, GraphNode } from "../graph/types";
+import type { AnalyzeError, GraphEdge, GraphNode, UnresolvedRef } from "../graph/types";
 import type { PackageDeps } from "../server/package-deps";
 
 export interface ProviderContext {
@@ -18,6 +18,8 @@ export interface ProviderResult {
   nodes: GraphNode[];
   edges: GraphEdge[];
   errors: AnalyzeError[];
+  /** References that resolved to nothing; providers that don't track this omit it. */
+  unresolved?: UnresolvedRef[];
 }
 
 export interface LanguageProvider {
