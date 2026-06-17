@@ -16,6 +16,11 @@ test("apiBase uses the injected app base when present", () => {
   expect(apiBase()).toBe("http://127.0.0.1:55001");
 });
 
+test("apiBase throws in Tauri before the base has been injected", () => {
+  (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+  expect(() => apiBase()).toThrow();
+});
+
 test("isTauri is false without the Tauri global", () => {
   (globalThis as { window?: unknown }).window = {};
   expect(isTauri()).toBe(false);
