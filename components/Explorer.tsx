@@ -5,6 +5,12 @@ import { Badge, Box, Button, Flex, Heading, HStack, Image, Text } from "@chakra-
 import dynamic from "next/dynamic";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import { BUILTIN_SEARCHES, runQuery, type SavedSearch } from "@/lib/graph/query-language";
+import {
+  packageNameResolver,
+  projectToPackages,
+  projectToWorkspaces,
+} from "@/lib/graph/levels/packages";
+import type { Level, PackageManifest } from "@/lib/graph/levels/types";
 import type { QueryMode } from "./QueryBar";
 import type {
   AnalyzeResult,
@@ -48,6 +54,8 @@ interface Stats {
 
 export function Explorer() {
   const [result, setResult] = useState<AnalyzeResult | null>(null);
+  const [manifests, setManifests] = useState<PackageManifest[]>([]);
+  const [level, setLevel] = useState<Level>("file");
   const [stats, setStats] = useState<Stats | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
@@ -83,7 +91,23 @@ export function Explorer() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [problemsOpen, setProblemsOpen] = useState(false);
 
-  const graph = result?.graph ?? null;
+  const baseGraph = result?.graph ?? null;
+
+  // The active graph reflects the chosen abstraction level. Symbol/File/Directory use the
+  // base graph (file/symbol granularity is driven by expand/collapse); Package and
+  // Workspace project the base graph through the discovered manifests.
+  const projected = level === "package" || level === "workspace";
+  const graph = useMemo(() => {
+    if (!baseGraph) return null;
+    if (level === "package") return projectToPackages(baseGraph, manifests);
+    if (level === "workspace") return projectToWorkspaces(baseGraph, manifests);
+    return baseGraph;
+  }, [baseGraph, level, manifests]);
+
+  const packageOf = useMemo(
+    () => (baseGraph ? packageNameResolver(baseGraph, manifests) : undefined),
+    [baseGraph, manifests],
+  );
 
   const folders = useMemo(() => (graph ? availableFolders(graph) : []), [graph]);
   const languages = useMemo(() => (graph ? availableLanguages(graph) : []), [graph]);
@@ -112,10 +136,10 @@ export function Explorer() {
     }
   }, []);
 
-  // Evaluate the search box as a query. Empty/whitespace → no constraint.
+  // Evaluate the search box as a query against the active level. Empty → no constraint.
   const queryResult = useMemo(
-    () => (graph && search.trim() !== "" ? runQuery(graph, search) : null),
-    [graph, search],
+    () => (graph && search.trim() !== "" ? runQuery(graph, search, { packageOf }) : null),
+    [graph, search, packageOf],
   );
   const queryError = queryResult?.error;
   const matchedIds =
@@ -165,8 +189,10 @@ export function Explorer() {
   }, [allExpanded, fileIds]);
 
   const handleResult = useCallback(
-    (res: AnalyzeResult, s: Stats) => {
+    (res: AnalyzeResult, s: Stats, m: PackageManifest[]) => {
       setResult(res);
+      setManifests(m);
+      setLevel("file");
       setStats(s);
       setExpanded(new Set());
       setCollapsedClusters(new Set());
@@ -179,6 +205,19 @@ export function Explorer() {
       resetFileFilters(res.graph);
     },
     [resetFileFilters],
+  );
+
+  // Switching levels clears any focus/selection (ids differ across projections) and,
+  // for the file/symbol levels, sets a sensible expand state.
+  const handleLevel = useCallback(
+    (next: Level) => {
+      setLevel(next);
+      setSelectedId(null);
+      setFocusedIds(null);
+      if (next === "symbol") setExpanded(new Set(fileIds));
+      else if (next === "file") setExpanded(new Set());
+    },
+    [fileIds],
   );
 
   const handleSelect = useCallback(
@@ -390,6 +429,9 @@ export function Explorer() {
 
       <Flex flex="1" minH="0">
         <Sidebar
+          level={level}
+          onLevel={handleLevel}
+          packageCount={manifests.length}
           search={search}
           onSearch={setSearch}
           queryMode={queryMode}
@@ -446,6 +488,7 @@ export function Explorer() {
             focusedIds={focusedIds}
             queryIds={queryIds}
             highlightIds={highlightIds}
+            projected={projected}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
             onToggleCollapse={handleToggleCollapse}

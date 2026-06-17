@@ -20,11 +20,16 @@ import {
 import { readSourceFiles } from "@/lib/client/read-files";
 import { apiBase } from "@/lib/client/api";
 import { isTauri } from "@/lib/client/env";
+import type { PackageManifest } from "@/lib/graph/levels/types";
 import type { AnalyzeResult, SourceFileMap } from "@/lib/graph/types";
 import { ThemeToggle } from "./ThemeToggle";
 
 interface UploadDropzoneProps {
-  onResult: (result: AnalyzeResult, stats: { fileCount: number; skipped: number }) => void;
+  onResult: (
+    result: AnalyzeResult,
+    stats: { fileCount: number; skipped: number },
+    manifests: PackageManifest[],
+  ) => void;
 }
 
 type Phase = "idle" | "scanning" | "reading" | "analyzing";
@@ -211,6 +216,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         fileCount?: number;
         skipped?: number;
         oversize?: boolean;
+        manifests?: PackageManifest[];
       };
       console.info(`[polygraph] /scan round-trip ${(performance.now() - t0).toFixed(0)}ms`);
       // Large scan — let the user confirm before we run the heavy analysis.
@@ -225,6 +231,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
       onResult(
         { graph: data.graph, errors: data.errors ?? [], unresolved: data.unresolved ?? [] },
         { fileCount: data.fileCount ?? data.graph.nodes.length, skipped: data.skipped ?? 0 },
+        data.manifests ?? [],
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
@@ -263,8 +270,8 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? `Analysis failed (${res.status})`);
       }
-      const result = (await res.json()) as AnalyzeResult;
-      onResult(result, { fileCount: count, skipped });
+      const result = (await res.json()) as AnalyzeResult & { manifests?: PackageManifest[] };
+      onResult(result, { fileCount: count, skipped }, result.manifests ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed");
       setPhase("idle");

@@ -37,6 +37,8 @@ export interface GraphViewProps {
   queryIds: Set<string> | null;
   /** Query "highlight" mode: keep the full graph but emphasise these ids and frame them. */
   highlightIds: Set<string> | null;
+  /** True at the Package/Workspace levels, where the graph is a projection. */
+  projected: boolean;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
@@ -89,6 +91,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     focusedIds,
     queryIds,
     highlightIds,
+    projected,
     onSelect,
     onToggleExpand,
     onToggleCollapse,
@@ -130,6 +133,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     communityCollapse,
     focusedIds,
     queryIds,
+    projected,
   );
   const { resolvedTheme } = useTheme();
 

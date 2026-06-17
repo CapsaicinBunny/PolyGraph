@@ -5,8 +5,10 @@
 // not just TypeScript.
 
 import { stat } from "node:fs/promises";
+import type { PackageManifest } from "../graph/levels/types";
 import type { AnalyzeError, GraphModel, SourceFileMap, UnresolvedRef } from "../graph/types";
 import { analyzeProject } from "../kernel";
+import { discoverPackages } from "./manifests";
 import { readPackageDeps } from "./package-deps";
 import { scanDirectory } from "./scan-dir";
 
@@ -17,12 +19,15 @@ export interface ScanData {
   fileCount: number;
   skipped: number;
   root: string;
+  /** Packages discovered from manifest files, for the Package/Workspace levels. */
+  manifests: PackageManifest[];
 }
 
 export interface AnalyzeData {
   graph: GraphModel;
   errors: AnalyzeError[];
   unresolved: UnresolvedRef[];
+  manifests: PackageManifest[];
 }
 
 /** Returned when a scan is large enough to warrant explicit confirmation. */
@@ -79,13 +84,14 @@ export async function runScan(
       return { ok: true, value: { oversize: true, fileCount } };
     }
     const packages = await readPackageDeps(root);
+    const manifests = discoverPackages(files);
     const tAnalyze = performance.now();
     const { graph, errors, unresolved } = await analyzeProject(files, { packages });
     const analyzeMs = performance.now() - tAnalyze;
     console.error(
-      `[scan] ${fileCount} files | read ${scanMs.toFixed(0)}ms | analyze ${analyzeMs.toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges`,
+      `[scan] ${fileCount} files | read ${scanMs.toFixed(0)}ms | analyze ${analyzeMs.toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges | ${manifests.length} packages`,
     );
-    return { ok: true, value: { graph, errors, unresolved, fileCount, skipped, root } };
+    return { ok: true, value: { graph, errors, unresolved, fileCount, skipped, root, manifests } };
   } catch (err) {
     return { ok: false, status: 500, error: err instanceof Error ? err.message : "Scan failed" };
   }
@@ -99,10 +105,11 @@ export async function runAnalyze(files: SourceFileMap | undefined): Promise<Hand
   try {
     const t = performance.now();
     const { graph, errors, unresolved } = await analyzeProject(files);
+    const manifests = discoverPackages(files);
     console.error(
       `[analyze] ${Object.keys(files).length} files | ${(performance.now() - t).toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges`,
     );
-    return { ok: true, value: { graph, errors, unresolved } };
+    return { ok: true, value: { graph, errors, unresolved, manifests } };
   } catch (err) {
     return {
       ok: false,
