@@ -25,6 +25,28 @@ describe("detectCommunities", () => {
     expect(comm.get("a")).not.toBe(comm.get("x"));
   });
 
+  test("a chain stays one community (no bipartite 2-coloring)", () => {
+    const ids = ["a", "b", "c", "d", "e", "f"];
+    const comm = detectCommunities(ids, [
+      E("a", "b"),
+      E("b", "c"),
+      E("c", "d"),
+      E("d", "e"),
+      E("e", "f"),
+    ]);
+    const labels = new Set(ids.map((id) => comm.get(id)));
+    expect(labels.size).toBe(1);
+  });
+
+  test("a star (hub + leaves) is one community", () => {
+    const comm = detectCommunities(
+      ["hub", "l1", "l2", "l3", "l4"],
+      [E("hub", "l1"), E("hub", "l2"), E("hub", "l3"), E("hub", "l4")],
+    );
+    expect(comm.get("l1")).toBe(comm.get("hub"));
+    expect(comm.get("l4")).toBe(comm.get("hub"));
+  });
+
   test("isolated nodes get their own community each", () => {
     const comm = detectCommunities(["p", "q"], []);
     expect(comm.get("p")).not.toBe(comm.get("q"));

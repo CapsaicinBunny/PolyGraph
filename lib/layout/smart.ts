@@ -347,9 +347,12 @@ export function smartLayout(
       view.nodes.map((n) => n.id),
       view.edges,
     );
+    const sizes = new Map<string, number>();
+    for (const c of community.values()) sizes.set(c, (sizes.get(c) ?? 0) + 1);
     groupOf = (n) => {
       const c = community.get(n.id);
-      return c ? [c] : [];
+      // Leave singleton communities at the root — avoids a sea of one-node boxes.
+      return c && (sizes.get(c) ?? 0) > 1 ? [c] : [];
     };
   } else if (groupBy === "none") {
     groupOf = () => []; // everything at the root — no containers

@@ -24,10 +24,12 @@ export function detectCommunities(
   const label = new Map<string, string>();
   for (const id of nodes) label.set(id, id);
 
-  // Synchronous updates: each pass computes new labels from the PREVIOUS snapshot,
-  // then applies them together. Asynchronous (in-place) updates with a smallest-label
-  // tie-break collapse separate clusters across a single bridge edge; synchronous
-  // propagation keeps dense groups distinct.
+  // Synchronous updates (new labels computed from the previous snapshot, applied
+  // together) with a SELF-VOTE: each node also counts its own current label. The
+  // self-vote prevents both failure modes — asynchronous updates collapse separate
+  // clusters across a single bridge edge, while plain synchronous updates oscillate
+  // (2-color) on bipartite shapes like chains/trees/stars. Together they converge to
+  // stable communities. Ties break to the smallest label string.
   for (let iter = 0; iter < maxIterations; iter++) {
     const next = new Map<string, string>();
     let changed = false;
@@ -37,8 +39,8 @@ export function detectCommunities(
         next.set(id, label.get(id)!);
         continue;
       }
-      // Most frequent neighbor label; ties broken by smallest label string.
       const counts = new Map<string, number>();
+      counts.set(label.get(id)!, 1); // self-vote: prefer staying put on ties
       for (const nb of neighbors) {
         const l = label.get(nb)!;
         counts.set(l, (counts.get(l) ?? 0) + 1);
