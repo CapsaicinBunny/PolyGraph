@@ -51,9 +51,13 @@ export function useScene(
     }
     const myReq = ++reqId.current;
     setLayingOut(true);
+    const tLayout = performance.now();
     layoutInWorker(structure.layoutInput, structure.options)
       .then((pos) => {
         if (myReq !== reqId.current) return; // a newer request superseded this one
+        console.info(
+          `[polygraph] layout (${structure.options.algorithm ?? "layered"}) ${(performance.now() - tLayout).toFixed(0)}ms, ${structure.layoutInput.nodes.length} nodes`,
+        );
         layoutCacheSet(structure.signature, pos);
         setPositions(pos);
         setLayingOut(false);

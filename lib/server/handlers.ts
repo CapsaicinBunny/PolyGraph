@@ -60,7 +60,9 @@ export async function runScan(
   }
 
   try {
+    const tScan = performance.now();
     const { files, skipped } = await scanDirectory(root);
+    const scanMs = performance.now() - tScan;
     const fileCount = Object.keys(files).length;
     if (fileCount === 0) {
       return { ok: false, status: 400, error: "No source files found under that path." };
@@ -69,10 +71,18 @@ export async function runScan(
     // the (expensive) analysis on a huge codebase.
     const threshold = opts.confirmThreshold ?? SCAN_CONFIRM_THRESHOLD;
     if (!opts.force && fileCount > threshold) {
+      console.error(
+        `[scan] ${fileCount} files read in ${scanMs.toFixed(0)}ms — over ${threshold}, awaiting confirmation`,
+      );
       return { ok: true, value: { oversize: true, fileCount } };
     }
     const packages = await readPackageDeps(root);
+    const tAnalyze = performance.now();
     const { graph, errors } = await analyzeProject(files, { packages });
+    const analyzeMs = performance.now() - tAnalyze;
+    console.error(
+      `[scan] ${fileCount} files | read ${scanMs.toFixed(0)}ms | analyze ${analyzeMs.toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges`,
+    );
     return { ok: true, value: { graph, errors, fileCount, skipped, root } };
   } catch (err) {
     return { ok: false, status: 500, error: err instanceof Error ? err.message : "Scan failed" };
@@ -85,7 +95,11 @@ export async function runAnalyze(files: SourceFileMap | undefined): Promise<Hand
     return { ok: false, status: 400, error: "Expected { files: Record<string, string> }" };
   }
   try {
+    const t = performance.now();
     const { graph, errors } = await analyzeProject(files);
+    console.error(
+      `[analyze] ${Object.keys(files).length} files | ${(performance.now() - t).toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges`,
+    );
     return { ok: true, value: { graph, errors } };
   } catch (err) {
     return {
