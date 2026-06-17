@@ -95,6 +95,10 @@ struct ClusterData {
     depth: u32,
     #[serde(default)]
     label: String,
+    /// Categorical color for the box (by directory/group), as [r,g,b]. [0,0,0] = use
+    /// the neutral slate tint.
+    #[serde(default)]
+    color: [u8; 3],
 }
 
 #[derive(Deserialize, Default)]
@@ -338,17 +342,42 @@ impl VelloCanvas {
                 if !on_screen(c.x, c.y, c.w, c.h) {
                     continue;
                 }
-                // Slate tint, low alpha so nested boxes layer into deeper panels.
+                // Low alpha so nested boxes layer into deeper panels. When the box carries
+                // a categorical color (by directory/group), wash the fill + outline + label
+                // in that hue; otherwise fall back to the neutral slate tint.
                 let alpha = (0.05 + 0.03 * c.depth as f32).min(0.16);
-                let fill = if self.dark {
+                let colored = c.color != [0, 0, 0];
+                let fill = if colored {
+                    Color::new([
+                        c.color[0] as f32 / 255.0,
+                        c.color[1] as f32 / 255.0,
+                        c.color[2] as f32 / 255.0,
+                        alpha + 0.05,
+                    ])
+                } else if self.dark {
                     Color::new([148.0 / 255.0, 163.0 / 255.0, 184.0 / 255.0, alpha])
                 } else {
                     Color::new([100.0 / 255.0, 116.0 / 255.0, 139.0 / 255.0, alpha])
                 };
+                let edge_color = if colored {
+                    Color::from_rgb8(c.color[0], c.color[1], c.color[2])
+                } else {
+                    border
+                };
+                let label_color = if colored {
+                    Color::from_rgb8(c.color[0], c.color[1], c.color[2])
+                } else {
+                    header_text
+                };
                 let rect = RoundedRect::new(c.x, c.y, c.x + c.w, c.y + c.h, 14.0);
                 self.scene.fill(Fill::NonZero, camera, fill, None, &rect);
-                self.scene
-                    .stroke(&Stroke::new(1.0), camera, border, None, &rect);
+                self.scene.stroke(
+                    &Stroke::new(if colored { 1.3 } else { 1.0 }),
+                    camera,
+                    edge_color,
+                    None,
+                    &rect,
+                );
 
                 if !c.label.is_empty() {
                     let mut gx = c.x + 10.0;
@@ -371,7 +400,7 @@ impl VelloCanvas {
                         .draw_glyphs(&self.font)
                         .font_size(FONT_SIZE)
                         .transform(camera)
-                        .brush(header_text)
+                        .brush(label_color)
                         .draw(Fill::NonZero, glyphs.into_iter());
                 }
             }
