@@ -39,6 +39,7 @@ const GLYPH_SIZE: f32 = 13.0;
 const BADGE_SIZE: f32 = 9.0; // language-code text size inside file icons
 const LABEL_MIN_SCALE: f64 = 0.5; // only lay out labels/icons when readable
 const EDGE_DASH_BUDGET: usize = 300; // above this many edges, draw solid (dashing overruns the allocator)
+const EDGE_RENDER_CAP: usize = 60_000; // max edges encoded per frame; above this, sample a uniform subset (LOD)
 const ICON_R: f64 = 6.0; // icon half-size in world units
 
 #[wasm_bindgen(start)]
@@ -118,6 +119,9 @@ pub struct VelloCanvas {
     renderer: Renderer,
     scene: Scene,
     font: FontData,
+    /// Parsed font table directory, built once. Re-parsing it every frame (skrifa
+    /// `FontRef::new`) is wasted work that adds up when many labels are drawn.
+    font_ref: FontRef<'static>,
     data: SceneData,
     cam_x: f64,
     cam_y: f64,
@@ -169,6 +173,8 @@ impl VelloCanvas {
         .map_err(|e| JsValue::from_str(&format!("Renderer::new failed: {e}")))?;
 
         let font = FontData::new(Blob::new(std::sync::Arc::new(FONT_BYTES)), 0);
+        let font_ref =
+            FontRef::new(FONT_BYTES).map_err(|e| JsValue::from_str(&format!("font: {e}")))?;
 
         Ok(VelloCanvas {
             context,
@@ -176,6 +182,7 @@ impl VelloCanvas {
             renderer,
             scene: Scene::new(),
             font,
+            font_ref,
             data: SceneData::default(),
             cam_x: 0.0,
             cam_y: 0.0,
@@ -305,8 +312,7 @@ impl VelloCanvas {
         } else {
             (BASE_LIGHT, CARD_FILL_LIGHT, CARD_BORDER_LIGHT)
         };
-        let font_ref =
-            FontRef::new(FONT_BYTES).map_err(|e| JsValue::from_str(&format!("font: {e}")))?;
+        let font_ref = &self.font_ref;
         let charmap = font_ref.charmap();
         let metrics = font_ref.glyph_metrics(Size::new(GLYPH_SIZE), LocationRef::default());
         let badge_metrics = font_ref.glyph_metrics(Size::new(BADGE_SIZE), LocationRef::default());
@@ -420,7 +426,16 @@ impl VelloCanvas {
         let (cx, cy, cs) = (self.cam_x, self.cam_y, self.cam_scale);
         // Only draw the ×N multiplicity labels when zoomed in enough to read them.
         let show_counts = self.cam_scale >= LABEL_MIN_SCALE;
-        for e in &self.data.edges {
+        // LOD: above the cap, encode only a uniform sample of edges. At fit-zoom of a
+        // 100k-node repo the whole graph is on-screen, so clipping doesn't help — and
+        // encoding hundreds of thousands of curves overruns the wasm scene allocator
+        // (the proximate "fails to render" failure). Zoomed-in views clip to far fewer
+        // than the cap, so the stride is invisible in practice.
+        let edge_step = (self.data.edges.len() / EDGE_RENDER_CAP).max(1);
+        for (i, e) in self.data.edges.iter().enumerate() {
+            if i % edge_step != 0 {
+                continue;
+            }
             let (ax, ay) = (e.x1 * cs + cx, e.y1 * cs + cy);
             let (bx, by) = (e.x2 * cs + cx, e.y2 * cs + cy);
             let Some((sx1, sy1, sx2, sy2)) =
@@ -561,7 +576,7 @@ impl VelloCanvas {
                 draw_lang_badge(
                     &mut self.scene,
                     &self.font,
-                    &font_ref,
+                    font_ref,
                     &badge_metrics,
                     camera,
                     chip_cx,
