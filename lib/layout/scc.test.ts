@@ -10,7 +10,10 @@ describe("stronglyConnectedComponents", () => {
   });
 
   test("a 3-cycle is one component", () => {
-    const comps = stronglyConnectedComponents(["a", "b", "c"], [E("a", "b"), E("b", "c"), E("c", "a")]);
+    const comps = stronglyConnectedComponents(
+      ["a", "b", "c"],
+      [E("a", "b"), E("b", "c"), E("c", "a")],
+    );
     expect(comps.length).toBe(1);
     expect(comps[0].members).toEqual(["a", "b", "c"]);
   });
@@ -32,7 +35,10 @@ describe("stronglyConnectedComponents", () => {
 
   test("mixed: one cycle plus a downstream singleton", () => {
     // a⇄b form a cycle; c hangs off b.
-    const comps = stronglyConnectedComponents(["a", "b", "c"], [E("a", "b"), E("b", "a"), E("b", "c")]);
+    const comps = stronglyConnectedComponents(
+      ["a", "b", "c"],
+      [E("a", "b"), E("b", "a"), E("b", "c")],
+    );
     expect(comps).toEqual([
       { id: "scc:a|b", members: ["a", "b"] },
       { id: "scc:c", members: ["c"] },
