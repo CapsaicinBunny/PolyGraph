@@ -1,3 +1,4 @@
+import { EXTERNAL_DIR } from "../layout/clusters";
 import { edgeId, type GraphModel, type GraphNode } from "./types";
 
 /** Aggregate-node id encoding. The `#` makes the directory logic in clusters.ts
@@ -8,10 +9,14 @@ export const aggregateNodeId = (clusterId: string): string => clusterId + AGG_SU
 export const isAggregateId = (id: string): boolean => id.endsWith(AGG_SUFFIX);
 export const clusterIdOfAggregate = (id: string): string => id.slice(0, -AGG_SUFFIX.length);
 
-/** Directory prefixes of a node id (file or symbol), outermost-first: `"a/b/c.ts#x"` → `["a", "a/b"]`. */
-function dirPrefixes(nodeId: string): string[] {
-  const hash = nodeId.indexOf("#");
-  const filePath = hash === -1 ? nodeId : nodeId.slice(0, hash);
+/**
+ * Directory prefixes of a node, outermost-first: `"a/b/c.ts#x"` → `["a", "a/b"]`.
+ * External nodes group under the synthetic `«external»` cluster (mirrors clusters.ts).
+ */
+function dirPrefixes(node: { id: string; kind: string }): string[] {
+  if (node.kind === "external") return [EXTERNAL_DIR];
+  const hash = node.id.indexOf("#");
+  const filePath = hash === -1 ? node.id : node.id.slice(0, hash);
   const parts = filePath.split("/");
   parts.pop(); // drop the filename
   const out: string[] = [];
@@ -38,7 +43,7 @@ export function collapseClusters(graph: GraphModel, collapsed: Set<string>): Gra
   // Each node → its outermost collapsed ancestor dir (the collapse root), if any.
   const absorbedBy = new Map<string, string>();
   for (const n of graph.nodes) {
-    for (const prefix of dirPrefixes(n.id)) {
+    for (const prefix of dirPrefixes(n)) {
       if (collapsed.has(prefix)) {
         absorbedBy.set(n.id, prefix);
         break; // outermost-first

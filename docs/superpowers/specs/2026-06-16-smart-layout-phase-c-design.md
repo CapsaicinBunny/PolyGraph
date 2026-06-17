@@ -24,7 +24,8 @@ export function collapseClusters(graph: GraphModel, collapsed: Set<string>): Gra
 - For each node, find its **outermost** collapsed ancestor directory (via directory prefixes of its id); if found, the node is *absorbed*.
 - The aggregate node id is `"<clusterId>#__agg__"`. Crucially, `clusters.ts`'s `dirSegments` strips at `#`, so the aggregate's directory resolves to the **parent** of the collapsed dir — placing the aggregate card inside the correct parent cluster, with no box drawn for the (now empty) collapsed cluster.
 - Aggregate node: `kind: "file"` (renders as a card), `label: "<lastSegment> · <fileCount>"`, `filePath: clusterId`. `fileCount` = absorbed file nodes (ids without `#`).
-- Edges: remap each endpoint absorbed → its aggregate id; drop self-loops and dedupe (keep first kind).
+- Edges: remap each endpoint absorbed → its aggregate id; drop self-loops and dedupe identical `(source, target, kind)` edges (distinct kinds between the same endpoints are preserved).
+- External nodes (`kind: "external"`) group under the synthetic `«external»` cluster — `dirPrefixes` special-cases them (mirroring `clusters.ts`), so collapsing `«external»` aggregates third-party deps into one card.
 - `collapsed.size === 0` or no absorptions → returns the input graph unchanged (cheap no-op).
 
 ### Wiring (mostly additive)

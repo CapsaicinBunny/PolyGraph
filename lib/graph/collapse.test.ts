@@ -60,6 +60,28 @@ describe("collapseClusters", () => {
     ]);
   });
 
+  test("collapses the «external» cluster (grouped by kind, not path)", () => {
+    const extNode = (pkg: string) => ({
+      id: `external:module:${pkg}`,
+      kind: "external" as const,
+      label: pkg,
+      filePath: pkg,
+      line: 0,
+      parentFile: `external:module:${pkg}`,
+    });
+    const g: GraphModel = {
+      nodes: [fileNode("src/a.ts"), extNode("react"), extNode("lodash")],
+      edges: [edge("src/a.ts", "external:module:react")],
+    };
+    const out = collapseClusters(g, new Set(["«external»"]));
+    const agg = aggregateNodeId("«external»");
+    expect(out.nodes.some((n) => n.id === agg)).toBe(true);
+    expect(out.nodes.some((n) => n.kind === "external")).toBe(false);
+    expect(out.edges).toEqual([
+      { id: edgeId("src/a.ts", agg, "import"), source: "src/a.ts", target: agg, kind: "import" },
+    ]);
+  });
+
   test("outermost collapsed ancestor wins when nested dirs both collapse", () => {
     const nested: GraphModel = { nodes: [fileNode("a/b/c.ts")], edges: [] };
     const out = collapseClusters(nested, new Set(["a", "a/b"]));
