@@ -1,6 +1,7 @@
 import { buildView, type ViewEdgeKind } from "../aggregate";
 import {
   type ClusterBox,
+  type GroupBy,
   type LayoutAlgorithm,
   type LayoutDirection,
   type LayoutInput,
@@ -118,6 +119,7 @@ export function buildSceneStructure(
   algorithm: LayoutAlgorithm,
   direction: LayoutDirection,
   collapsedClusters: Set<string> = new Set(),
+  groupBy: GroupBy = "directory",
 ): SceneStructure {
   const {
     showExternal,
@@ -167,6 +169,7 @@ export function buildSceneStructure(
     ser(enabledFolders),
     ser(enabledLanguages),
     ser(collapsedClusters),
+    groupBy,
   ].join("|");
 
   const symbolCount = new Map<string, number>();
@@ -223,7 +226,7 @@ export function buildSceneStructure(
       nodes: view.nodes.map((n) => ({ id: n.id, kind: n.kind })),
       edges: visibleEdges.map((e) => ({ source: e.source, target: e.target })),
     },
-    options: { algorithm, direction },
+    options: { algorithm, direction, groupBy },
   };
 }
 

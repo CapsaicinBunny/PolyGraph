@@ -9,6 +9,7 @@ import {
 } from "d3-force";
 import {
   type ClusterBox,
+  type GroupBy,
   type LayoutDirection,
   type LayoutInput,
   type LayoutResult,
@@ -16,6 +17,7 @@ import {
   type XYPosition,
 } from "../layout";
 import { buildClusterTree, type ClusterTreeNode } from "./clusters";
+import { detectCommunities } from "./community";
 import { stronglyConnectedComponents } from "./scc";
 
 const PADDING = 24;
@@ -331,13 +333,33 @@ function layoutCluster(
   };
 }
 
-/** Smart (semanticMultilevel) layout: group by nested directory, lay out by dependency flow. */
+/** Smart (semanticMultilevel) layout: group by directory / community / none, lay out by dependency flow. */
 export function smartLayout(
   view: LayoutInput,
-  options: { direction?: LayoutDirection } = {},
+  options: { direction?: LayoutDirection; groupBy?: GroupBy } = {},
 ): LayoutResult {
   const direction = options.direction ?? "TB";
-  const { root, ancestry } = buildClusterTree(view.nodes);
+  const groupBy = options.groupBy ?? "directory";
+
+  let groupOf: ((node: { id: string; kind: string }) => string[]) | undefined;
+  if (groupBy === "community") {
+    const community = detectCommunities(
+      view.nodes.map((n) => n.id),
+      view.edges,
+    );
+    const sizes = new Map<string, number>();
+    for (const c of community.values()) sizes.set(c, (sizes.get(c) ?? 0) + 1);
+    groupOf = (n) => {
+      const c = community.get(n.id);
+      // Leave singleton communities at the root — avoids a sea of one-node boxes.
+      return c && (sizes.get(c) ?? 0) > 1 ? [c] : [];
+    };
+  } else if (groupBy === "none") {
+    groupOf = () => []; // everything at the root — no containers
+  }
+  // "directory" leaves groupOf undefined → buildClusterTree's default dir logic.
+
+  const { root, ancestry } = buildClusterTree(view.nodes, groupOf);
   const kindOf = new Map(view.nodes.map((n) => [n.id, n.kind]));
   const out = layoutCluster(root, -1, direction, ancestry, kindOf, view.edges);
   return { nodes: out.positions, clusters: out.clusters };

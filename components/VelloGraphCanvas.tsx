@@ -7,7 +7,7 @@ import type { ViewEdgeKind } from "@/lib/aggregate";
 import { clusterIdOfAggregate, isAggregateId } from "@/lib/graph/collapse";
 import type { SceneFilters } from "@/lib/graph/scene";
 import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
-import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
+import type { GroupBy, LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import { frameBoxes } from "@/lib/graph/frame";
 import { LayoutOverlay } from "./LayoutOverlay";
 import { useScene } from "./useScene";
@@ -20,6 +20,7 @@ export interface GraphViewProps {
   selectedId: string | null;
   algorithm: LayoutAlgorithm;
   direction: LayoutDirection;
+  groupBy: GroupBy;
   showExternal: boolean;
   enabledNodeKinds: Set<NodeKind>;
   enabledCategories: Set<NodeCategory>;
@@ -61,6 +62,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     selectedId,
     algorithm,
     direction,
+    groupBy,
     showExternal,
     enabledNodeKinds,
     enabledCategories,
@@ -104,6 +106,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     algorithm,
     direction,
     collapsedClusters,
+    groupBy,
   );
   const { resolvedTheme } = useTheme();
 

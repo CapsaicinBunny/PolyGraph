@@ -21,7 +21,12 @@ import type {
   NodeRole,
   Runtime,
 } from "@/lib/graph/types";
-import { DIRECTIONAL_ALGORITHMS, type LayoutAlgorithm, type LayoutDirection } from "@/lib/layout";
+import {
+  DIRECTIONAL_ALGORITHMS,
+  type GroupBy,
+  type LayoutAlgorithm,
+  type LayoutDirection,
+} from "@/lib/layout";
 
 interface SidebarProps {
   search: string;
@@ -42,6 +47,8 @@ interface SidebarProps {
   onAlgorithm: (algorithm: LayoutAlgorithm) => void;
   direction: LayoutDirection;
   onDirection: (direction: LayoutDirection) => void;
+  groupBy: GroupBy;
+  onGroupBy: (groupBy: GroupBy) => void;
 }
 
 const CATEGORIES: { value: NodeCategory; label: string; color: string }[] = [
@@ -68,6 +75,12 @@ const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
   { value: "circular", label: "Circular", glyph: "○" },
   { value: "grid", label: "Grid", glyph: "▦" },
   { value: "force", label: "Force", glyph: "✸" },
+];
+
+const GROUP_BY: { value: GroupBy; label: string; glyph: string }[] = [
+  { value: "directory", label: "Directory", glyph: "🗀" },
+  { value: "community", label: "Community", glyph: "⬡" },
+  { value: "none", label: "None", glyph: "∅" },
 ];
 
 const DIRECTIONS: { value: LayoutDirection; label: string; glyph: string }[] = [
@@ -278,6 +291,8 @@ export function Sidebar({
   onAlgorithm,
   direction,
   onDirection,
+  groupBy,
+  onGroupBy,
 }: SidebarProps) {
   const directionEnabled = DIRECTIONAL_ALGORITHMS.includes(algorithm);
 
@@ -345,6 +360,22 @@ export function Sidebar({
             ))}
           </ChipRow>
         </Box>
+        {algorithm === "smart" && (
+          <Box mt="3">
+            <MiniLabel>Group by</MiniLabel>
+            <ChipRow>
+              {GROUP_BY.map((g) => (
+                <Chip
+                  key={g.value}
+                  label={g.label}
+                  glyph={g.glyph}
+                  active={groupBy === g.value}
+                  onClick={() => onGroupBy(g.value)}
+                />
+              ))}
+            </ChipRow>
+          </Box>
+        )}
       </Section>
 
       <Section title="Relationships" modified={relationshipsModified}>

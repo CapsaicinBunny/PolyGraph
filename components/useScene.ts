@@ -10,6 +10,7 @@ import {
 import type { GraphModel } from "@/lib/graph/types";
 import {
   type ClusterBox,
+  type GroupBy,
   layoutCacheGet,
   layoutCacheSet,
   type LayoutAlgorithm,
@@ -33,10 +34,20 @@ export function useScene(
   algorithm: LayoutAlgorithm,
   direction: LayoutDirection,
   collapsedClusters: Set<string>,
+  groupBy: GroupBy,
 ): { scene: Scene; layingOut: boolean } {
   const structure = useMemo(
-    () => buildSceneStructure(graph, expanded, filters, algorithm, direction, collapsedClusters),
-    [graph, expanded, filters, algorithm, direction, collapsedClusters],
+    () =>
+      buildSceneStructure(
+        graph,
+        expanded,
+        filters,
+        algorithm,
+        direction,
+        collapsedClusters,
+        groupBy,
+      ),
+    [graph, expanded, filters, algorithm, direction, collapsedClusters, groupBy],
   );
 
   const initial = layoutCacheGet(structure.signature);

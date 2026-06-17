@@ -51,9 +51,13 @@ export type LayoutAlgorithm =
 /** Algorithms for which the direction selector is meaningful. */
 export const DIRECTIONAL_ALGORITHMS: LayoutAlgorithm[] = ["smart", "layered", "tree"];
 
+/** How the Smart layout groups nodes into clusters. */
+export type GroupBy = "directory" | "community" | "none";
+
 export interface LayoutOptions {
   algorithm?: LayoutAlgorithm;
   direction?: LayoutDirection;
+  groupBy?: GroupBy;
 }
 
 /** A directory/package container box emitted by the Smart layout. World-space, top-left origin. */
@@ -407,7 +411,7 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
   const { algorithm = "layered", direction = "LR" } = options;
   switch (algorithm) {
     case "smart":
-      return smartLayout(view, { direction }).nodes;
+      return smartLayout(view, { direction, groupBy: options.groupBy }).nodes;
     case "tree":
       return layoutByComponents(view, (sub) => dagreLayout(sub, direction, "tight-tree"));
     case "radial":
