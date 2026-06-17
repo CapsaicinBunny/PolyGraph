@@ -172,15 +172,17 @@ export function Explorer() {
     );
   }, []);
 
+  // Expand/collapse always operates on real files, so derive these from the base graph
+  // (the projected Package/Workspace graphs have no file nodes).
   const parentOf = useMemo(() => {
     const map = new Map<string, string>();
-    for (const n of graph?.nodes ?? []) map.set(n.id, n.parentFile);
+    for (const n of baseGraph?.nodes ?? []) map.set(n.id, n.parentFile);
     return map;
-  }, [graph]);
+  }, [baseGraph]);
 
   const fileIds = useMemo(
-    () => (graph?.nodes ?? []).filter((n) => n.kind === "file").map((n) => n.id),
-    [graph],
+    () => (baseGraph?.nodes ?? []).filter((n) => n.kind === "file").map((n) => n.id),
+    [baseGraph],
   );
   const allExpanded = fileIds.length > 0 && fileIds.every((id) => expanded.has(id));
 
