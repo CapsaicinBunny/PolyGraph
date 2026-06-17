@@ -33,6 +33,7 @@ const BASE_LIGHT: Color = Color::from_rgb8(237, 240, 245);
 const CARD_FILL_LIGHT: Color = Color::from_rgb8(255, 255, 255);
 const CARD_BORDER_LIGHT: Color = Color::from_rgb8(203, 213, 225);
 
+const CLUSTER_HEADER_H: f64 = 26.0; // clickable header strip on each container (matches smart.ts HEADER_H)
 const FONT_SIZE: f32 = 13.0;
 const GLYPH_SIZE: f32 = 13.0;
 const BADGE_SIZE: f32 = 9.0; // language-code text size inside file icons
@@ -77,6 +78,8 @@ struct EdgeData {
 
 #[derive(Deserialize, Default)]
 struct ClusterData {
+    #[serde(default)]
+    id: String,
     x: f64,
     y: f64,
     w: f64,
@@ -228,10 +231,23 @@ impl VelloCanvas {
         vec![self.cam_x, self.cam_y, self.cam_scale]
     }
 
-    /// Return the id of the topmost node under a screen point, if any.
+    /// Return what's under a screen point: a cluster header as `"cluster:<id>"`
+    /// (deepest wins), else the topmost node id, else None.
     pub fn pick(&self, px: f64, py: f64) -> Option<String> {
         let wx = (px - self.cam_x) / self.cam_scale;
         let wy = (py - self.cam_y) / self.cam_scale;
+        // Cluster header strips (top band of each box) take priority over nodes.
+        let mut header: Option<(u32, &str)> = None;
+        for c in &self.data.clusters {
+            if wx >= c.x && wx <= c.x + c.w && wy >= c.y && wy <= c.y + CLUSTER_HEADER_H {
+                if header.map_or(true, |(d, _)| c.depth >= d) {
+                    header = Some((c.depth, &c.id));
+                }
+            }
+        }
+        if let Some((_, id)) = header {
+            return Some(format!("cluster:{id}"));
+        }
         for n in self.data.nodes.iter().rev() {
             if wx >= n.x && wx <= n.x + n.w && wy >= n.y && wy <= n.y + n.h {
                 return Some(n.id.clone());

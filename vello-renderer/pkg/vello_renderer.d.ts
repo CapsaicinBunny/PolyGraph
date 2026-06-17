@@ -11,7 +11,8 @@ export class VelloCanvas {
      */
     fit(): Float64Array;
     /**
-     * Return the id of the topmost node under a screen point, if any.
+     * Return what's under a screen point: a cluster header as `"cluster:<id>"`
+     * (deepest wins), else the topmost node id, else None.
      */
     pick(px: number, py: number): string | undefined;
     render(): void;
