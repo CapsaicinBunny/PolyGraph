@@ -15,6 +15,9 @@ export interface ScanResult {
   label: string;
 }
 
+/** Special head selector meaning "the current working tree", not a git revision. */
+export const WORKING_TREE = "WORKING_TREE";
+
 /** Scan the working tree under `root`. */
 export async function scanWorkingTree(root: string): Promise<ScanResult> {
   const { files } = await scanDirectory(root);
@@ -33,4 +36,9 @@ export async function scanRevision(root: string, rev: string): Promise<ScanResul
   if (fileCount === 0) throw new Error(`No source files found at revision ${rev}`);
   const { graph } = await analyzeProject(files, { packages });
   return { graph, fileCount, label: rev };
+}
+
+/** Scan either the working tree or a revision, depending on `head`. */
+export async function scanTarget(root: string, head: string): Promise<ScanResult> {
+  return head === WORKING_TREE ? scanWorkingTree(root) : scanRevision(root, head);
 }

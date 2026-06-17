@@ -2,6 +2,7 @@
 // in CI logs; structured outputs (SARIF, JSON) are produced elsewhere.
 
 import type { PolygraphConfig } from "../config/schema";
+import type { GraphDiff } from "../diff/diff";
 import { countBySeverity, type Violation } from "../rules/engine";
 
 const CHECK = "✓"; // ✓
@@ -71,5 +72,53 @@ export function formatCheck(
       `${errors} error${errors === 1 ? "" : "s"}, ${warnings} warning${warnings === 1 ? "" : "s"}`,
     );
   }
+  return `${out.join("\n")}\n`;
+}
+
+function pctPhrase(pct: number | null, before: number, after: number): string {
+  if (pct === null) return `gained dependents (0 → ${after})`;
+  const dir = pct >= 0 ? "increased" : "decreased";
+  return `blast radius ${dir} by ${Math.abs(Math.round(pct))}% (${before} → ${after})`;
+}
+
+/** Render a graph diff in the compact "Current branch ↔ main" style. */
+export function formatDiff(diff: GraphDiff): string {
+  const headLabel = diff.head === "working tree" ? "Current branch" : diff.head;
+  const out: string[] = [];
+  out.push(`${headLabel} ↔ ${diff.base}`);
+  out.push("");
+
+  const s = diff.summary;
+  out.push(`+ ${s.nodesAdded} nodes`);
+  out.push(`- ${s.nodesRemoved} nodes`);
+  if (s.nodesChanged > 0) out.push(`~ ${s.nodesChanged} changed nodes`);
+  out.push(`+ ${s.edgesAdded} relationships`);
+  out.push(`- ${s.edgesRemoved} relationships`);
+
+  if (s.newCycles > 0) out.push(`${WARN} ${s.newCycles} new cycle${s.newCycles === 1 ? "" : "s"}`);
+  if (s.removedCycles > 0) {
+    out.push(`${CHECK} ${s.removedCycles} cycle${s.removedCycles === 1 ? "" : "s"} resolved`);
+  }
+
+  // Headline blast-radius movements (meaningful changes only).
+  const notable = diff.blastRadiusDeltas
+    .filter((d) => d.pctChange === null || Math.abs(d.pctChange) >= 10)
+    .slice(0, 5);
+  for (const d of notable) {
+    const marker = d.delta > 0 ? WARN : CHECK;
+    out.push(`${marker} ${d.label} ${pctPhrase(d.pctChange, d.before, d.after)}`);
+  }
+
+  if (
+    s.nodesAdded === 0 &&
+    s.nodesRemoved === 0 &&
+    s.nodesChanged === 0 &&
+    s.edgesAdded === 0 &&
+    s.edgesRemoved === 0
+  ) {
+    out.push("");
+    out.push("No structural changes.");
+  }
+
   return `${out.join("\n")}\n`;
 }
