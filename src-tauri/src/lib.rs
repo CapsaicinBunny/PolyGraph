@@ -5,7 +5,7 @@ use tauri_plugin_shell::ShellExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  tauri::Builder::default()
+  let builder = tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
     // Logging is on in every build (Info in debug, Warn+ in release) so a
@@ -18,7 +18,16 @@ pub fn run() {
           log::LevelFilter::Warn
         })
         .build(),
-    )
+    );
+
+  // Auto-update (desktop only): the updater checks the configured endpoint and
+  // process::restart relaunches after an update is installed.
+  #[cfg(desktop)]
+  let builder = builder
+    .plugin(tauri_plugin_updater::Builder::new().build())
+    .plugin(tauri_plugin_process::init());
+
+  builder
     .setup(|app| {
       // bun build --compile produces a self-contained binary; it does NOT bundle
       // the native addon or the language-pack data files. Point the sidecar at the
