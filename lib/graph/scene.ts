@@ -129,6 +129,8 @@ export function buildSceneStructure(
   density = 1,
   communityCollapse = false,
   focusedIds: Set<string> | null = null,
+  /** Restrict to these base-node ids (query "filter" mode); intersects with filters. */
+  queryIds: Set<string> | null = null,
 ): SceneStructure {
   const {
     showExternal,
@@ -144,6 +146,8 @@ export function buildSceneStructure(
   const visible = (n: GraphModel["nodes"][number]) => {
     // Focus mode shows exactly the focused subgraph, overriding the other filters.
     if (focusedIds) return focusedIds.has(n.id);
+    // Query filter mode narrows on top of (intersected with) the checkbox filters.
+    if (queryIds && !queryIds.has(n.id)) return false;
     if (n.kind === "external") return showExternal;
     // Folder + language gate — applies to files and the symbols inside them.
     if (!enabledFolders.has(topFolderOf(n.filePath))) return false;
@@ -207,6 +211,7 @@ export function buildSceneStructure(
     `d${density}`,
     `cc${communityCollapse ? 1 : 0}`,
     focusedIds ? `focus:${[...focusedIds].sort().join(",")}` : "focus:none",
+    queryIds ? `q:${[...queryIds].sort().join(",")}` : "q:none",
   ].join("|");
 
   const symbolCount = new Map<string, number>();

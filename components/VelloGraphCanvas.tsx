@@ -33,6 +33,10 @@ export interface GraphViewProps {
   communityCollapse: boolean;
   edgeRouting: "curved" | "orthogonal";
   focusedIds: Set<string> | null;
+  /** Query "filter" mode: restrict the visible graph to these ids (∩ filters). */
+  queryIds: Set<string> | null;
+  /** Query "highlight" mode: keep the full graph but emphasise these ids and frame them. */
+  highlightIds: Set<string> | null;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
@@ -43,6 +47,9 @@ function hexToRgb(hex: string): [number, number, number] {
   const v = Number.parseInt(hex.replace("#", ""), 16);
   return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
 }
+
+// Muted gray for nodes/edges outside the highlight set (readable in both themes).
+const DIM_RGB: [number, number, number] = [90, 99, 112];
 
 interface VelloHandle {
   set_data: (json: string) => void;
@@ -80,6 +87,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     communityCollapse,
     edgeRouting,
     focusedIds,
+    queryIds,
+    highlightIds,
     onSelect,
     onToggleExpand,
     onToggleCollapse,
@@ -120,6 +129,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     density,
     communityCollapse,
     focusedIds,
+    queryIds,
   );
   const { resolvedTheme } = useTheme();
 
@@ -138,6 +148,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
 
   // The JSON payload Vello consumes. Built from the positioned scene.
   const payload = useMemo(() => {
+    // In highlight mode, mute everything outside the match set so the matches pop.
+    const dim = (id: string) => highlightIds != null && !highlightIds.has(id);
     const center = new Map<string, [number, number]>();
     const map = new Map<string, boolean>();
     for (const n of scene.nodes) {
@@ -151,7 +163,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       y: n.y,
       w: n.width,
       h: n.height,
-      color: hexToRgb(n.color),
+      color: dim(n.id) ? DIM_RGB : hexToRgb(n.color),
       label: n.label,
       shape: n.shape,
       badge: n.isFile && n.symbolCount > 0 ? `+${n.symbolCount}` : "",
@@ -164,13 +176,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         const a = center.get(e.source);
         const b = center.get(e.target);
         if (!a || !b) return null;
+        const muted = dim(e.source) || dim(e.target);
         return {
           id: e.id,
           x1: a[0],
           y1: a[1],
           x2: b[0],
           y2: b[1],
-          color: hexToRgb(e.color),
+          color: muted ? DIM_RGB : hexToRgb(e.color),
           count: e.count,
         };
       })
@@ -185,7 +198,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       label: c.label,
     }));
     return JSON.stringify({ nodes, edges, clusters, routing: edgeRouting });
-  }, [scene, edgeRouting]);
+  }, [scene, edgeRouting, highlightIds]);
 
   // One-time Vello/WebGPU setup + camera interaction.
   useEffect(() => {
@@ -378,6 +391,23 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     vc.render();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, search]);
+
+  // In highlight mode, frame the matched nodes so they're on screen even when the
+  // full graph is large. Empty match → leave the camera where it is.
+  useEffect(() => {
+    const vc = vcRef.current;
+    const canvas = canvasRef.current;
+    if (!ready || !vc || !canvas || !highlightIds || highlightIds.size === 0) return;
+    const boxes = scene.nodes
+      .filter((n) => highlightIds.has(n.id))
+      .map((n) => ({ x: n.x, y: n.y, width: n.width, height: n.height }));
+    const target = frameBoxes(boxes, canvas.width, canvas.height);
+    if (!target) return;
+    cam.current = target;
+    vc.set_camera(target.x, target.y, target.scale);
+    vc.render();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, highlightIds, payload]);
 
   // Match the canvas palette to the app's light/dark mode.
   useEffect(() => {

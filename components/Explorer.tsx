@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Box, Button, Flex, Heading, HStack, Image, Text } from "@chakra-ui/react";
 import dynamic from "next/dynamic";
 import type { ViewEdgeKind } from "@/lib/aggregate";
+import { BUILTIN_SEARCHES, runQuery, type SavedSearch } from "@/lib/graph/query-language";
+import type { QueryMode } from "./QueryBar";
 import type {
   AnalyzeResult,
   Environment,
@@ -63,6 +65,8 @@ export function Explorer() {
   );
   const [enabledRuntimes, setEnabledRuntimes] = useState<Set<Runtime>>(() => new Set(ALL_RUNTIMES));
   const [search, setSearch] = useState("");
+  const [queryMode, setQueryMode] = useState<QueryMode>("filter");
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<SceneEdge | null>(null);
   const [algorithm, setAlgorithm] = useState<LayoutAlgorithm>("layered");
@@ -87,6 +91,49 @@ export function Explorer() {
     () =>
       graph ? [...analyzeInsights(graph), ...unresolvedToInsights(result?.unresolved ?? [])] : [],
     [graph, result],
+  );
+
+  // Load / persist user saved searches.
+  const SAVED_KEY = "polygraph.savedSearches";
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SAVED_KEY);
+      if (raw) setSavedSearches(JSON.parse(raw) as SavedSearch[]);
+    } catch {
+      /* ignore unreadable storage */
+    }
+  }, []);
+  const persistSaved = useCallback((list: SavedSearch[]) => {
+    setSavedSearches(list);
+    try {
+      localStorage.setItem(SAVED_KEY, JSON.stringify(list));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Evaluate the search box as a query. Empty/whitespace → no constraint.
+  const queryResult = useMemo(
+    () => (graph && search.trim() !== "" ? runQuery(graph, search) : null),
+    [graph, search],
+  );
+  const queryError = queryResult?.error;
+  const matchedIds =
+    queryResult && !queryResult.error && !queryResult.empty ? queryResult.nodeIds : null;
+  const queryIds = queryMode === "filter" ? matchedIds : null;
+  const highlightIds = queryMode === "highlight" ? matchedIds : null;
+
+  const handleSaveSearch = useCallback(() => {
+    const q = search.trim();
+    if (!q) return;
+    const name = window.prompt("Name this search", q.slice(0, 40))?.trim();
+    if (!name) return;
+    persistSaved([...savedSearches.filter((s) => s.name !== name), { name, query: q }]);
+  }, [search, savedSearches, persistSaved]);
+
+  const handleDeleteSearch = useCallback(
+    (name: string) => persistSaved(savedSearches.filter((s) => s.name !== name)),
+    [savedSearches, persistSaved],
   );
 
   const resetFileFilters = useCallback((g: typeof graph) => {
@@ -345,6 +392,15 @@ export function Explorer() {
         <Sidebar
           search={search}
           onSearch={setSearch}
+          queryMode={queryMode}
+          onQueryMode={setQueryMode}
+          queryError={queryError}
+          matchCount={matchedIds?.size}
+          builtinSearches={BUILTIN_SEARCHES}
+          savedSearches={savedSearches}
+          onApplySearch={setSearch}
+          onSaveSearch={handleSaveSearch}
+          onDeleteSearch={handleDeleteSearch}
           enabledEdgeKinds={enabledEdgeKinds}
           onToggleEdgeKind={handleToggleEdgeKind}
           enabledNodeKinds={enabledNodeKinds}
@@ -388,6 +444,8 @@ export function Explorer() {
             communityCollapse={communityCollapse}
             edgeRouting={edgeRouting}
             focusedIds={focusedIds}
+            queryIds={queryIds}
+            highlightIds={highlightIds}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
             onToggleCollapse={handleToggleCollapse}

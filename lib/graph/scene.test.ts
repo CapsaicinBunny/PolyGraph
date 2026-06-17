@@ -149,3 +149,21 @@ test("focusedIds shows exactly the focused subgraph, overriding other filters", 
   );
   expect(s.nodes.map((n) => n.id)).toEqual(["src/a.ts"]);
 });
+
+test("queryIds narrows the visible set and intersects with the filters", () => {
+  // Query selects a.ts and b.rs, but the RS language is disabled → only a.ts survives.
+  const s = buildSceneStructure(
+    graph,
+    new Set(),
+    filters({ enabledLanguages: new Set(["TS", "{}"]) }),
+    "force",
+    "LR",
+    new Set(),
+    "directory",
+    1,
+    false,
+    null,
+    new Set(["src/a.ts", "lib/b.rs"]),
+  );
+  expect(s.nodes.map((n) => n.id)).toEqual(["src/a.ts"]);
+});
