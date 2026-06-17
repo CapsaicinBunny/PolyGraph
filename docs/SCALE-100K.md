@@ -105,3 +105,31 @@ v1 (adaptive cut, renderer untouched):
 
 v2 — not started. The typed-array bridge is also deferred (see v1). The master
 PR (#45) tracks the live checklist.
+
+### Analysis & safety track (separate PRs to main)
+
+Orthogonal to the render epic — making the _analysis_ fast and safe at scale.
+All verified (unit tests + `cargo check`) and composing cleanly together:
+
+- [x] kernel ext→provider map, O(1) file lookup (#51)
+- [x] parser-only syntactic diagnostics — drop the per-file whole-program
+      type-check, the biggest analysis-time cost (#52)
+- [x] dynamic `import()` resolution by symbol, not substring scan — fixes an
+      O(N²) cost and a correctness bug (#53)
+- [x] analyzer-core Rust hardening — `Arc<Query>` + `catch_unwind` (a worker
+      panic no longer aborts the sidecar), surfaced parse errors, WAT ABI guard,
+      parallel `build_graph` (#54)
+- [x] concurrent directory reads (#55)
+- [x] native `analyze` as a napi `AsyncTask` — buckets parse concurrently, JS
+      thread not frozen (#56, stacked on #54)
+- [x] size-gated ts-morph memory batching + `forgetNodesCreatedInBlock` — bounds
+      memory for huge repos; normal repos byte-identical (#57, stacked on #52)
+
+### Remaining frontier (needs a runtime / human sign-off — not blind-shippable)
+
+- v1 threshold calibration + flipping the `adaptiveLod` default — needs a WebGPU run.
+- Rebuild the native `.node` + the wasm so the async/LOD source changes take
+  runtime effect (a build step, not code).
+- NDJSON streaming of the scan response (sidecar↔browser) for the V8 ~512MB
+  string ceiling — a wire-protocol change unverifiable here.
+- v2 — lazy per-cluster layout / force-grid in wasm with `rayon`.
