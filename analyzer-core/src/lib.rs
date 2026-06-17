@@ -7,6 +7,7 @@
 // graph fragment as JSON. Grammars are linked in directly (see `language_for`).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use napi_derive::napi;
 use serde::Serialize;
@@ -94,9 +95,26 @@ fn language_for(grammar: &str) -> Option<tree_sitter::Language> {
         "nix" => Some(tree_sitter_nix::LANGUAGE.into()),
         "sql" => Some(tree_sitter_sequel::LANGUAGE.into()),
         // Vendored WebAssembly-text grammar (compiled by build.rs; see vendor/wat).
-        "wat" => Some(unsafe { LanguageFn::from_raw(tree_sitter_wat) }.into()),
+        // SAFETY: `tree_sitter_wat` is the C entry point emitted by the vendored
+        // parser.c. A stale/mismatched grammar can report an ABI version this
+        // tree-sitter runtime can't handle, which would crash inside C the moment
+        // we parse; `abi_in_range` guards against that and skips the grammar.
+        "wat" => {
+            let lang: tree_sitter::Language =
+                unsafe { LanguageFn::from_raw(tree_sitter_wat) }.into();
+            abi_in_range(&lang).then_some(lang)
+        }
         _ => None,
     }
+}
+
+/// Validate that a grammar's ABI/language version is within the range this
+/// tree-sitter runtime supports. Out-of-range grammars (e.g. a stale vendored
+/// `parser.c`) are rejected so we never feed them to the parser and crash in C.
+fn abi_in_range(lang: &tree_sitter::Language) -> bool {
+    let version = lang.abi_version();
+    (tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION..=tree_sitter::LANGUAGE_VERSION)
+        .contains(&version)
 }
 
 extern "C" {
@@ -199,6 +217,10 @@ struct FileExtract {
     imports: Vec<RawImport>,
 }
 
+/// Per-file outcome of the parallel parse/extract pass: the normalized path plus
+/// either a successful extract or a per-file parse-error message.
+type FileResult = (String, Result<FileExtract, String>);
+
 fn norm_path(p: &str) -> String {
     let s = p.replace('\\', "/");
     s.strip_prefix("./").unwrap_or(&s).to_string()
@@ -220,10 +242,18 @@ fn text_of<'a>(node: Node, src: &'a [u8]) -> &'a str {
     node.utf8_text(src).unwrap_or("")
 }
 
-fn extract_file(file_path: &str, source: &str, parser: &mut Parser, query: &Query) -> FileExtract {
-    let empty = || FileExtract { symbols: vec![], refs: vec![], imports: vec![] };
+fn extract_file(
+    file_path: &str,
+    source: &str,
+    parser: &mut Parser,
+    query: &Query,
+) -> Result<FileExtract, String> {
     let Some(tree) = parser.parse(source, None) else {
-        return empty();
+        // A `None` parse means tree-sitter bailed out entirely (e.g. timeout or
+        // a language/version problem). Surface it as a per-file error instead of
+        // silently returning an empty extract, which is indistinguishable from a
+        // genuinely empty file.
+        return Err("parser returned no tree".to_string());
     };
     let root = tree.root_node();
     let src = source.as_bytes();
@@ -356,11 +386,11 @@ fn extract_file(file_path: &str, source: &str, parser: &mut Parser, query: &Quer
         })
         .collect();
 
-    FileExtract {
+    Ok(FileExtract {
         symbols,
         refs,
         imports,
-    }
+    })
 }
 
 fn resolve_python_module(module: &str, from_file: &str, file_set: &HashSet<&str>) -> Option<String> {
@@ -404,7 +434,11 @@ fn resolve_module(
     }
 }
 
-fn build_graph(per_file: &HashMap<String, FileExtract>, import_style: &str) -> Output {
+fn build_graph(
+    per_file: &HashMap<String, FileExtract>,
+    import_style: &str,
+    errors: Vec<OutError>,
+) -> Output {
     let files: Vec<&String> = per_file.keys().collect();
     let file_set: HashSet<&str> = files.iter().map(|s| s.as_str()).collect();
     let mut nodes: Vec<OutNode> = Vec::new();
@@ -504,49 +538,60 @@ fn build_graph(per_file: &HashMap<String, FileExtract>, import_style: &str) -> O
         imported.insert(file.as_str(), binds);
     }
 
-    for file in &files {
-        let local = &symbols_by_file[file.as_str()];
-        let binds = &imported[file.as_str()];
-        for r in &per_file[*file].refs {
-            if !REF_KINDS.contains(&r.relation.as_str()) {
-                continue;
-            }
-            let resolve_in = |tf: &str| -> String {
-                symbols_by_file
-                    .get(tf)
-                    .and_then(|m| m.get(r.name.as_str()))
-                    .map(|id| (*id).to_string())
-                    .unwrap_or_else(|| file_node_id(tf))
-            };
-            let target: Option<String> = if let Some(id) = local.get(r.name.as_str()) {
-                Some((*id).to_string())
-            } else if let Some(tf) = binds.get(r.name.as_str()) {
-                Some(resolve_in(tf))
-            } else if by_name {
-                definer_file(r.name.as_str()).map(resolve_in)
-            } else {
-                None
-            };
-            if let Some(t) = target {
-                if t != r.source_id {
-                    edges.push(OutEdge {
-                        id: edge_id(&r.source_id, &t, &r.relation),
-                        source: r.source_id.clone(),
-                        target: t,
-                        kind: r.relation.clone(),
-                        line: r.line,
-                        column: r.column,
-                        confidence: "inferred".into(),
-                    });
+    // Cross-file reference resolution. Each file resolves independently against the
+    // read-only `symbols_by_file` / `imported` / `definer` maps, so this is a pure
+    // parallel map. `par_iter().flat_map().collect()` is order-preserving in rayon,
+    // so iterating `&files` here yields the same edge sequence as the serial version
+    // did (deterministic for a given `files` ordering).
+    let ref_edges: Vec<OutEdge> = files
+        .par_iter()
+        .flat_map(|file| {
+            let local = &symbols_by_file[file.as_str()];
+            let binds = &imported[file.as_str()];
+            let mut out: Vec<OutEdge> = Vec::new();
+            for r in &per_file[*file].refs {
+                if !REF_KINDS.contains(&r.relation.as_str()) {
+                    continue;
+                }
+                let resolve_in = |tf: &str| -> String {
+                    symbols_by_file
+                        .get(tf)
+                        .and_then(|m| m.get(r.name.as_str()))
+                        .map(|id| (*id).to_string())
+                        .unwrap_or_else(|| file_node_id(tf))
+                };
+                let target: Option<String> = if let Some(id) = local.get(r.name.as_str()) {
+                    Some((*id).to_string())
+                } else if let Some(tf) = binds.get(r.name.as_str()) {
+                    Some(resolve_in(tf))
+                } else if by_name {
+                    definer_file(r.name.as_str()).map(resolve_in)
+                } else {
+                    None
+                };
+                if let Some(t) = target {
+                    if t != r.source_id {
+                        out.push(OutEdge {
+                            id: edge_id(&r.source_id, &t, &r.relation),
+                            source: r.source_id.clone(),
+                            target: t,
+                            kind: r.relation.clone(),
+                            line: r.line,
+                            column: r.column,
+                            confidence: "inferred".into(),
+                        });
+                    }
                 }
             }
-        }
-    }
+            out
+        })
+        .collect();
+    edges.extend(ref_edges);
 
     Output {
         nodes,
         edges,
-        errors: vec![],
+        errors,
     }
 }
 
@@ -561,40 +606,79 @@ pub fn analyze(
 ) -> napi::Result<String> {
     let language = language_for(&grammar)
         .ok_or_else(|| napi::Error::from_reason(format!("unknown grammar: {grammar}")))?;
-    // Validate the grammar + query once so a malformed pack returns a clean error
-    // rather than panicking inside a worker thread below.
+    // Validate the grammar once so a malformed pack returns a clean error rather
+    // than panicking inside a worker thread below.
     Parser::new()
         .set_language(&language)
         .map_err(|e| napi::Error::from_reason(format!("set_language: {e}")))?;
-    Query::new(&language, &query_src)
-        .map_err(|e| napi::Error::from_reason(format!("query: {e:?}")))?;
+    // Compile the query exactly once and share it (immutably) across all workers.
+    // `Query` is `Sync`, so an `Arc` lets every rayon worker reuse this single
+    // compiled query instead of recompiling it per worker (and instead of the old
+    // redundant validation pass). Compiling here also means a malformed query is
+    // reported as a clean napi error, never as a panic on a worker thread.
+    let query = Arc::new(
+        Query::new(&language, &query_src)
+            .map_err(|e| napi::Error::from_reason(format!("query: {e:?}")))?,
+    );
 
     let files: HashMap<String, String> = serde_json::from_str(&files_json)
         .map_err(|e| napi::Error::from_reason(format!("bad files json: {e}")))?;
 
     // Parse + extract each file in parallel — tree-sitter parsing is independent
-    // per file. map_init builds one Parser + Query per worker thread and reuses
-    // them across that thread's files. Cross-file resolution (build_graph) stays
-    // serial since it needs every file's definitions.
-    let per_file: HashMap<String, FileExtract> = files
-        .par_iter()
-        .map_init(
-            || {
-                let mut parser = Parser::new();
-                parser
-                    .set_language(&language)
-                    .expect("set_language (validated above)");
-                let query = Query::new(&language, &query_src).expect("query (validated above)");
-                (parser, query)
-            },
-            |(parser, query), (path, source)| {
-                let norm = norm_path(path);
-                let fx = extract_file(&norm, source, parser, query);
-                (norm, fx)
-            },
-        )
-        .collect();
+    // per file. `map_init` builds one `Parser` per worker thread (the shared
+    // `Arc<Query>` is reused) and keeps it across that thread's files. The whole
+    // region runs inside `catch_unwind` as a backstop: a panic on a rayon worker
+    // would otherwise abort the entire process and kill the sidecar mid-scan, so
+    // we trap it and turn it into a clean napi error instead.
+    //
+    // Each per-file result is `Result<FileExtract, String>`: a successful parse is
+    // an `Ok` extract, a failed parse is an `Err(message)` recorded in `errors`.
+    // The outer `Result` propagates genuine infrastructure failures (e.g. an
+    // unexpected `set_language` error on a worker) as a clean napi error.
+    let language_for_workers = language.clone();
+    let query_for_workers = Arc::clone(&query);
+    let parsed: Result<Vec<FileResult>, String> =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            files
+                .par_iter()
+                .map_init(
+                    || -> Result<Parser, String> {
+                        let mut parser = Parser::new();
+                        parser
+                            .set_language(&language_for_workers)
+                            .map_err(|e| format!("set_language: {e}"))?;
+                        Ok(parser)
+                    },
+                    |parser_res, (path, source)| {
+                        let parser = match parser_res {
+                            Ok(p) => p,
+                            Err(e) => return Err(e.clone()),
+                        };
+                        let norm = norm_path(path);
+                        let fx = extract_file(&norm, source, parser, &query_for_workers);
+                        Ok((norm, fx))
+                    },
+                )
+                .collect()
+        }))
+        .map_err(|_| napi::Error::from_reason("native analysis panicked"))?;
 
-    let output = build_graph(&per_file, &import_style);
+    let parsed = parsed.map_err(napi::Error::from_reason)?;
+
+    let mut per_file: HashMap<String, FileExtract> = HashMap::with_capacity(parsed.len());
+    let mut errors: Vec<OutError> = Vec::new();
+    for (path, result) in parsed {
+        match result {
+            Ok(fx) => {
+                per_file.insert(path, fx);
+            }
+            Err(message) => errors.push(OutError {
+                file_path: path,
+                message,
+            }),
+        }
+    }
+
+    let output = build_graph(&per_file, &import_style, errors);
     serde_json::to_string(&output).map_err(|e| napi::Error::from_reason(e.to_string()))
 }
