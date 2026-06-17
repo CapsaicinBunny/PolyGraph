@@ -1,4 +1,10 @@
-import type { EdgeKind, GraphModel, GraphNode } from "./graph/types";
+import {
+  type EdgeEvidence,
+  type EdgeKind,
+  type GraphModel,
+  type GraphNode,
+  mergeEvidence,
+} from "./graph/types";
 
 export type ViewEdgeKind = EdgeKind | "contains";
 
@@ -7,6 +13,8 @@ export interface ViewEdge {
   source: string;
   target: string;
   kind: ViewEdgeKind;
+  occurrences: EdgeEvidence[];
+  count: number;
 }
 
 export interface GraphView {
@@ -39,31 +47,41 @@ export function buildView(graph: GraphModel, expanded: Set<string>): GraphView {
     return expanded.has(node.parentFile) ? node.id : node.parentFile;
   };
 
-  const edges: ViewEdge[] = [];
-  const seen = new Set<string>();
-  const push = (source: string, target: string, kind: ViewEdgeKind) => {
+  // Merge occurrences when symbol→file collapse maps several edges onto the same
+  // (source, target, kind), so evidence survives aggregation instead of being dropped.
+  const byId = new Map<string, ViewEdge>();
+  const push = (
+    source: string,
+    target: string,
+    kind: ViewEdgeKind,
+    occurrences: EdgeEvidence[] = [],
+    count = 0,
+  ) => {
     if (source === target) return;
     const id = `${source}->${target}:${kind}`;
-    if (seen.has(id)) return;
-    seen.add(id);
-    edges.push({ id, source, target, kind });
+    const existing = byId.get(id);
+    if (existing) {
+      mergeEvidence(existing, { occurrences, count });
+      return;
+    }
+    byId.set(id, { id, source, target, kind, occurrences: [...occurrences], count });
   };
 
   for (const edge of graph.edges) {
     const s = repr(edge.source);
     const t = repr(edge.target);
     if (!s || !t) continue;
-    push(s, t, edge.kind);
+    push(s, t, edge.kind, edge.occurrences, edge.count);
   }
 
-  // Containment edges for expanded files.
+  // Containment edges for expanded files (structural, no evidence).
   for (const node of visibleNodes) {
     if (node.kind !== "file" && expanded.has(node.parentFile)) {
       push(node.parentFile, node.id, "contains");
     }
   }
 
-  return { nodes: visibleNodes, edges };
+  return { nodes: visibleNodes, edges: [...byId.values()] };
 }
 
 /** The fully collapsed file-level view — every file node, no symbols. */
