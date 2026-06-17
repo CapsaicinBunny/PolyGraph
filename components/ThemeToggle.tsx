@@ -43,17 +43,21 @@ function MoonIcon() {
 
 /**
  * Sun/moon button that flips between light and dark mode. Shows a sun while dark
- * (click → go light) and a moon while light (click → go dark). Rendering of the
- * icon is gated on mount to avoid a hydration mismatch, since the resolved theme
- * is only known on the client.
+ * (click → go light) and a moon while light (click → go dark). The resolved theme
+ * is only known on the client, so until mount we render a stable, theme-agnostic
+ * button — otherwise the server HTML and first client render disagree on the
+ * aria-label/icon and React reports a hydration mismatch.
  */
 export function ThemeToggle(props: Omit<IconButtonProps, "aria-label" | "children">) {
   const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const isDark = resolvedTheme === "dark";
+  if (!mounted) {
+    return <IconButton aria-label="Toggle color mode" variant="ghost" size="sm" {...props} />;
+  }
 
+  const isDark = resolvedTheme === "dark";
   return (
     <IconButton
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
@@ -62,7 +66,7 @@ export function ThemeToggle(props: Omit<IconButtonProps, "aria-label" | "childre
       onClick={() => setTheme(isDark ? "light" : "dark")}
       {...props}
     >
-      {mounted ? isDark ? <SunIcon /> : <MoonIcon /> : null}
+      {isDark ? <SunIcon /> : <MoonIcon />}
     </IconButton>
   );
 }
