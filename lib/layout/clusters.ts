@@ -25,7 +25,10 @@ function dirSegments(node: { id: string; kind: string }): string[] {
  * node id to the chain of cluster ids that contain it (outermost first, root excluded).
  * Deterministic: nodes are inserted in id order and children iterate by sorted key.
  */
-export function buildClusterTree(nodes: LayoutInput["nodes"]): {
+export function buildClusterTree(
+  nodes: LayoutInput["nodes"],
+  groupOf: (node: { id: string; kind: string }) => string[] = dirSegments,
+): {
   root: ClusterTreeNode;
   ancestry: Map<string, string[]>;
 } {
@@ -34,7 +37,7 @@ export function buildClusterTree(nodes: LayoutInput["nodes"]): {
   for (const n of sorted) {
     let cur = root;
     let path = "";
-    for (const seg of dirSegments(n)) {
+    for (const seg of groupOf(n)) {
       path = path ? `${path}/${seg}` : seg;
       let child = cur.children.get(seg);
       if (!child) {

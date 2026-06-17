@@ -46,7 +46,7 @@ function ensureWorker(): Worker | null {
 /** Synchronous fallback shared with the no-Worker path (and tests). */
 function layoutSync(input: LayoutInput, options: LayoutOptions): WorkerLayout {
   if (options.algorithm === "smart") {
-    const r = smartLayout(input, { direction: options.direction });
+    const r = smartLayout(input, { direction: options.direction, groupBy: options.groupBy });
     return { positions: r.nodes, clusters: r.clusters };
   }
   return { positions: layoutView(input, options), clusters: [] };

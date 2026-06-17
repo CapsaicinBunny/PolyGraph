@@ -12,7 +12,7 @@ import type {
   Runtime,
 } from "@/lib/graph/types";
 import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "@/lib/graph/visual";
-import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
+import type { GroupBy, LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import {
   availableFolders,
   availableLanguages,
@@ -61,6 +61,7 @@ export function Explorer() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [algorithm, setAlgorithm] = useState<LayoutAlgorithm>("layered");
   const [direction, setDirection] = useState<LayoutDirection>("LR");
+  const [groupBy, setGroupBy] = useState<GroupBy>("directory");
   const [showExternal, setShowExternal] = useState(false);
   const [enabledFolders, setEnabledFolders] = useState<Set<string>>(() => new Set());
   const [enabledLanguages, setEnabledLanguages] = useState<Set<string>>(() => new Set());
@@ -306,6 +307,8 @@ export function Explorer() {
           onAlgorithm={setAlgorithm}
           direction={direction}
           onDirection={setDirection}
+          groupBy={groupBy}
+          onGroupBy={setGroupBy}
         />
         <Box flex="1" minW="0" position="relative">
           <VelloGraphCanvas
@@ -316,6 +319,7 @@ export function Explorer() {
             selectedId={selectedId}
             algorithm={algorithm}
             direction={direction}
+            groupBy={groupBy}
             showExternal={showExternal}
             enabledNodeKinds={enabledNodeKinds}
             enabledCategories={enabledCategories}
