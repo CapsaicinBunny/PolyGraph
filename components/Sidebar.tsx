@@ -361,6 +361,10 @@ export function Sidebar({
       </Section>
 
       <Section title="Node types" modified={nodeTypesModified}>
+        <Text fontSize="10px" color="fg.subtle" mb="2.5">
+          Applies to symbols inside expanded files. To filter files, use the Filters panel
+          (top-right).
+        </Text>
         <Stack gap="3">
           {NODE_KIND_LAYERS.map((layer) => {
             const allOn = layer.kinds.every((k) => enabledNodeKinds.has(k));

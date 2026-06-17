@@ -7,6 +7,7 @@ import type { ViewEdgeKind } from "@/lib/aggregate";
 import type { SceneFilters } from "@/lib/graph/scene";
 import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
 import type { LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
+import { frameBoxes } from "@/lib/graph/frame";
 import { LayoutOverlay } from "./LayoutOverlay";
 import { useScene } from "./useScene";
 
@@ -23,6 +24,8 @@ export interface GraphViewProps {
   enabledCategories: Set<NodeCategory>;
   enabledEnvironments: Set<Environment>;
   enabledRuntimes: Set<Runtime>;
+  enabledFolders: Set<string>;
+  enabledLanguages: Set<string>;
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
 }
@@ -60,6 +63,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     enabledCategories,
     enabledEnvironments,
     enabledRuntimes,
+    enabledFolders,
+    enabledLanguages,
     onSelect,
     onToggleExpand,
   } = props;
@@ -72,6 +77,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       enabledEnvironments,
       enabledRuntimes,
       enabledEdgeKinds,
+      enabledFolders,
+      enabledLanguages,
     }),
     [
       showExternal,
@@ -80,6 +87,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       enabledEnvironments,
       enabledRuntimes,
       enabledEdgeKinds,
+      enabledFolders,
+      enabledLanguages,
     ],
   );
 
@@ -294,6 +303,25 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     vc.render();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, selectedId, search]);
+
+  // On search, frame the matching nodes so a match is visible even when zoomed out
+  // (keeps the renderer's yellow match outline). No match → leave the camera put.
+  useEffect(() => {
+    const vc = vcRef.current;
+    const canvas = canvasRef.current;
+    if (!ready || !vc || !canvas) return;
+    const q = search.trim().toLowerCase();
+    if (!q) return;
+    const boxes = scene.nodes
+      .filter((n) => n.label.toLowerCase().includes(q))
+      .map((n) => ({ x: n.x, y: n.y, width: n.width, height: n.height }));
+    const target = frameBoxes(boxes, canvas.width, canvas.height);
+    if (!target) return;
+    cam.current = target;
+    vc.set_camera(target.x, target.y, target.scale);
+    vc.render();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, search]);
 
   // Match the canvas palette to the app's light/dark mode.
   useEffect(() => {
