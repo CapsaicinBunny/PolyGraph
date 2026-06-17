@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, Flex, HStack, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, HStack, Stack, Text, chakra } from "@chakra-ui/react";
 import type { FolderInfo, LanguageInfo } from "@/lib/graph/filters";
 
 interface FiltersPanelProps {
@@ -94,26 +94,12 @@ function GroupHeader({
         {title}
       </Text>
       <HStack gap="2" fontSize="10px" color="fg.subtle">
-        <Box
-          as="button"
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          {...({ type: "button" } as any)}
-          cursor="pointer"
-          _hover={{ color: "fg" }}
-          onClick={onAll}
-        >
+        <chakra.button type="button" cursor="pointer" _hover={{ color: "fg" }} onClick={onAll}>
           all
-        </Box>
-        <Box
-          as="button"
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          {...({ type: "button" } as any)}
-          cursor="pointer"
-          _hover={{ color: "fg" }}
-          onClick={onNone}
-        >
+        </chakra.button>
+        <chakra.button type="button" cursor="pointer" _hover={{ color: "fg" }} onClick={onNone}>
           none
-        </Box>
+        </chakra.button>
       </HStack>
     </Flex>
   );
@@ -145,10 +131,8 @@ export function FiltersPanel({
         <Text fontSize="sm" fontWeight="semibold">
           Filters
         </Text>
-        <Box
-          as="button"
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          {...({ type: "button" } as any)}
+        <chakra.button
+          type="button"
           aria-label="Close filters"
           onClick={onClose}
           color="fg.muted"
@@ -157,7 +141,7 @@ export function FiltersPanel({
           lineHeight="1"
         >
           ✕
-        </Box>
+        </chakra.button>
       </Flex>
 
       <Box>
