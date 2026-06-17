@@ -95,13 +95,19 @@ export function analyzeSources(files: SourceFileMap, options: AnalyzeOptions = {
   const errors: AnalyzeError[] = [];
   const project = createInMemoryProject(files);
 
-  // Surface parse errors per file without aborting the whole analysis. Some files
-  // (e.g. extracted .vue/.svelte scripts under a non-TS extension) can make the TS
-  // diagnostics pass throw, so guard each file independently.
+  // Surface parse errors per file without aborting the whole analysis. We use the
+  // program's *syntactic* diagnostics (the parser's own errors) rather than
+  // getPreEmitDiagnostics(), which type-checks the entire program on every call —
+  // turning this into an O(whole-program) cost repeated per file. Syntactic
+  // diagnostics need zero type checking yet surface the exact same syntax errors
+  // (category 1, codes 1000-1999). Some files (e.g. extracted .vue/.svelte scripts
+  // under a non-TS extension) can make the diagnostics pass throw, so guard each
+  // file independently.
+  const program = project.getProgram();
   for (const file of project.getSourceFiles()) {
-    let diagnostics: ReturnType<typeof file.getPreEmitDiagnostics> = [];
+    let diagnostics: ReturnType<typeof program.getSyntacticDiagnostics> = [];
     try {
-      diagnostics = file.getPreEmitDiagnostics?.() ?? [];
+      diagnostics = program.getSyntacticDiagnostics(file);
     } catch {
       continue;
     }
