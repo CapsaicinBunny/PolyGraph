@@ -60,3 +60,48 @@ test("disabling a language hides its files (JSON off)", () => {
   );
   expect(s.nodes.map((n) => n.id)).not.toContain("pkg.json");
 });
+
+// Two disjoint 2-cycles → two communities of size 2.
+const cyclic: GraphModel = {
+  nodes: [fileNode("pkg/a.ts"), fileNode("pkg/b.ts"), fileNode("util/c.ts"), fileNode("util/d.ts")],
+  edges: [
+    { id: "pkg/a.ts->pkg/b.ts:import", source: "pkg/a.ts", target: "pkg/b.ts", kind: "import" },
+    { id: "pkg/b.ts->pkg/a.ts:import", source: "pkg/b.ts", target: "pkg/a.ts", kind: "import" },
+    { id: "util/c.ts->util/d.ts:import", source: "util/c.ts", target: "util/d.ts", kind: "import" },
+    { id: "util/d.ts->util/c.ts:import", source: "util/d.ts", target: "util/c.ts", kind: "import" },
+  ],
+};
+const communityFilters = filters({ enabledFolders: new Set(["pkg", "util"]) });
+
+test("communityCollapse folds every multi-member community into one aggregate card", () => {
+  // args: graph, expanded, filters, algorithm, direction, collapsedClusters, groupBy, density, communityCollapse
+  const s = buildSceneStructure(
+    cyclic,
+    new Set(),
+    communityFilters,
+    "smart",
+    "LR",
+    new Set(),
+    "community",
+    1,
+    true,
+  );
+  expect(s.nodes).toHaveLength(2);
+  expect(s.nodes.every((n) => n.id.endsWith("#__agg__"))).toBe(true);
+});
+
+test("community grouping with the collapse toggle off keeps the individual nodes", () => {
+  const s = buildSceneStructure(
+    cyclic,
+    new Set(),
+    communityFilters,
+    "smart",
+    "LR",
+    new Set(),
+    "community",
+    1,
+    false,
+  );
+  expect(s.nodes).toHaveLength(4);
+  expect(s.nodes.some((n) => n.id.endsWith("#__agg__"))).toBe(false);
+});

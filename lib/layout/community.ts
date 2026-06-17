@@ -11,15 +11,19 @@ export function detectCommunities(
   maxIterations = 20,
 ): Map<string, string> {
   const nodes = [...nodeIds].sort();
-  const adj = new Map<string, string[]>();
-  for (const id of nodes) adj.set(id, []);
+  // Unique undirected neighbors. Deduping matters: a reciprocal pair (a→b AND b→a)
+  // would otherwise list each neighbor twice, letting it outvote the self-vote and
+  // making 2-cycles oscillate into singletons instead of merging.
+  const adjSet = new Map<string, Set<string>>();
+  for (const id of nodes) adjSet.set(id, new Set());
   for (const e of edges) {
-    if (e.source !== e.target && adj.has(e.source) && adj.has(e.target)) {
-      adj.get(e.source)!.push(e.target);
-      adj.get(e.target)!.push(e.source);
+    if (e.source !== e.target && adjSet.has(e.source) && adjSet.has(e.target)) {
+      adjSet.get(e.source)!.add(e.target);
+      adjSet.get(e.target)!.add(e.source);
     }
   }
-  for (const [k, list] of adj) adj.set(k, list.sort());
+  const adj = new Map<string, string[]>();
+  for (const [k, s] of adjSet) adj.set(k, [...s].sort());
 
   const label = new Map<string, string>();
   for (const id of nodes) label.set(id, id);
