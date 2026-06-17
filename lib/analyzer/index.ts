@@ -6,6 +6,7 @@ import type {
   GraphNode,
   SourceFileMap,
 } from "../graph/types";
+import { mergeEvidence } from "../graph/types";
 import { analyzeCalls } from "./calls";
 import { analyzeComponents } from "./components";
 import { analyzeComposition } from "./composition";
@@ -27,10 +28,13 @@ function dedupeNodes(nodes: GraphNode[]): GraphNode[] {
 function dedupeEdges(edges: GraphEdge[]): GraphEdge[] {
   const byId = new Map<string, GraphEdge>();
   for (const edge of edges) {
-    if (!byId.has(edge.id)) byId.set(edge.id, edge);
+    const existing = byId.get(edge.id);
+    // Merge evidence when two analyzers emit the same edge id, rather than dropping.
+    if (existing) mergeEvidence(existing, edge);
+    else byId.set(edge.id, { ...edge, occurrences: [...edge.occurrences] });
   }
-  // Drop edges whose endpoints are not known nodes is handled by callers using
-  // the node set; here we only de-duplicate.
+  // Dropping edges with unknown endpoints is handled by callers via the node set;
+  // here we only de-duplicate (merging evidence).
   return [...byId.values()];
 }
 

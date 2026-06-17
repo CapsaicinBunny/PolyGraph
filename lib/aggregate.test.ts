@@ -24,8 +24,22 @@ const graph: GraphModel = {
     },
   ],
   edges: [
-    { id: "a.ts->b.ts:import", source: "a.ts", target: "b.ts", kind: "import" },
-    { id: "a.ts#foo->b.ts#bar:call", source: "a.ts#foo", target: "b.ts#bar", kind: "call" },
+    {
+      id: "a.ts->b.ts:import",
+      source: "a.ts",
+      target: "b.ts",
+      kind: "import",
+      occurrences: [],
+      count: 0,
+    },
+    {
+      id: "a.ts#foo->b.ts#bar:call",
+      source: "a.ts#foo",
+      target: "b.ts#bar",
+      kind: "call",
+      occurrences: [],
+      count: 0,
+    },
   ],
 };
 
@@ -71,5 +85,70 @@ describe("symbolCounts", () => {
     const counts = symbolCounts(graph);
     expect(counts.get("a.ts")).toBe(1);
     expect(counts.get("b.ts")).toBe(1);
+  });
+});
+
+describe("buildView evidence merge", () => {
+  test("symbol edges collapsing onto one file→file edge merge occurrences + sum counts", () => {
+    const ev = (line: number) => ({
+      filePath: "a.ts",
+      line,
+      provider: "TypeScript",
+      confidence: "exact" as const,
+    });
+    const g: GraphModel = {
+      nodes: [
+        { id: "a.ts", kind: "file", label: "a.ts", filePath: "a.ts", line: 0, parentFile: "a.ts" },
+        { id: "b.ts", kind: "file", label: "b.ts", filePath: "b.ts", line: 0, parentFile: "b.ts" },
+        {
+          id: "a.ts#x",
+          kind: "function",
+          label: "x",
+          filePath: "a.ts",
+          line: 1,
+          parentFile: "a.ts",
+        },
+        {
+          id: "a.ts#y",
+          kind: "function",
+          label: "y",
+          filePath: "a.ts",
+          line: 2,
+          parentFile: "a.ts",
+        },
+        {
+          id: "b.ts#m",
+          kind: "function",
+          label: "m",
+          filePath: "b.ts",
+          line: 1,
+          parentFile: "b.ts",
+        },
+      ],
+      edges: [
+        {
+          id: "a.ts#x->b.ts#m:call",
+          source: "a.ts#x",
+          target: "b.ts#m",
+          kind: "call",
+          occurrences: [ev(10)],
+          count: 1,
+        },
+        {
+          id: "a.ts#y->b.ts#m:call",
+          source: "a.ts#y",
+          target: "b.ts#m",
+          kind: "call",
+          occurrences: [ev(20)],
+          count: 3,
+        },
+      ],
+    };
+    // Nothing expanded → both symbol edges collapse to a.ts → b.ts (call).
+    const view = buildView(g, new Set());
+    const calls = view.edges.filter((e) => e.kind === "call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].count).toBe(4); // 1 + 3
+    expect(calls[0].occurrences.map((o) => o.line).sort((a, b) => a - b)).toEqual([10, 20]);
   });
 });

@@ -1,43 +1,47 @@
 import { Node, type Project, SyntaxKind } from "ts-morph";
-import { edgeId, type EdgeKind, type GraphEdge } from "../graph/types";
+import type { EdgeKind, GraphEdge } from "../graph/types";
+import { EdgeBuilder } from "./edge-accumulator";
+import { nodeEvidence } from "./evidence";
 import { type DeclIndex, declarationNodeId } from "./nodes";
+
+interface TypeTarget {
+  target: string;
+  ambiguous: boolean;
+  at: Node;
+}
 
 /**
  * Resolve every project class/interface referenced inside a type annotation.
  * Handles wrappers like `Engine[]`, `Array<Engine>`, `Map<string, Engine>` by
  * resolving each identifier in the type node and keeping the ones that map to a
- * known node.
+ * known node. Each identifier carries its location + whether it resolved
+ * ambiguously (>1 distinct definition).
  */
-function resolveTypeTargets(typeNode: Node | undefined, index: DeclIndex): string[] {
+function resolveTypeTargets(typeNode: Node | undefined, index: DeclIndex): TypeTarget[] {
   if (!typeNode) return [];
   const idents = Node.isIdentifier(typeNode)
     ? [typeNode]
     : typeNode.getDescendantsOfKind(SyntaxKind.Identifier);
 
-  const out: string[] = [];
+  const out: TypeTarget[] = [];
   for (const ident of idents) {
+    const ids = new Set<string>();
     for (const def of ident.getDefinitionNodes()) {
       const id = declarationNodeId(def, index.declToId);
-      if (id) {
-        out.push(id);
-        break;
-      }
+      if (id) ids.add(id);
     }
+    if (ids.size > 0) out.push({ target: [...ids][0], ambiguous: ids.size > 1, at: ident });
   }
   return out;
 }
 
 /** Build composition (`has`) and dependency-injection (`injects`) edges. */
 export function analyzeComposition(project: Project, index: DeclIndex): GraphEdge[] {
-  const edges: GraphEdge[] = [];
-  const seen = new Set<string>();
+  const builder = new EdgeBuilder();
 
-  const push = (source: string, target: string, kind: EdgeKind) => {
-    if (!target || source === target) return;
-    const id = edgeId(source, target, kind);
-    if (seen.has(id)) return;
-    seen.add(id);
-    edges.push({ id, source, target, kind });
+  const push = (source: string, t: TypeTarget, kind: EdgeKind) => {
+    if (source === t.target) return;
+    builder.add(source, t.target, kind, nodeEvidence(t.at, t.ambiguous ? "ambiguous" : "exact"));
   };
 
   for (const file of project.getSourceFiles()) {
@@ -47,15 +51,14 @@ export function analyzeComposition(project: Project, index: DeclIndex): GraphEdg
 
       // Composition / has-a: typed fields.
       for (const prop of cls.getProperties()) {
-        for (const target of resolveTypeTargets(prop.getTypeNode(), index))
-          push(source, target, "has");
+        for (const t of resolveTypeTargets(prop.getTypeNode(), index)) push(source, t, "has");
       }
 
       // Dependency injection: constructor parameter types.
       for (const ctor of cls.getConstructors()) {
         for (const param of ctor.getParameters()) {
-          for (const target of resolveTypeTargets(param.getTypeNode(), index))
-            push(source, target, "injects");
+          for (const t of resolveTypeTargets(param.getTypeNode(), index))
+            push(source, t, "injects");
         }
       }
     }
@@ -65,11 +68,10 @@ export function analyzeComposition(project: Project, index: DeclIndex): GraphEdg
       const source = index.declToId.get(iface);
       if (!source) continue;
       for (const prop of iface.getProperties()) {
-        for (const target of resolveTypeTargets(prop.getTypeNode(), index))
-          push(source, target, "has");
+        for (const t of resolveTypeTargets(prop.getTypeNode(), index)) push(source, t, "has");
       }
     }
   }
 
-  return edges;
+  return builder.build();
 }

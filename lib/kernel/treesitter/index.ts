@@ -8,9 +8,13 @@ import type { LanguageProvider, ProviderResult } from "../provider";
 import { type AnalyzerCore, loadCore } from "./core";
 import { loadPack } from "./pack";
 
+// The native core emits edges without evidence fields; Phase 1 fills them with
+// honest placeholders ("not captured yet"). Phase 3 will emit real evidence.
+type CoreEdge = Omit<GraphEdge, "occurrences" | "count">;
+
 interface CoreOutput {
   nodes: GraphNode[];
-  edges: GraphEdge[];
+  edges: CoreEdge[];
   errors: AnalyzeError[];
 }
 
@@ -25,7 +29,8 @@ export async function createTreeSitterProvider(packId: string): Promise<Language
     analyze(files: Record<string, string>): ProviderResult {
       const json = core.analyze(pack.grammar, pack.query, pack.importStyle, JSON.stringify(files));
       const out = JSON.parse(json) as CoreOutput;
-      return { nodes: out.nodes, edges: out.edges, errors: out.errors };
+      const edges: GraphEdge[] = out.edges.map((e) => ({ ...e, occurrences: [], count: 0 }));
+      return { nodes: out.nodes, edges, errors: out.errors };
     },
   };
 }

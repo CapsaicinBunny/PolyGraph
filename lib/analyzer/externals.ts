@@ -1,12 +1,8 @@
 import { Node, type Project, SyntaxKind } from "ts-morph";
-import {
-  edgeId,
-  type ExternalKind,
-  fileNodeId,
-  type GraphEdge,
-  type GraphNode,
-} from "../graph/types";
+import { type ExternalKind, fileNodeId, type GraphEdge, type GraphNode } from "../graph/types";
 import type { PackageDeps } from "../server/package-deps";
+import { EdgeBuilder } from "./edge-accumulator";
+import { nodeEvidence } from "./evidence";
 import { NODE_BUILTINS } from "./facets";
 import { type DeclIndex, enclosingNodeId } from "./nodes";
 import { toRelativePath } from "./project";
@@ -55,8 +51,7 @@ export function analyzeExternals(
   packages: PackageDeps = {},
 ): ExternalResult {
   const nodes = new Map<string, GraphNode>();
-  const edges: GraphEdge[] = [];
-  const seenEdge = new Set<string>();
+  const builder = new EdgeBuilder();
 
   const addNode = (id: string, label: string, externalKind: ExternalKind) => {
     if (nodes.has(id)) return;
@@ -76,11 +71,10 @@ export function analyzeExternals(
     }
     nodes.set(id, node);
   };
-  const addEdge = (source: string, target: string, kind: "import" | "call") => {
-    const id = edgeId(source, target, kind);
-    if (seenEdge.has(id)) return;
-    seenEdge.add(id);
-    edges.push({ id, source, target, kind });
+  // External targets are boundaries (the import/usage site is exact, but the target
+  // is outside the project), so confidence is "inferred".
+  const addEdge = (source: string, target: string, kind: "import" | "call", at: Node) => {
+    builder.add(source, target, kind, nodeEvidence(at, "inferred"));
   };
 
   for (const file of project.getSourceFiles()) {
@@ -97,7 +91,7 @@ export function analyzeExternals(
       const label = externalKind === "npm" ? npmPackageName(spec) : spec;
       const id = `external:module:${label}`;
       addNode(id, label, externalKind);
-      addEdge(fileId, id, "import");
+      addEdge(fileId, id, "import", decl);
     }
 
     // Runtime global API usage: Bun.serve, Deno.readFile, process.cwd, ...
@@ -111,9 +105,9 @@ export function analyzeExternals(
       const id = `external:api:${label}`;
       addNode(id, label, externalKind);
       const source = enclosingNodeId(access, index.declToId) ?? fileId;
-      addEdge(source, id, "call");
+      addEdge(source, id, "call", access);
     }
   }
 
-  return { nodes: [...nodes.values()], edges };
+  return { nodes: [...nodes.values()], edges: builder.build() };
 }

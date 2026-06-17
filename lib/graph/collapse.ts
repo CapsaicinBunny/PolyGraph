@@ -1,5 +1,12 @@
 import { EXTERNAL_DIR } from "../layout/clusters";
-import { edgeId, type GraphModel, type GraphNode } from "./types";
+import {
+  edgeId,
+  type GraphEdge,
+  type GraphModel,
+  type GraphNode,
+  makeEdge,
+  mergeEvidence,
+} from "./types";
 
 /** Aggregate-node id encoding. The `#` makes the directory logic in clusters.ts
  * resolve the aggregate to the PARENT of the collapsed dir, so the card lands in
@@ -89,17 +96,22 @@ export function collapseClusters(
     const cid = absorbedBy.get(nodeId);
     return cid ? aggregateNodeId(cid) : nodeId;
   };
-  const seen = new Set<string>();
-  const edges = [];
+  const byId = new Map<string, GraphEdge>();
   for (const e of graph.edges) {
     const source = remap(e.source);
     const target = remap(e.target);
     if (source === target) continue; // self-loop after collapse
     const key = edgeId(source, target, e.kind);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    edges.push({ id: key, source, target, kind: e.kind });
+    const existing = byId.get(key);
+    if (existing) {
+      // Edges collapsing onto the same endpoints merge their evidence.
+      mergeEvidence(existing, e);
+    } else {
+      const merged = makeEdge(source, target, e.kind);
+      mergeEvidence(merged, e);
+      byId.set(key, merged);
+    }
   }
 
-  return { nodes, edges };
+  return { nodes, edges: [...byId.values()] };
 }

@@ -65,10 +65,38 @@ test("disabling a language hides its files (JSON off)", () => {
 const cyclic: GraphModel = {
   nodes: [fileNode("pkg/a.ts"), fileNode("pkg/b.ts"), fileNode("util/c.ts"), fileNode("util/d.ts")],
   edges: [
-    { id: "pkg/a.ts->pkg/b.ts:import", source: "pkg/a.ts", target: "pkg/b.ts", kind: "import" },
-    { id: "pkg/b.ts->pkg/a.ts:import", source: "pkg/b.ts", target: "pkg/a.ts", kind: "import" },
-    { id: "util/c.ts->util/d.ts:import", source: "util/c.ts", target: "util/d.ts", kind: "import" },
-    { id: "util/d.ts->util/c.ts:import", source: "util/d.ts", target: "util/c.ts", kind: "import" },
+    {
+      id: "pkg/a.ts->pkg/b.ts:import",
+      source: "pkg/a.ts",
+      target: "pkg/b.ts",
+      kind: "import",
+      occurrences: [],
+      count: 0,
+    },
+    {
+      id: "pkg/b.ts->pkg/a.ts:import",
+      source: "pkg/b.ts",
+      target: "pkg/a.ts",
+      kind: "import",
+      occurrences: [],
+      count: 0,
+    },
+    {
+      id: "util/c.ts->util/d.ts:import",
+      source: "util/c.ts",
+      target: "util/d.ts",
+      kind: "import",
+      occurrences: [],
+      count: 0,
+    },
+    {
+      id: "util/d.ts->util/c.ts:import",
+      source: "util/d.ts",
+      target: "util/c.ts",
+      kind: "import",
+      occurrences: [],
+      count: 0,
+    },
   ],
 };
 const communityFilters = filters({ enabledFolders: new Set(["pkg", "util"]) });
