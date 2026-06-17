@@ -6,7 +6,7 @@ export const SOURCE_EXT =
 
 // Matches an ignored directory segment anywhere in a path (either separator).
 export const IGNORE_DIR =
-  /(^|[\\/])(node_modules|\.git|\.next|dist|build|out|coverage|\.turbo|\.cache)([\\/]|$)/;
+  /(^|[\\/])(node_modules|\.git|\.next|dist|build|out|coverage|\.turbo|\.cache|target|\.venv|venv|__pycache__|vendor|bin|obj|\.gradle|Pods|\.dart_tool|\.svelte-kit|\.nuxt|\.idea|\.vscode)([\\/]|$)/;
 
 export const MAX_FILE_BYTES = 1_000_000; // skip very large files (likely generated/minified)
 
