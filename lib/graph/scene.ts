@@ -145,9 +145,23 @@ export function buildSceneStructure(
     enabledLanguages,
   } = filters;
 
+  // In focus mode, also surface the parent file of any focused *symbol* so the symbols
+  // have a container to nest in. Without it the view drops symbols whose file isn't
+  // shown/expanded — focusing a symbol-level finding (e.g. a function↔function cycle)
+  // would render an empty canvas, while file-level findings worked.
+  const focusParents = new Set<string>();
+  if (focusedIds) {
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    for (const id of focusedIds) {
+      const n = byId.get(id);
+      if (n && n.kind !== "file" && n.kind !== "external") focusParents.add(n.parentFile);
+    }
+  }
+
   const visible = (n: GraphModel["nodes"][number]) => {
-    // Focus mode shows exactly the focused subgraph, overriding the other filters.
-    if (focusedIds) return focusedIds.has(n.id);
+    // Focus mode shows exactly the focused subgraph (plus focused symbols' parent files),
+    // overriding the other filters.
+    if (focusedIds) return focusedIds.has(n.id) || focusParents.has(n.id);
     // Query filter mode narrows on top of (intersected with) the checkbox filters.
     if (queryIds && !queryIds.has(n.id)) return false;
     // Projected (package/workspace) nodes aren't files/symbols — show them all; the
@@ -193,7 +207,10 @@ export function buildSceneStructure(
     effectiveCollapsed,
     groupBy === "community" && communityCollapse ? communityOf : undefined,
   );
-  const view = buildView(sourceGraph, expanded);
+  // Force the focused symbols' parent files open so the symbols render even when the
+  // current level/expand state would otherwise keep them collapsed.
+  const viewExpanded = focusParents.size > 0 ? new Set([...expanded, ...focusParents]) : expanded;
+  const view = buildView(sourceGraph, viewExpanded);
   const visibleEdges = view.edges.filter(
     (e) => e.kind === "contains" || enabledEdgeKinds.has(e.kind),
   );

@@ -150,6 +150,49 @@ test("focusedIds shows exactly the focused subgraph, overriding other filters", 
   expect(s.nodes.map((n) => n.id)).toEqual(["src/a.ts"]);
 });
 
+test("focusing symbol nodes also surfaces their parent file (not an empty canvas)", () => {
+  // A function↔function cycle inside one file — the shape behind the 2-node circular
+  // dependency that rendered empty before the fix.
+  const withSymbols: GraphModel = {
+    nodes: [
+      fileNode("src/a.ts"),
+      {
+        id: "src/a.ts#foo",
+        kind: "function",
+        label: "foo",
+        filePath: "src/a.ts",
+        line: 1,
+        parentFile: "src/a.ts",
+      },
+      {
+        id: "src/a.ts#bar",
+        kind: "function",
+        label: "bar",
+        filePath: "src/a.ts",
+        line: 2,
+        parentFile: "src/a.ts",
+      },
+    ],
+    edges: [],
+  };
+  const s = buildSceneStructure(
+    withSymbols,
+    new Set(), // nothing expanded — the focus must force the parent file open itself
+    filters(),
+    "smart",
+    "LR",
+    new Set(),
+    "directory",
+    1,
+    false,
+    new Set(["src/a.ts#foo", "src/a.ts#bar"]),
+  );
+  const ids = s.nodes.map((n) => n.id);
+  expect(ids).toContain("src/a.ts#foo");
+  expect(ids).toContain("src/a.ts#bar");
+  expect(ids).toContain("src/a.ts"); // parent file shown as the container
+});
+
 test("queryIds narrows the visible set and intersects with the filters", () => {
   // Query selects a.ts and b.rs, but the RS language is disabled → only a.ts survives.
   const s = buildSceneStructure(
