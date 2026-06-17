@@ -5,12 +5,21 @@ import { Box } from "@chakra-ui/react";
 import { useTheme } from "next-themes";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import { clusterIdOfAggregate, isAggregateId } from "@/lib/graph/collapse";
-import type { SceneEdge, SceneFilters } from "@/lib/graph/scene";
+import type { Scene, SceneEdge, SceneFilters } from "@/lib/graph/scene";
 import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
 import type { GroupBy, LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import { frameBoxes } from "@/lib/graph/frame";
+import { buildDirTree, type DirNode } from "@/lib/graph/hierarchy";
+import { computeCut, cutEquals } from "@/lib/graph/lod-cut";
+import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
 import { LayoutOverlay } from "./LayoutOverlay";
 import { useScene } from "./useScene";
+
+// Adaptive-LOD tuning. Conservative starting values — a directory opens into its
+// children once its on-screen height passes OPEN_PX, and the cut is capped at
+// MAX_CARDS cards. These want desktop calibration (see docs/SCALE-100K.md).
+const LOD_OPEN_PX = 240;
+const LOD_MAX_CARDS = 800;
 
 export interface GraphViewProps {
   graph: GraphModel;
@@ -43,6 +52,17 @@ export interface GraphViewProps {
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
   onSelectEdge: (edge: SceneEdge) => void;
+  /** Adaptive level-of-detail: recompute the collapsed cut as the camera zooms. */
+  adaptiveLod?: boolean;
+  /** Called with a new collapsed-directory set when the adaptive cut changes. */
+  onCut?: (collapsed: Set<string>) => void;
+  /**
+   * Signature of everything that warrants re-framing the camera (graph, level,
+   * filters) but NOT the cut. When it's unchanged across a scene update, the
+   * camera is preserved instead of re-fitting — so an adaptive recut doesn't
+   * yank the view. Undefined (the default) always re-fits: today's behavior.
+   */
+  fitSignature?: string;
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -127,6 +147,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     onToggleExpand,
     onToggleCollapse,
     onSelectEdge,
+    adaptiveLod,
+    onCut,
+    fitSignature,
   } = props;
 
   const filters: SceneFilters = useMemo(
@@ -183,6 +206,22 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   handlers.current = { onSelect, onToggleExpand, onToggleCollapse, onSelectEdge };
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Adaptive level-of-detail state the (mount-time) wheel handler reads via refs.
+  const dirTree = useMemo(() => buildDirTree(graph), [graph]);
+  const lod = useRef<{
+    adaptiveLod?: boolean;
+    onCut?: (c: Set<string>) => void;
+    dirTree: DirNode;
+    scene: Scene;
+    collapsed: Set<string>;
+  }>({ adaptiveLod, onCut, dirTree, scene, collapsed: collapsedClusters });
+  lod.current.adaptiveLod = adaptiveLod;
+  lod.current.onCut = onCut;
+  lod.current.dirTree = dirTree;
+  lod.current.scene = scene;
+  lod.current.collapsed = collapsedClusters;
+  const lodBand = useRef(cameraBand(1));
 
   // The JSON payload Vello consumes. Built from the positioned scene.
   const payload = useMemo(() => {
@@ -293,6 +332,25 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       c.scale = next;
       vcRef.current?.set_camera(c.x, c.y, c.scale);
       renderSoon();
+      // Adaptive LOD: when the zoom crosses a band, recompute the directory cut
+      // from what's currently on screen and hand the new collapsed set up. The
+      // box coordinates come from the live scene, so the cut decision matches
+      // exactly what the user sees. No-op unless adaptiveLod is enabled.
+      const l = lod.current;
+      if (l.adaptiveLod && l.onCut) {
+        const band = cameraBand(c.scale);
+        if (band !== lodBand.current) {
+          lodBand.current = band;
+          const next = computeCut(
+            l.dirTree,
+            sceneBoxes(l.scene),
+            c,
+            { w: canvas.width, h: canvas.height },
+            { openPx: LOD_OPEN_PX, maxCards: LOD_MAX_CARDS, prevCut: l.collapsed },
+          );
+          if (!cutEquals(next, l.collapsed)) l.onCut(next);
+        }
+      }
     };
     const onDown = (e: PointerEvent) => {
       dragging = true;
@@ -389,21 +447,32 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Feed data + fit when the scene geometry changes.
+  // Feed data when the scene changes, and re-fit the camera only when the scene
+  // changed for a fit-worthy reason (new graph/level/filters) — NOT when only the
+  // adaptive cut changed, so a recut preserves the user's zoom. With adaptiveLod
+  // off, fitSignature is undefined and this always fits: today's behavior.
+  const prevFitSig = useRef<string | undefined>(undefined);
   useEffect(() => {
     const vc = vcRef.current;
     if (!ready || !vc) return;
     vc.set_data(payload);
-    const fit = vc.fit();
-    cam.current = { x: fit[0], y: fit[1], scale: fit[2] };
-    // Match the renderer's dynamic floor: allow zooming out to the fit scale (or the
-    // normal floor, whichever is smaller) so large graphs aren't stuck zoomed in.
-    minScale.current = Math.min(fit[2], 0.02);
+    if (shouldFit(fitSignature, prevFitSig.current)) {
+      const fit = vc.fit();
+      cam.current = { x: fit[0], y: fit[1], scale: fit[2] };
+      // Match the renderer's dynamic floor: allow zooming out to the fit scale (or the
+      // normal floor, whichever is smaller) so large graphs aren't stuck zoomed in.
+      minScale.current = Math.min(fit[2], 0.02);
+      lodBand.current = cameraBand(cam.current.scale);
+    } else {
+      // Cut-only change: keep the camera where the user left it.
+      vc.set_camera(cam.current.x, cam.current.y, cam.current.scale);
+    }
+    prevFitSig.current = fitSignature;
     vc.set_selection(selectedId ?? undefined);
     vc.set_search(search);
     vc.render();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, payload]);
+  }, [ready, payload, fitSignature]);
 
   // Selection / search are cheap — just update + redraw.
   useEffect(() => {
