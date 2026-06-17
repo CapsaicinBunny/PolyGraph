@@ -37,6 +37,29 @@ describe("cargo provider", () => {
     expect(m?.name).toBe("core");
     expect(m?.declaredDeps.map((d) => d.name).sort()).toEqual(["serde", "tokio"]);
   });
+
+  test("folds in dev-, build-, and target-specific dependencies", () => {
+    const m = parseOne(
+      "Cargo.toml",
+      `[package]
+name = "core"
+[dependencies]
+serde = "1"
+[dev-dependencies]
+criterion = "0.5"
+[build-dependencies]
+cc = "1"
+[target.'cfg(windows)'.dependencies]
+winapi = "0.3"`,
+    );
+    expect(m?.declaredDeps.map((d) => d.name).sort()).toEqual([
+      "cc",
+      "criterion",
+      "serde",
+      "winapi",
+    ]);
+    expect(m?.declaredDeps.find((d) => d.name === "criterion")?.type).toBe("devDependency");
+  });
 });
 
 describe("go provider", () => {

@@ -89,11 +89,24 @@ const cargo: ManifestProvider = {
     if (!pkgTable && !isWorkspaceRoot) return null;
     const name = typeof pkgTable?.name === "string" ? pkgTable.name : lastSegment(dir);
     const declaredDeps: PackageDecl[] = [];
-    const deps = asTable(toml.dependencies);
-    if (deps) {
-      for (const [n, v] of Object.entries(deps)) {
+    const collect = (table: TomlTable | undefined, type: DependencyType) => {
+      if (!table) return;
+      for (const [n, v] of Object.entries(table)) {
         const version = typeof v === "string" ? v : (asTable(v)?.version as string | undefined);
-        declaredDeps.push({ name: n, version, type: "dependency" });
+        declaredDeps.push({ name: n, version, type });
+      }
+    };
+    collect(asTable(toml.dependencies), "dependency");
+    collect(asTable(toml["dev-dependencies"]), "devDependency");
+    collect(asTable(toml["build-dependencies"]), "dependency");
+    // Platform-specific deps live under [target.<cfg>.dependencies] (+ dev/build).
+    const target = asTable(toml.target);
+    if (target) {
+      for (const cfg of Object.values(target)) {
+        const cfgTable = asTable(cfg);
+        collect(asTable(cfgTable?.dependencies), "dependency");
+        collect(asTable(cfgTable?.["dev-dependencies"]), "devDependency");
+        collect(asTable(cfgTable?.["build-dependencies"]), "dependency");
       }
     }
     return {
