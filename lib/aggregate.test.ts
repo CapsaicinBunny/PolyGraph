@@ -150,5 +150,10 @@ describe("buildView evidence merge", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].count).toBe(4); // 1 + 3
     expect(calls[0].occurrences.map((o) => o.line).sort((a, b) => a - b)).toEqual([10, 20]);
+    // Both underlying symbol→symbol relationships are tracked on the collapsed edge.
+    expect(calls[0].originalEdgeIds.slice().sort()).toEqual([
+      "a.ts#x->b.ts#m:call",
+      "a.ts#y->b.ts#m:call",
+    ]);
   });
 });

@@ -164,7 +164,15 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         const a = center.get(e.source);
         const b = center.get(e.target);
         if (!a || !b) return null;
-        return { id: e.id, x1: a[0], y1: a[1], x2: b[0], y2: b[1], color: hexToRgb(e.color) };
+        return {
+          id: e.id,
+          x1: a[0],
+          y1: a[1],
+          x2: b[0],
+          y2: b[1],
+          color: hexToRgb(e.color),
+          count: e.count,
+        };
       })
       .filter(Boolean);
     const clusters = scene.clusters.map((c) => ({

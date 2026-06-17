@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
-import { Badge, Box, CloseButton, HStack, Stack, Text } from "@chakra-ui/react";
+import { useMemo, useState } from "react";
+import { Badge, Box, chakra, CloseButton, HStack, Stack, Text } from "@chakra-ui/react";
 import type { SceneEdge } from "@/lib/graph/scene";
 import type { EdgeConfidence, GraphModel } from "@/lib/graph/types";
 import { EDGE_STYLES } from "@/lib/graph/visual";
@@ -19,7 +19,22 @@ const CONFIDENCE_PALETTE: Record<EdgeConfidence, string> = {
   ambiguous: "orange",
 };
 
+// Most underlying relationships we list before truncating (very dense collapsed
+// edges can merge hundreds; the count in the header still reflects the true total).
+const MAX_RELATIONSHIPS = 50;
+
+/** Parse a `${source}->${target}:${kind}` edge id back into its endpoints. */
+function parseEdgeId(id: string): { source: string; target: string } | null {
+  const arrow = id.indexOf("->");
+  if (arrow < 0) return null;
+  const source = id.slice(0, arrow);
+  const rest = id.slice(arrow + 2);
+  const colon = rest.lastIndexOf(":");
+  return { source, target: colon >= 0 ? rest.slice(0, colon) : rest };
+}
+
 export function EdgeDetailPanel({ graph, edge, onSelect, onClose }: EdgeDetailPanelProps) {
+  const [showRelationships, setShowRelationships] = useState(false);
   const labelOf = useMemo(() => {
     const m = new Map(graph.nodes.map((n) => [n.id, n.label]));
     return (id: string) => m.get(id) ?? id;
@@ -123,6 +138,55 @@ export function EdgeDetailPanel({ graph, edge, onSelect, onClose }: EdgeDetailPa
           </Stack>
         )}
       </Box>
+
+      {edge.originalEdgeIds.length > 1 && (
+        <Box>
+          <chakra.button
+            type="button"
+            onClick={() => setShowRelationships((s) => !s)}
+            fontSize="xs"
+            color="fg.muted"
+            _hover={{ color: "fg" }}
+            display="flex"
+            alignItems="center"
+            gap="1"
+          >
+            <Box as="span" fontSize="9px">
+              {showRelationships ? "▾" : "▸"}
+            </Box>
+            Underlying relationships ({edge.originalEdgeIds.length})
+          </chakra.button>
+          {showRelationships && (
+            <Stack gap="0.5" mt="1.5">
+              {edge.originalEdgeIds.slice(0, MAX_RELATIONSHIPS).map((id) => {
+                const parsed = parseEdgeId(id);
+                if (!parsed) return null;
+                const text = `${labelOf(parsed.source)} → ${labelOf(parsed.target)}`;
+                return (
+                  <Text
+                    key={id}
+                    fontSize="xs"
+                    fontFamily="mono"
+                    color="fg"
+                    truncate
+                    cursor="pointer"
+                    _hover={{ textDecoration: "underline" }}
+                    onClick={() => onSelect(parsed.source)}
+                    title={text}
+                  >
+                    {text}
+                  </Text>
+                );
+              })}
+              {edge.originalEdgeIds.length > MAX_RELATIONSHIPS && (
+                <Text fontSize="xs" color="fg.subtle">
+                  +{edge.originalEdgeIds.length - MAX_RELATIONSHIPS} more
+                </Text>
+              )}
+            </Stack>
+          )}
+        </Box>
+      )}
     </Stack>
   );
 }

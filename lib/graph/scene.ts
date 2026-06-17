@@ -76,6 +76,8 @@ export interface SceneEdge {
   toExternal: boolean;
   occurrences: EdgeEvidence[];
   count: number;
+  /** Underlying graph-edge ids merged into this edge (the relationships behind it). */
+  originalEdgeIds: string[];
 }
 
 /** Geometry-free scene: nodes (unpositioned) + edges + the inputs to compute a layout. */
@@ -252,6 +254,7 @@ export function buildSceneStructure(
       toExternal: toExternal !== undefined,
       occurrences: e.occurrences,
       count: e.count,
+      originalEdgeIds: e.originalEdgeIds,
     };
   });
 

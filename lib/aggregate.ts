@@ -15,6 +15,13 @@ export interface ViewEdge {
   kind: ViewEdgeKind;
   occurrences: EdgeEvidence[];
   count: number;
+  /**
+   * Ids of the underlying graph edges merged into this view edge. When several
+   * symbol→symbol edges collapse onto one file→file edge, each contributes its
+   * id here so the UI can list the underlying relationships. Empty for purely
+   * structural ("contains") edges.
+   */
+  originalEdgeIds: string[];
 }
 
 export interface GraphView {
@@ -56,22 +63,32 @@ export function buildView(graph: GraphModel, expanded: Set<string>): GraphView {
     kind: ViewEdgeKind,
     occurrences: EdgeEvidence[] = [],
     count = 0,
+    originalId?: string,
   ) => {
     if (source === target) return;
     const id = `${source}->${target}:${kind}`;
     const existing = byId.get(id);
     if (existing) {
       mergeEvidence(existing, { occurrences, count });
+      if (originalId) existing.originalEdgeIds.push(originalId);
       return;
     }
-    byId.set(id, { id, source, target, kind, occurrences: [...occurrences], count });
+    byId.set(id, {
+      id,
+      source,
+      target,
+      kind,
+      occurrences: [...occurrences],
+      count,
+      originalEdgeIds: originalId ? [originalId] : [],
+    });
   };
 
   for (const edge of graph.edges) {
     const s = repr(edge.source);
     const t = repr(edge.target);
     if (!s || !t) continue;
-    push(s, t, edge.kind, edge.occurrences, edge.count);
+    push(s, t, edge.kind, edge.occurrences, edge.count, edge.id);
   }
 
   // Containment edges for expanded files (structural, no evidence).

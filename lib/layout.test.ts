@@ -9,7 +9,15 @@ const view: GraphView = {
     { id: "b", kind: "file", label: "b", filePath: "b", line: 0, parentFile: "b" },
   ],
   edges: [
-    { id: "a->b:import", source: "a", target: "b", kind: "import", occurrences: [], count: 0 },
+    {
+      id: "a->b:import",
+      source: "a",
+      target: "b",
+      kind: "import",
+      occurrences: [],
+      count: 0,
+      originalEdgeIds: [],
+    },
   ],
 };
 
@@ -52,9 +60,33 @@ describe("layout algorithms", () => {
       parentFile: id,
     })),
     edges: [
-      { id: "a->b:import", source: "a", target: "b", kind: "import", occurrences: [], count: 0 },
-      { id: "a->c:import", source: "a", target: "c", kind: "import", occurrences: [], count: 0 },
-      { id: "b->d:import", source: "b", target: "d", kind: "import", occurrences: [], count: 0 },
+      {
+        id: "a->b:import",
+        source: "a",
+        target: "b",
+        kind: "import",
+        occurrences: [],
+        count: 0,
+        originalEdgeIds: [],
+      },
+      {
+        id: "a->c:import",
+        source: "a",
+        target: "c",
+        kind: "import",
+        occurrences: [],
+        count: 0,
+        originalEdgeIds: [],
+      },
+      {
+        id: "b->d:import",
+        source: "b",
+        target: "d",
+        kind: "import",
+        occurrences: [],
+        count: 0,
+        originalEdgeIds: [],
+      },
     ],
   };
 
