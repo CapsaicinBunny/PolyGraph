@@ -199,6 +199,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
     setError(null);
     setPendingConfirm(null);
     setPhase("scanning");
+    const t0 = performance.now();
     try {
       const res = await fetch(`${apiBase()}/scan`, {
         method: "POST",
@@ -211,6 +212,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         skipped?: number;
         oversize?: boolean;
       };
+      console.info(`[polygraph] /scan round-trip ${(performance.now() - t0).toFixed(0)}ms`);
       // Large scan — let the user confirm before we run the heavy analysis.
       if (res.ok && data.oversize) {
         setPhase("idle");
