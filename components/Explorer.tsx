@@ -19,6 +19,8 @@ import {
   DEFAULT_HIDDEN_LANGUAGES,
 } from "@/lib/graph/filters";
 import { FiltersPanel } from "./FiltersPanel";
+import type { SceneEdge } from "@/lib/graph/scene";
+import { EdgeDetailPanel } from "./EdgeDetailPanel";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 import { analyzeInsights } from "@/lib/graph/insights";
 import { ProblemsPanel } from "./ProblemsPanel";
@@ -62,6 +64,7 @@ export function Explorer() {
   const [enabledRuntimes, setEnabledRuntimes] = useState<Set<Runtime>>(() => new Set(ALL_RUNTIMES));
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<SceneEdge | null>(null);
   const [algorithm, setAlgorithm] = useState<LayoutAlgorithm>("layered");
   const [direction, setDirection] = useState<LayoutDirection>("LR");
   const [groupBy, setGroupBy] = useState<GroupBy>("directory");
@@ -117,6 +120,7 @@ export function Explorer() {
       setExpanded(new Set());
       setCollapsedClusters(new Set());
       setSelectedId(null);
+      setSelectedEdge(null);
       setSearch("");
       setEdgeRouting("curved");
       setCommunityCollapse(false);
@@ -129,6 +133,7 @@ export function Explorer() {
   const handleSelect = useCallback(
     (id: string) => {
       setSelectedId(id);
+      setSelectedEdge(null); // node and edge detail panels are mutually exclusive
       // Ensure the selected symbol's file is expanded so it becomes visible.
       const parent = parentOf.get(id);
       if (parent && parent !== id) {
@@ -137,6 +142,11 @@ export function Explorer() {
     },
     [parentOf],
   );
+
+  const handleSelectEdge = useCallback((edge: SceneEdge) => {
+    setSelectedEdge(edge);
+    setSelectedId(null);
+  }, []);
 
   const handleToggleExpand = useCallback((fileId: string) => {
     setExpanded((prev) => {
@@ -377,6 +387,7 @@ export function Explorer() {
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
             onToggleCollapse={handleToggleCollapse}
+            onSelectEdge={handleSelectEdge}
           />
         </Box>
         {filtersOpen && (
@@ -415,6 +426,14 @@ export function Explorer() {
             onSelect={handleSelect}
             onFocus={setFocusedIds}
             onClose={() => setSelectedId(null)}
+          />
+        )}
+        {selectedEdge && !selectedId && (
+          <EdgeDetailPanel
+            graph={graph}
+            edge={selectedEdge}
+            onSelect={handleSelect}
+            onClose={() => setSelectedEdge(null)}
           />
         )}
       </Flex>

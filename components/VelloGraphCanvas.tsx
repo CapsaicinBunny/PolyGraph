@@ -5,7 +5,7 @@ import { Box } from "@chakra-ui/react";
 import { useTheme } from "next-themes";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import { clusterIdOfAggregate, isAggregateId } from "@/lib/graph/collapse";
-import type { SceneFilters } from "@/lib/graph/scene";
+import type { SceneEdge, SceneFilters } from "@/lib/graph/scene";
 import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
 import type { GroupBy, LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import { frameBoxes } from "@/lib/graph/frame";
@@ -36,6 +36,7 @@ export interface GraphViewProps {
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
+  onSelectEdge: (edge: SceneEdge) => void;
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -82,6 +83,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     onSelect,
     onToggleExpand,
     onToggleCollapse,
+    onSelectEdge,
   } = props;
 
   const filters: SceneFilters = useMemo(
@@ -127,8 +129,10 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const cam = useRef({ x: 0, y: 0, scale: 1 });
   const dpr = useRef(1);
   const isFile = useRef(new Map<string, boolean>());
-  const handlers = useRef({ onSelect, onToggleExpand, onToggleCollapse });
-  handlers.current = { onSelect, onToggleExpand, onToggleCollapse };
+  const edgesById = useRef(new Map<string, SceneEdge>());
+  edgesById.current = new Map(scene.edges.map((e) => [e.id, e]));
+  const handlers = useRef({ onSelect, onToggleExpand, onToggleCollapse, onSelectEdge });
+  handlers.current = { onSelect, onToggleExpand, onToggleCollapse, onSelectEdge };
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -160,7 +164,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         const a = center.get(e.source);
         const b = center.get(e.target);
         if (!a || !b) return null;
-        return { x1: a[0], y1: a[1], x2: b[0], y2: b[1], color: hexToRgb(e.color) };
+        return { id: e.id, x1: a[0], y1: a[1], x2: b[0], y2: b[1], color: hexToRgb(e.color) };
       })
       .filter(Boolean);
     const clusters = scene.clusters.map((c) => ({
@@ -263,6 +267,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       if (id) {
         if (id.startsWith("cluster:")) {
           handlers.current.onToggleCollapse(id.slice("cluster:".length)); // collapse a directory
+        } else if (id.startsWith("edge:")) {
+          const edge = edgesById.current.get(id.slice("edge:".length));
+          if (edge) handlers.current.onSelectEdge(edge);
         } else if (isAggregateId(id)) {
           handlers.current.onToggleCollapse(clusterIdOfAggregate(id)); // expand an aggregate card
         } else {
