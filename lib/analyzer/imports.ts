@@ -1,33 +1,33 @@
 import { Node, type Project, type SourceFile, SyntaxKind } from "ts-morph";
-import { edgeId, fileNodeId, type GraphEdge } from "../graph/types";
+import { fileNodeId, type GraphEdge } from "../graph/types";
+import { EdgeBuilder } from "./edge-accumulator";
+import { nodeEvidence } from "./evidence";
 import { toRelativePath } from "./project";
 
 function pushImport(
-  edges: GraphEdge[],
-  seen: Set<string>,
+  builder: EdgeBuilder,
   fromFile: string,
   target: SourceFile | undefined,
+  at: Node,
 ): void {
   if (!target) return; // module is outside the uploaded set
   const source = fileNodeId(fromFile);
   const dest = fileNodeId(toRelativePath(target.getFilePath()));
   if (source === dest) return;
-  const id = edgeId(source, dest, "import");
-  if (seen.has(id)) return;
-  seen.add(id);
-  edges.push({ id, source, target: dest, kind: "import", occurrences: [], count: 0 });
+  // Resolved to a project file via the type system → exact.
+  builder.add(source, dest, "import", nodeEvidence(at, "exact"));
 }
 
-function collectFromFile(file: SourceFile, edges: GraphEdge[], seen: Set<string>): void {
+function collectFromFile(file: SourceFile, builder: EdgeBuilder): void {
   const fromFile = toRelativePath(file.getFilePath());
 
   for (const decl of file.getImportDeclarations()) {
-    pushImport(edges, seen, fromFile, decl.getModuleSpecifierSourceFile());
+    pushImport(builder, fromFile, decl.getModuleSpecifierSourceFile(), decl);
   }
 
   // Re-exports: `export { x } from "./y"` / `export * from "./y"`
   for (const decl of file.getExportDeclarations()) {
-    pushImport(edges, seen, fromFile, decl.getModuleSpecifierSourceFile());
+    pushImport(builder, fromFile, decl.getModuleSpecifierSourceFile(), decl);
   }
 
   // Dynamic import() and require()
@@ -43,16 +43,15 @@ function collectFromFile(file: SourceFile, edges: GraphEdge[], seen: Set<string>
       const rel = toRelativePath(sf.getFilePath());
       return rel.includes(arg.getLiteralValue().replace(/^\.\//, ""));
     });
-    pushImport(edges, seen, fromFile, resolved);
+    pushImport(builder, fromFile, resolved, call);
   }
 }
 
 /** Build module-level import edges between files. */
 export function analyzeImports(project: Project): GraphEdge[] {
-  const edges: GraphEdge[] = [];
-  const seen = new Set<string>();
+  const builder = new EdgeBuilder();
   for (const file of project.getSourceFiles()) {
-    collectFromFile(file, edges, seen);
+    collectFromFile(file, builder);
   }
-  return edges;
+  return builder.build();
 }
