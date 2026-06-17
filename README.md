@@ -105,7 +105,7 @@ Optionally verify your download against the release's `SHA256SUMS-<os>.txt`.
 
 ## Smart layout
 
-The default **Smart** layout (`semanticMultilevel`) goes beyond a single global graph:
+The **Smart** layout (`semanticMultilevel`) goes beyond a single global graph:
 
 - **Nested package containers** — visible group boxes by directory, package, or detected community.
 - **Adaptive per-cluster layout** — each cluster is laid out with the engine that fits its shape.
@@ -113,9 +113,9 @@ The default **Smart** layout (`semanticMultilevel`) goes beyond a single global 
   graphs legible; aggregated edges keep their counts.
 - **Edge routing & bundling** — optional orthogonal routing and community collapse (Settings pane).
 
-Classic engines are still available: **Layered** and **Tree** (dagre; top-down / left-right /
-bottom-up / right-left), plus **Radial**, **Circular**, **Grid**, and **Force-directed** (d3-force).
-The view auto-fits on change.
+Pick a layout from the toolbar: **Layered** (the current default) and **Tree** (dagre; top-down /
+left-right / bottom-up / right-left), **Smart**, **Radial**, **Circular**, **Grid**, and
+**Force-directed** (d3-force). The view auto-fits on change.
 
 ## Impact analysis
 
