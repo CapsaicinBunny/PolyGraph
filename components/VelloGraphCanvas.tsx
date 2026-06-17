@@ -31,6 +31,7 @@ export interface GraphViewProps {
   enabledLanguages: Set<string>;
   collapsedClusters: Set<string>;
   communityCollapse: boolean;
+  edgeRouting: "curved" | "orthogonal";
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
@@ -75,6 +76,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     enabledLanguages,
     collapsedClusters,
     communityCollapse,
+    edgeRouting,
     onSelect,
     onToggleExpand,
     onToggleCollapse,
@@ -167,8 +169,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       depth: c.depth,
       label: c.label,
     }));
-    return JSON.stringify({ nodes, edges, clusters });
-  }, [scene]);
+    return JSON.stringify({ nodes, edges, clusters, routing: edgeRouting });
+  }, [scene, edgeRouting]);
 
   // One-time Vello/WebGPU setup + camera interaction.
   useEffect(() => {
