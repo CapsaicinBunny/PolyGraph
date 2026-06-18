@@ -100,7 +100,7 @@ export function Explorer() {
   const [projectPath, setProjectPath] = useState("");
   // Adaptive level-of-detail (LOD): recompute the collapsed cut as the camera
   // zooms so a huge repo stays drawable. Off by default — see docs/SCALE-100K.md.
-  const [adaptiveLod, setAdaptiveLod] = useState(false);
+  const [adaptiveLod, setAdaptiveLod] = useState(true);
 
   const baseGraph = result?.graph ?? null;
 
@@ -539,9 +539,6 @@ export function Explorer() {
 
       <Flex flex="1" minH="0">
         <Sidebar
-          level={level}
-          onLevel={handleLevel}
-          packageCount={manifests.length}
           search={search}
           onSearch={setSearch}
           queryMode={queryMode}
@@ -571,8 +568,6 @@ export function Explorer() {
           onDirection={setDirection}
           groupBy={groupBy}
           onGroupBy={setGroupBy}
-          density={density}
-          onDensity={setDensity}
         />
         <Box flex="1" minW="0" position="relative">
           <VelloGraphCanvas
@@ -623,6 +618,13 @@ export function Explorer() {
         )}
         {settingsOpen && (
           <SettingsPanel
+            level={level}
+            onLevel={handleLevel}
+            packageCount={manifests.length}
+            density={density}
+            onDensity={setDensity}
+            adaptiveLod={adaptiveLod}
+            onAdaptiveLod={setAdaptiveLod}
             edgeRouting={edgeRouting}
             onEdgeRouting={setEdgeRouting}
             communityCollapse={communityCollapse}

@@ -1,8 +1,30 @@
 "use client";
 
 import { Box, Button, Flex, HStack, Stack, Text, chakra } from "@chakra-ui/react";
+import { type Level, LEVELS } from "@/lib/graph/levels/types";
+
+const LEVEL_LABEL: Record<Level, string> = {
+  workspace: "Workspace",
+  package: "Package",
+  directory: "Directory",
+  file: "File",
+  symbol: "Symbol",
+};
+
+const DENSITIES: { value: number; label: string }[] = [
+  { value: 1.6, label: "Sparse" },
+  { value: 1.0, label: "Normal" },
+  { value: 0.6, label: "Dense" },
+];
 
 interface SettingsPanelProps {
+  level: Level;
+  onLevel: (v: Level) => void;
+  packageCount: number;
+  density: number;
+  onDensity: (v: number) => void;
+  adaptiveLod: boolean;
+  onAdaptiveLod: (v: boolean) => void;
   edgeRouting: "curved" | "orthogonal";
   onEdgeRouting: (v: "curved" | "orthogonal") => void;
   communityCollapse: boolean;
@@ -25,7 +47,81 @@ function GroupLabel({ title }: { title: string }) {
   );
 }
 
+function Choice({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Button
+      size="sm"
+      aria-pressed={active}
+      variant={active ? "subtle" : "ghost"}
+      colorPalette={active ? "blue" : "gray"}
+      onClick={onClick}
+    >
+      {children}
+    </Button>
+  );
+}
+
+function CheckRow({
+  checked,
+  onClick,
+  label,
+}: {
+  checked: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <chakra.button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      onClick={onClick}
+      display="flex"
+      alignItems="center"
+      gap="2"
+      w="full"
+      textAlign="left"
+    >
+      <Box
+        w="16px"
+        h="16px"
+        rounded="sm"
+        flexShrink="0"
+        borderWidth="1px"
+        borderColor={checked ? "blue.solid" : "border.emphasized"}
+        bg={checked ? "blue.solid" : "transparent"}
+        color="white"
+        display="flex"
+        alignItems="center"
+        justifyContent="center"
+        fontSize="11px"
+        lineHeight="1"
+      >
+        {checked ? "✓" : ""}
+      </Box>
+      <Text fontSize="sm" color="fg">
+        {label}
+      </Text>
+    </chakra.button>
+  );
+}
+
 export function SettingsPanel({
+  level,
+  onLevel,
+  packageCount,
+  density,
+  onDensity,
+  adaptiveLod,
+  onAdaptiveLod,
   edgeRouting,
   onEdgeRouting,
   communityCollapse,
@@ -61,40 +157,65 @@ export function SettingsPanel({
       </Flex>
 
       <Box>
+        <GroupLabel title="Adaptive LOD" />
+        <CheckRow
+          checked={adaptiveLod}
+          onClick={() => onAdaptiveLod(!adaptiveLod)}
+          label="Camera-driven level of detail"
+        />
+        <Text fontSize="xs" color="fg.muted" mt="2">
+          Collapses off-screen and distant directories as you zoom — keeps huge graphs fast. On by
+          default.
+        </Text>
+      </Box>
+
+      <Box>
+        <GroupLabel title="Abstraction level" />
+        <Flex gap="2" wrap="wrap">
+          {LEVELS.map((lv) => (
+            <Choice key={lv} active={level === lv} onClick={() => onLevel(lv)}>
+              {LEVEL_LABEL[lv]}
+            </Choice>
+          ))}
+        </Flex>
+        {(level === "package" || level === "workspace") && (
+          <Text fontSize="xs" color="fg.muted" mt="2">
+            {packageCount} package{packageCount === 1 ? "" : "s"} detected from manifests.
+          </Text>
+        )}
+      </Box>
+
+      <Box>
+        <GroupLabel title="Density" />
+        <HStack gap="2">
+          {DENSITIES.map((d) => (
+            <Choice key={d.label} active={density === d.value} onClick={() => onDensity(d.value)}>
+              {d.label}
+            </Choice>
+          ))}
+        </HStack>
+        <Text fontSize="xs" color="fg.muted" mt="2">
+          Node spacing for the Smart layout.
+        </Text>
+      </Box>
+
+      <Box>
         <GroupLabel title="Edge routing" />
         <HStack gap="2">
-          <Button
-            size="sm"
-            aria-pressed={edgeRouting === "curved"}
-            variant={edgeRouting === "curved" ? "subtle" : "ghost"}
-            colorPalette={edgeRouting === "curved" ? "blue" : "gray"}
-            onClick={() => onEdgeRouting("curved")}
-          >
+          <Choice active={edgeRouting === "curved"} onClick={() => onEdgeRouting("curved")}>
             Curved
-          </Button>
-          <Button
-            size="sm"
-            aria-pressed={edgeRouting === "orthogonal"}
-            variant={edgeRouting === "orthogonal" ? "subtle" : "ghost"}
-            colorPalette={edgeRouting === "orthogonal" ? "blue" : "gray"}
-            onClick={() => onEdgeRouting("orthogonal")}
-          >
+          </Choice>
+          <Choice active={edgeRouting === "orthogonal"} onClick={() => onEdgeRouting("orthogonal")}>
             Orthogonal
-          </Button>
+          </Choice>
         </HStack>
       </Box>
 
       <Box>
         <GroupLabel title="Collapse community groups" />
-        <Button
-          size="sm"
-          aria-pressed={communityCollapse}
-          variant={communityCollapse ? "subtle" : "ghost"}
-          colorPalette={communityCollapse ? "blue" : "gray"}
-          onClick={() => onCommunityCollapse(!communityCollapse)}
-        >
+        <Choice active={communityCollapse} onClick={() => onCommunityCollapse(!communityCollapse)}>
           {communityCollapse ? "On" : "Off"}
-        </Button>
+        </Choice>
         <Text fontSize="xs" color="fg.muted" mt="2">
           Folds every detected community into one card. Smart layout, Community grouping only.
         </Text>
