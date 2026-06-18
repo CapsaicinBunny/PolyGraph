@@ -45,6 +45,8 @@ interface SettingsPanelProps {
   onDensity: (v: number) => void;
   adaptiveLod: boolean;
   onAdaptiveLod: (v: boolean) => void;
+  minimap: boolean;
+  onMinimap: (v: boolean) => void;
   edgeRouting: "curved" | "orthogonal";
   onEdgeRouting: (v: "curved" | "orthogonal") => void;
   communityCollapse: boolean;
@@ -144,6 +146,8 @@ export function SettingsPanel({
   onDensity,
   adaptiveLod,
   onAdaptiveLod,
+  minimap,
+  onMinimap,
   edgeRouting,
   onEdgeRouting,
   communityCollapse,
@@ -190,6 +194,19 @@ export function SettingsPanel({
         />
         <Text fontSize="xs" color="fg.muted" mt="2">
           Collapses off-screen and distant directories as you zoom — keeps huge graphs fast. On by
+          default.
+        </Text>
+      </Box>
+
+      <Box>
+        <GroupLabel title="Minimap" />
+        <CheckRow
+          checked={minimap}
+          onClick={() => onMinimap(!minimap)}
+          label="Show navigation minimap"
+        />
+        <Text fontSize="xs" color="fg.muted" mt="2">
+          A graph-extent overview with the current viewport; click or drag it to recenter. On by
           default.
         </Text>
       </Box>

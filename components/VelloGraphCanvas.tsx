@@ -12,6 +12,12 @@ import { frameBoxes } from "@/lib/graph/frame";
 import { buildDirTree, type DirNode } from "@/lib/graph/hierarchy";
 import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
 import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
+import {
+  centerCameraOn,
+  contentBounds,
+  fitProjection,
+  viewportWorldRect,
+} from "@/lib/graph/minimap";
 import { telemetry } from "@/lib/telemetry";
 import { LayoutOverlay } from "./LayoutOverlay";
 import { useScene } from "./useScene";
@@ -58,6 +64,8 @@ export interface GraphViewProps {
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
   onSelectEdge: (edge: SceneEdge) => void;
+  /** Show the navigation minimap overlay (graph extent + viewport rect). */
+  minimap?: boolean;
   /** Adaptive level-of-detail: recompute the collapsed cut as the camera zooms. */
   adaptiveLod?: boolean;
   /** Called with a new collapsed-directory set when the adaptive cut changes. */
@@ -154,6 +162,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     onToggleExpand,
     onToggleCollapse,
     onSelectEdge,
+    minimap = true,
     adaptiveLod,
     onCut,
     fitSignature,
@@ -201,6 +210,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const vcRef = useRef<VelloHandle | null>(null);
+  const minimapRef = useRef<HTMLCanvasElement>(null);
+  // Synced to the prop each render so the mount-once effect's draw loop reads the
+  // live value (the canvas stays mounted and is CSS-toggled).
+  const minimapOn = useRef(minimap);
+  minimapOn.current = minimap;
+  // The effect owns the minimap draw fn; expose it so a scene change can redraw the
+  // minimap (camera changes already redraw it via renderSoon).
+  const drawMinimapRef = useRef<(() => void) | null>(null);
   const cam = useRef({ x: 0, y: 0, scale: 1 });
   // Smallest zoom the wheel allows; tracks fit() so a graph too big to fit above the
   // normal floor (e.g. the fully-expanded symbol level) can still be zoomed all the way out.
@@ -293,11 +310,82 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     let destroyed = false;
     let raf = 0;
 
+    // Minimap: graph extent (downsampled dots) + the current viewport rectangle,
+    // drawn on a small 2D-canvas overlay. CSS pixels; scaled by dpr.
+    const MM_W = 200;
+    const MM_H = 140;
+    const MM_PAD = 6;
+    const drawMinimap = () => {
+      const mc = minimapRef.current;
+      if (!mc || !minimapOn.current) return;
+      const ratio = dpr.current;
+      const w = Math.round(MM_W * ratio);
+      const h = Math.round(MM_H * ratio);
+      if (mc.width !== w || mc.height !== h) {
+        mc.width = w;
+        mc.height = h;
+      }
+      const ctx = mc.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, w, h);
+      const sc = lod.current.scene;
+      const bounds = contentBounds(sc);
+      if (!bounds) return;
+      const proj = fitProjection(bounds, w, h, MM_PAD * ratio);
+      // Downsampled node dots (cap the work regardless of scene size).
+      const nodes = sc.nodes;
+      const step = Math.max(1, Math.floor(nodes.length / 2500));
+      const d = Math.max(1, ratio);
+      ctx.fillStyle = "rgba(120,134,156,0.6)";
+      for (let i = 0; i < nodes.length; i += step) {
+        const n = nodes[i]!;
+        const p = proj.toMap(n.x + n.width / 2, n.y + n.height / 2);
+        ctx.fillRect(p.x, p.y, d, d);
+      }
+      // Current viewport rectangle (clamped to the map for legibility).
+      const main = canvasRef.current;
+      const vp = viewportWorldRect(cam.current, main?.width ?? 1, main?.height ?? 1);
+      const tl = proj.toMap(vp.minX, vp.minY);
+      const br = proj.toMap(vp.maxX, vp.maxY);
+      const rx = Math.max(0, tl.x);
+      const ry = Math.max(0, tl.y);
+      const rw = Math.min(w, br.x) - rx;
+      const rh = Math.min(h, br.y) - ry;
+      ctx.strokeStyle = "rgba(59,130,246,0.95)";
+      ctx.lineWidth = Math.max(1, ratio);
+      ctx.strokeRect(rx + 0.5, ry + 0.5, Math.max(0, rw - 1), Math.max(0, rh - 1));
+    };
+    drawMinimapRef.current = drawMinimap;
+
+    // Recenter the camera on the world point under a minimap click/drag.
+    const recenterFromMinimap = (clientX: number, clientY: number) => {
+      const mc = minimapRef.current;
+      const bounds = contentBounds(lod.current.scene);
+      if (!mc || !bounds) return;
+      const rect = mc.getBoundingClientRect();
+      const mx = (clientX - rect.left) * dpr.current;
+      const my = (clientY - rect.top) * dpr.current;
+      const proj = fitProjection(bounds, mc.width, mc.height, MM_PAD * dpr.current);
+      const world = proj.toWorld(mx, my);
+      const main = canvasRef.current;
+      const ncam = centerCameraOn(
+        world.x,
+        world.y,
+        cam.current.scale,
+        main?.width ?? 1,
+        main?.height ?? 1,
+      );
+      cam.current = ncam;
+      vcRef.current?.set_camera(ncam.x, ncam.y, ncam.scale);
+      renderSoon();
+    };
+
     const renderSoon = () => {
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
         vcRef.current?.render();
+        drawMinimap();
       });
     };
 
@@ -470,6 +558,32 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       }
     };
 
+    // Minimap navigation: click or drag to recenter the camera on that part of the
+    // graph — the fix for losing the graph when zoomed out / panned out of bounds.
+    let mmDragging = false;
+    const onMmDown = (e: PointerEvent) => {
+      if (!minimapOn.current) return;
+      e.stopPropagation();
+      mmDragging = true;
+      minimapRef.current?.setPointerCapture(e.pointerId);
+      recenterFromMinimap(e.clientX, e.clientY);
+    };
+    const onMmMove = (e: PointerEvent) => {
+      if (mmDragging) recenterFromMinimap(e.clientX, e.clientY);
+    };
+    const onMmUp = (e: PointerEvent) => {
+      mmDragging = false;
+      try {
+        minimapRef.current?.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+    };
+    const mm = minimapRef.current;
+    mm?.addEventListener("pointerdown", onMmDown);
+    mm?.addEventListener("pointermove", onMmMove);
+    mm?.addEventListener("pointerup", onMmUp);
+
     const ro = new ResizeObserver(() => {
       if (!vcRef.current) return;
       sizeCanvas();
@@ -515,6 +629,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       el.removeEventListener("pointerdown", onDown);
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
+      mm?.removeEventListener("pointerdown", onMmDown);
+      mm?.removeEventListener("pointermove", onMmMove);
+      mm?.removeEventListener("pointerup", onMmUp);
       vcRef.current?.free?.();
       vcRef.current = null;
     };
@@ -624,9 +741,33 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     vc.render();
   }, [ready, resolvedTheme]);
 
+  // Redraw the minimap when the scene (extent) or toggle changes — camera moves
+  // already redraw it via renderSoon.
+  useEffect(() => {
+    drawMinimapRef.current?.();
+  }, [scene, minimap, ready]);
+
   return (
     <Box position="absolute" inset="0" ref={containerRef} overflow="hidden">
       <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+      <canvas
+        ref={minimapRef}
+        aria-label="Minimap"
+        style={{
+          position: "absolute",
+          right: 12,
+          bottom: 12,
+          width: 200,
+          height: 140,
+          display: minimap ? "block" : "none",
+          borderRadius: 8,
+          border: "1px solid var(--chakra-colors-border)",
+          background: "var(--chakra-colors-bg-panel)",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+          cursor: "crosshair",
+          touchAction: "none",
+        }}
+      />
       {layingOut && <LayoutOverlay />}
       {error && (
         <Box

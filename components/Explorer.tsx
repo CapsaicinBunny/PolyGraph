@@ -103,6 +103,9 @@ export function Explorer() {
   // Adaptive level-of-detail (LOD): recompute the collapsed cut as the camera
   // zooms so a huge repo stays drawable. Off by default — see docs/SCALE-100K.md.
   const [adaptiveLod, setAdaptiveLod] = useState(true);
+  // Navigation minimap overlay (graph extent + viewport rect). Default on; toggle
+  // in Settings. Helps re-find the graph when zoomed out / panned out of bounds.
+  const [minimap, setMinimap] = useState(true);
   // Analytics & logging (telemetry) — mirrors the bus's persisted enabled flag so the
   // Settings toggle reflects and controls it. Default on; persisted to localStorage.
   const [telemetryOn, setTelemetryOn] = useState(telemetry.isEnabled());
@@ -642,6 +645,7 @@ export function Explorer() {
             onToggleExpand={handleToggleExpand}
             onToggleCollapse={handleToggleCollapse}
             onSelectEdge={handleSelectEdge}
+            minimap={minimap}
             adaptiveLod={adaptiveLod}
             onCut={setCollapsedClusters}
             fitSignature={fitSignature}
@@ -669,6 +673,8 @@ export function Explorer() {
             onDensity={setDensity}
             adaptiveLod={adaptiveLod}
             onAdaptiveLod={setAdaptiveLod}
+            minimap={minimap}
+            onMinimap={setMinimap}
             edgeRouting={edgeRouting}
             onEdgeRouting={setEdgeRouting}
             communityCollapse={communityCollapse}
