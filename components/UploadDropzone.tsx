@@ -234,28 +234,33 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
           throw new Error(TOO_LARGE_MESSAGE);
         }
         const roundTripMs = performance.now() - t0;
-        // The analysis engine's own read/analyze timings ride in the NDJSON meta;
-        // pair them with the client round-trip (which also covers streaming + parse).
-        telemetry.event("analysis", "scan", {
-          path: trimmed,
-          fileCount: data.fileCount || data.graph.nodes.length,
-          nodes: data.graph.nodes.length,
-          edges: data.graph.edges.length,
-          packages: data.manifests.length,
-          parseWarnings: data.errors.length,
-          unresolved: data.unresolved.length,
-          skipped: data.skipped,
-          scanMs: data.timings?.scanMs,
-          analyzeMs: data.timings?.analyzeMs,
-          roundTripMs,
-        });
-        if (data.timings) {
-          telemetry.metric("analysis.scanMs", data.timings.scanMs);
-          telemetry.metric("analysis.analyzeMs", data.timings.analyzeMs);
+        // Telemetry is best-effort and must never break the result flow below.
+        try {
+          // The analysis engine's own read/analyze timings ride in the NDJSON meta;
+          // pair them with the client round-trip (also covers streaming + parse).
+          telemetry.event("analysis", "scan", {
+            path: trimmed,
+            fileCount: data.fileCount || data.graph.nodes.length,
+            nodes: data.graph.nodes.length,
+            edges: data.graph.edges.length,
+            packages: data.manifests.length,
+            parseWarnings: data.errors.length,
+            unresolved: data.unresolved.length,
+            skipped: data.skipped,
+            scanMs: data.timings?.scanMs,
+            analyzeMs: data.timings?.analyzeMs,
+            roundTripMs,
+          });
+          if (data.timings) {
+            telemetry.metric("analysis.scanMs", data.timings.scanMs);
+            telemetry.metric("analysis.analyzeMs", data.timings.analyzeMs);
+          }
+          telemetry.metric("analysis.nodes", data.graph.nodes.length);
+          telemetry.metric("analysis.edges", data.graph.edges.length);
+          telemetry.metric("analysis.roundTripMs", roundTripMs);
+        } catch {
+          /* never break the result flow */
         }
-        telemetry.metric("analysis.nodes", data.graph.nodes.length);
-        telemetry.metric("analysis.edges", data.graph.edges.length);
-        telemetry.metric("analysis.roundTripMs", roundTripMs);
         onResult(
           { graph: data.graph, errors: data.errors, unresolved: data.unresolved },
           { fileCount: data.fileCount || data.graph.nodes.length, skipped: data.skipped },
@@ -273,12 +278,16 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         fileCount?: number;
         oversize?: boolean;
       };
-      telemetry.event("analysis", "scan-reply", {
-        path: trimmed,
-        roundTripMs: performance.now() - t0,
-        oversize: !!data.oversize,
-        fileCount: data.fileCount,
-      });
+      try {
+        telemetry.event("analysis", "scan-reply", {
+          path: trimmed,
+          roundTripMs: performance.now() - t0,
+          oversize: !!data.oversize,
+          fileCount: data.fileCount,
+        });
+      } catch {
+        /* never break the result flow */
+      }
       if (res.ok && data.oversize) {
         setPhase("idle");
         setPendingConfirm({ path: trimmed, fileCount: data.fileCount ?? 0 });
@@ -324,16 +333,20 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         throw new Error(body.error ?? `Analysis failed (${res.status})`);
       }
       const result = (await res.json()) as AnalyzeResult & { manifests?: PackageManifest[] };
-      telemetry.event("analysis", "analyze", {
-        fileCount: count,
-        nodes: result.graph.nodes.length,
-        edges: result.graph.edges.length,
-        packages: result.manifests?.length ?? 0,
-        parseWarnings: result.errors.length,
-        roundTripMs: performance.now() - t0,
-      });
-      telemetry.metric("analysis.nodes", result.graph.nodes.length);
-      telemetry.metric("analysis.edges", result.graph.edges.length);
+      try {
+        telemetry.event("analysis", "analyze", {
+          fileCount: count,
+          nodes: result.graph.nodes.length,
+          edges: result.graph.edges.length,
+          packages: result.manifests?.length ?? 0,
+          parseWarnings: result.errors.length,
+          roundTripMs: performance.now() - t0,
+        });
+        telemetry.metric("analysis.nodes", result.graph.nodes.length);
+        telemetry.metric("analysis.edges", result.graph.edges.length);
+      } catch {
+        /* never break the result flow */
+      }
       onResult(result, { fileCount: count, skipped }, result.manifests ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed");

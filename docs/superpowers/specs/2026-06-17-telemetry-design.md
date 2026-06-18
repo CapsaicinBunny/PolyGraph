@@ -32,7 +32,8 @@ HUD). Default **on**; disabling makes every hook a zero-cost no-op.
 where `trace` is the per-directory decision list:
 `{ path, depth, onScreen, screenHeightPx, thresholdPx, decision, reason }`
 (`decision = "open" | "collapse"`, `reason = "off-screen" | "too-small" |
-"budget" | "opened"`). `computeCut` stays the zero-overhead hot path; the traced
+"no-content" | "budget" | "opened"`). `computeCut` stays the zero-overhead hot
+path; the traced
 variant runs only when telemetry is enabled.
 
 `VelloGraphCanvas` LOD recompute logs, per cut:
@@ -46,8 +47,8 @@ cut), plus the full `trace`, plus `metric("lod.computeMs")`,
 - JS: per-frame ms + FPS (animate loop), `set_data` payload **bytes** + node/edge
   counts, fit/pan/zoom events.
 - Rust (`vello-renderer`): a `RenderStats` accumulated in `render()` — nodes
-  total/drawn/culled, edges total/encoded (after the stride cap), clusters drawn,
-  encode ms — exposed via a `stats() -> String` (JSON) method. JS reads it after
+  total/drawn/culled, edges total/encoded (after the stride cap), clusters
+  total/drawn — exposed via a `stats() -> String` (JSON) method. JS reads it after
   each `render()` and logs `("render","frame", {fps, frameMs, payloadBytes,
   …stats})`. **One wasm rebuild.**
 

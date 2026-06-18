@@ -308,7 +308,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     const animate = () => {
       animRaf = requestAnimationFrame(animate);
       const vc = vcRef.current;
-      if (!vc || cam.current.scale < ANIM_MIN_SCALE) return;
+      if (!vc || cam.current.scale < ANIM_MIN_SCALE) {
+        // Paused (zoomed out, or no canvas): drop the frame clock so the next resumed
+        // frame doesn't bill the whole pause gap as one giant frameMs / skewed FPS.
+        lastFrame = 0;
+        fpsSince = 0;
+        fpsFrames = 0;
+        return;
+      }
       phase = (phase + 0.6) % 12;
       vc.set_phase(-phase);
       vc.render();

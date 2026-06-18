@@ -121,6 +121,24 @@ describe("computeCutTraced", () => {
     expect(traced.dirsEvaluated).toBe(traced.trace.length);
     expect(traced.dirsOnScreen).toBeLessThanOrEqual(traced.dirsEvaluated);
   });
+
+  test("traces the lowered hysteresis threshold for an already-open dir", () => {
+    const prev = computeCut(root, boxes, { x: 0, y: 0, scale: 1 }, vp, base); // a/x open here
+    // a/x box is 500 tall → 200px at scale 0.4. Already-open → threshold drops to
+    // 220*0.8 = 176 ≤ 200, so it stays open; the trace must report that 176.
+    const sticky = computeCutTraced(root, boxes, { x: 0, y: 0, scale: 0.4 }, vp, {
+      ...base,
+      prevCut: prev,
+    });
+    const ax = sticky.trace.find((e) => e.path === "a/x");
+    expect(ax).toMatchObject({ decision: "open", reason: "opened" });
+    expect(ax!.thresholdPx).toBe(176);
+    // Without prevCut the same camera collapses a/x at the full 220 threshold.
+    const fresh = computeCutTraced(root, boxes, { x: 0, y: 0, scale: 0.4 }, vp, base);
+    const axFresh = fresh.trace.find((e) => e.path === "a/x");
+    expect(axFresh).toMatchObject({ decision: "collapse", reason: "too-small" });
+    expect(axFresh!.thresholdPx).toBe(220);
+  });
 });
 
 describe("cutEquals", () => {

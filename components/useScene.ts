@@ -122,7 +122,14 @@ export function useScene(
         setLayingOut(false);
       })
       .catch((err) => {
-        telemetry.event("layout", "error", { message: String(err) }, "error");
+        // Tag superseded rejections so a stale layout that errors after a newer one
+        // started isn't read as a real failure in the log.
+        telemetry.event(
+          "layout",
+          "error",
+          { message: String(err), superseded: myReq !== reqId.current },
+          "error",
+        );
         if (myReq === reqId.current) setLayingOut(false);
       });
   }, [structure]);

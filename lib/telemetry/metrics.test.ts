@@ -38,6 +38,28 @@ describe("Histogram", () => {
     expect(h.summary().min).toBe(3);
     expect(h.summary().max).toBe(5);
   });
+
+  test("percentiles stay correct after the ring wraps (order-independent)", () => {
+    // Descending input so the kept window {5,4,3,2,1} is stored ring-rotated, not sorted.
+    const h = new Histogram(5);
+    for (const v of [9, 8, 7, 6, 5, 4, 3, 2, 1]) h.record(v);
+    expect(h.count).toBe(5);
+    expect(h.total).toBe(9);
+    const s = h.summary();
+    expect(s.min).toBe(1);
+    expect(s.max).toBe(5);
+    expect(s.p50).toBe(3); // nearest-rank of {1,2,3,4,5}
+    expect(h.percentile(1)).toBe(5);
+  });
+
+  test("single-sample and small-N percentiles clamp instead of over-indexing", () => {
+    const one = new Histogram();
+    one.record(42);
+    expect(one.summary()).toMatchObject({ count: 1, p50: 42, p95: 42, p99: 42 });
+    const few = new Histogram();
+    for (const v of [10, 20, 30]) few.record(v);
+    expect(few.summary()).toMatchObject({ p50: 20, p95: 30, p99: 30 });
+  });
 });
 
 describe("Metrics", () => {

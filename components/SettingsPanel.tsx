@@ -6,16 +6,21 @@ import { type Level, LEVELS } from "@/lib/graph/levels/types";
 import { telemetry } from "@/lib/telemetry";
 
 // Save the buffered telemetry as an NDJSON file — the downloadable "session log".
+// Best-effort: a blocked blob URL / OOM must not throw out of the click handler.
 function downloadSessionLog() {
-  const blob = new Blob([telemetry.toNDJSON()], { type: "application/x-ndjson" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `polygraph-session-${new Date().toISOString().replace(/[:.]/g, "-")}.ndjson`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  try {
+    const blob = new Blob([telemetry.toNDJSON()], { type: "application/x-ndjson" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `polygraph-session-${new Date().toISOString().replace(/[:.]/g, "-")}.ndjson`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error("[polygraph] couldn't generate the session log", err);
+  }
 }
 
 const LEVEL_LABEL: Record<Level, string> = {

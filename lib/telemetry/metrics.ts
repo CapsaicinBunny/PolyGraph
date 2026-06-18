@@ -14,6 +14,12 @@ export interface HistogramSummary {
   p99: number;
 }
 
+/** Nearest-rank pick from an already-sorted ascending (non-empty) array. */
+function rankOf(sorted: number[], p: number): number {
+  const rank = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1));
+  return sorted[rank];
+}
+
 /** A rolling histogram over the last `window` samples. */
 export class Histogram {
   private samples: number[] = [];
@@ -46,9 +52,10 @@ export class Histogram {
   percentile(p: number): number {
     const n = this.samples.length;
     if (n === 0) return NaN;
-    const sorted = [...this.samples].sort((a, b) => a - b);
-    const rank = Math.min(n - 1, Math.max(0, Math.ceil(p * n) - 1));
-    return sorted[rank];
+    return rankOf(
+      [...this.samples].sort((a, b) => a - b),
+      p,
+    );
   }
 
   summary(): HistogramSummary {
@@ -56,23 +63,20 @@ export class Histogram {
     if (n === 0) {
       return { count: 0, total: 0, mean: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 };
     }
+    // Sort once; min/max are the ends and every percentile indexes the same array,
+    // so the summary is internally consistent and cheap (was 3× sort per snapshot).
+    const sorted = [...this.samples].sort((a, b) => a - b);
     let sum = 0;
-    let min = Infinity;
-    let max = -Infinity;
-    for (const v of this.samples) {
-      sum += v;
-      if (v < min) min = v;
-      if (v > max) max = v;
-    }
+    for (const v of this.samples) sum += v;
     return {
       count: n,
       total: this.totalCount,
       mean: sum / n,
-      min,
-      max,
-      p50: this.percentile(0.5),
-      p95: this.percentile(0.95),
-      p99: this.percentile(0.99),
+      min: sorted[0],
+      max: sorted[n - 1],
+      p50: rankOf(sorted, 0.5),
+      p95: rankOf(sorted, 0.95),
+      p99: rankOf(sorted, 0.99),
     };
   }
 
