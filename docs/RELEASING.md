@@ -5,8 +5,22 @@ Two workflows run in CI:
 - **`ci.yml`** — typecheck / lint / format / test / build, on every **pull request** and on pushes
   to **`main`** and **`release`**.
 - **`release.yml`** — the cross-platform desktop build, on a push to the **`release`** branch or a
-  **`v*`** tag. Per-OS it builds the native `analyzer-core` addon, compiles the sidecar, and runs
-  `tauri build`.
+  **`v*`** tag. Each matrix leg builds **natively** on a runner of its own architecture (the
+  per-arch `analyzer-core` `.node` and the Bun sidecar are built on the same machine, so they
+  always match the target), then runs `tauri build`:
+
+  | Target              | Runner             | Artifacts            |
+  | ------------------- | ------------------ | -------------------- |
+  | Windows x86_64      | `windows-latest`   | NSIS `.exe` + MSI    |
+  | macOS Apple Silicon | `macos-latest`     | `.dmg`               |
+  | Linux x86_64        | `ubuntu-latest`    | AppImage + `.tar.gz` |
+  | Linux aarch64       | `ubuntu-24.04-arm` | AppImage             |
+
+  Plus per-arch `SHA256SUMS-<label>.txt`. **No native Windows-arm64** build: Bun has no
+  `windows-arm64` `--compile` target for the sidecar, so the x86_64 installer is the arm64 path
+  (Windows-on-ARM runs it via emulation). The Linux legs pull the GTK/webkit stack (incl. the
+  pinned `glib 0.18.5` — see [../SECURITY.md](../SECURITY.md)) and are the most fragile; the matrix
+  is `fail-fast: false`, so Windows/macOS still publish if a Linux leg fails.
 
 ## Cutting a release
 
