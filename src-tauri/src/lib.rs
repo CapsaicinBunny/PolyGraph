@@ -52,12 +52,26 @@ fn read_source_slice(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  use tauri_plugin_log::{Target, TargetKind};
+
+  // Write the log file to a `logs/` folder right next to the executable so it's
+  // easy to find while testing — instead of the buried OS app-data dir. Fall back
+  // to the default app-log dir only if the exe path can't be resolved.
+  let file_target = match std::env::current_exe()
+    .ok()
+    .and_then(|p| p.parent().map(|dir| dir.join("logs")))
+  {
+    Some(dir) => Target::new(TargetKind::Folder { path: dir, file_name: None }),
+    None => Target::new(TargetKind::LogDir { file_name: None }),
+  };
+
   let builder = tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
     .invoke_handler(tauri::generate_handler![spawn_detached, read_source_slice])
     // Logging is on in every build (Info in debug, Warn+ in release) so a
-    // packaged-app failure leaves a diagnostic trail.
+    // packaged-app failure leaves a diagnostic trail — written to ./logs next to
+    // the app plus stdout, not the OS app-data dir.
     .plugin(
       tauri_plugin_log::Builder::default()
         .level(if cfg!(debug_assertions) {
@@ -65,6 +79,9 @@ pub fn run() {
         } else {
           log::LevelFilter::Warn
         })
+        .clear_targets()
+        .target(Target::new(TargetKind::Stdout))
+        .target(file_target)
         .build(),
     );
 
