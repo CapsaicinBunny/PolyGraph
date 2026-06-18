@@ -122,6 +122,23 @@ export function Explorer() {
 
   const folders = useMemo(() => (graph ? availableFolders(graph) : []), [graph]);
   const languages = useMemo(() => (graph ? availableLanguages(graph) : []), [graph]);
+
+  // Which scope attributes actually occur in this codebase. The Category /
+  // Environment / Runtime filters are JS/TS heuristics (e.g. "use client",
+  // node/deno/bun APIs); on a C/Rust project none of them appear, so we derive
+  // the present sets here and let the Sidebar hide empty groups and the whole
+  // Scope section rather than offering filters that match nothing.
+  const presentScope = useMemo(() => {
+    const categories = new Set<NodeCategory>();
+    const environments = new Set<Environment>();
+    const runtimes = new Set<Runtime>();
+    for (const n of baseGraph?.nodes ?? []) {
+      if (n.category) categories.add(n.category);
+      if (n.environment) environments.add(n.environment);
+      if (n.runtimes) for (const rt of n.runtimes) runtimes.add(rt);
+    }
+    return { categories, environments, runtimes };
+  }, [baseGraph]);
   const insights = useMemo(
     () =>
       graph ? [...analyzeInsights(graph), ...unresolvedToInsights(result?.unresolved ?? [])] : [],
@@ -569,6 +586,9 @@ export function Explorer() {
           onToggleEnvironment={handleToggleEnvironment}
           enabledRuntimes={enabledRuntimes}
           onToggleRuntime={handleToggleRuntime}
+          presentCategories={presentScope.categories}
+          presentEnvironments={presentScope.environments}
+          presentRuntimes={presentScope.runtimes}
           onResetFilters={handleResetFilters}
           algorithm={algorithm}
           onAlgorithm={setAlgorithm}
