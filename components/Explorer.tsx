@@ -484,6 +484,12 @@ export function Explorer() {
     setEnabledEnvironments(new Set(ALL_ENVIRONMENTS));
     setEnabledRuntimes(new Set(ALL_RUNTIMES));
     setShowExternal(false);
+    // Also drop any impact/focus constraint and selection — Reset means "show all
+    // nodes again", and focus (Dependencies/Dependents/…) otherwise persists with no
+    // other way to clear it from here.
+    setFocusedIds(null);
+    setSelectedId(null);
+    setSelectedEdge(null);
     resetFileFilters(graph);
   }, [graph, resetFileFilters]);
 
