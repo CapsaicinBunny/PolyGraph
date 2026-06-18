@@ -40,9 +40,9 @@ const THRESHOLDS: Record<string, number> = {
 const DEFAULT_THRESHOLD = 0.3;
 
 // Synthetic graph sizes for the scale suite. 8000 crosses the layout size-guard
-// (>6000 nodes → grid) and the analyzer batch threshold, so the LOD pipeline is
-// exercised at a scale the real fixtures never hit.
-const SCALE_SIZES = [1000, 8000];
+// (>6000 nodes → grid) and the analyzer batch threshold; 100000 is the headline
+// "scale to 100k+" target, exercising the LOD pipeline at full size.
+const SCALE_SIZES = [1000, 8000, 100_000];
 
 interface FixtureRow {
   id: string;
@@ -102,7 +102,7 @@ async function benchFixture(fx: Awaited<ReturnType<typeof loadFixture>>): Promis
 
 async function benchScale(size: number): Promise<ScaleRow> {
   const graph = makeSyntheticGraph(size);
-  const iters = size > 4000 ? 3 : 6;
+  const iters = size > 50_000 ? 2 : size > 4000 ? 3 : 6;
 
   // Layout note: the layout-client size guard forces `grid` above 6000 nodes, so
   // this measures the real (guarded) layout the app would run at this size.
