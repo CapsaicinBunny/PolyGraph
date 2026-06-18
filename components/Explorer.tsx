@@ -27,6 +27,7 @@ import {
   DEFAULT_HIDDEN_LANGUAGES,
 } from "@/lib/graph/filters";
 import { autoCollapseDirs } from "@/lib/graph/auto-collapse";
+import { nextExpandAll } from "@/lib/graph/expand-toggle";
 import { FiltersPanel } from "./FiltersPanel";
 import { graphKeyFor, type SceneEdge } from "@/lib/graph/scene";
 import { EdgeDetailPanel } from "./EdgeDetailPanel";
@@ -265,15 +266,16 @@ export function Explorer() {
   const allExpanded = fileIds.length > 0 && fileIds.every((id) => expanded.has(id));
 
   const handleToggleExpandAll = useCallback(() => {
-    setExpanded(allExpanded ? new Set() : new Set(fileIds));
-    // Reseed the collapsed-cluster cut the way a fresh scan does. Without this, a
-    // stale cut (e.g. the coarse one the adaptive-LOD pass writes while everything is
-    // expanded) lingers after collapsing and most nodes stay folded until a rescan.
-    setCollapsedClusters(
-      baseGraph
-        ? (autoCollapseDirs(baseGraph, AUTO_COLLAPSE_MAX_CARDS)?.collapsed ?? new Set())
-        : new Set(),
-    );
+    const seedCut = baseGraph
+      ? (autoCollapseDirs(baseGraph, AUTO_COLLAPSE_MAX_CARDS)?.collapsed ?? new Set<string>())
+      : new Set<string>();
+    const next = nextExpandAll(allExpanded, fileIds, seedCut);
+    setExpanded(next.expanded);
+    setCollapsedClusters(next.collapsedClusters);
+    // Expanding turns Adaptive LOD off so the camera-driven cut doesn't re-collapse
+    // the freshly expanded view on zoom; collapsing turns it back on (the bounded
+    // overview default). See lib/graph/expand-toggle.ts.
+    setAdaptiveLod(next.adaptiveLod);
   }, [allExpanded, fileIds, baseGraph]);
 
   const handleResult = useCallback(
@@ -291,6 +293,9 @@ export function Explorer() {
       setCollapsedClusters(
         autoCollapseDirs(res.graph, AUTO_COLLAPSE_MAX_CARDS)?.collapsed ?? new Set(),
       );
+      // Fresh scan starts from the defaults — including Adaptive LOD on, even if a
+      // prior "Expand all" had turned it off.
+      setAdaptiveLod(true);
       setSelectedId(null);
       setSelectedEdge(null);
       setSearch("");
