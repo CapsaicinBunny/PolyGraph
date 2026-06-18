@@ -536,7 +536,12 @@ export function Explorer() {
         >
           {showExternal ? "Externals: on" : "Externals: off"}
         </Button>
-        <Button size="sm" variant="subtle" onClick={handleToggleExpandAll}>
+        <Button
+          size="sm"
+          variant={allExpanded ? "subtle" : "ghost"}
+          colorPalette={allExpanded ? "blue" : "gray"}
+          onClick={handleToggleExpandAll}
+        >
           {allExpanded ? "Collapse all" : "Expand all"}
         </Button>
         <Button
