@@ -65,6 +65,15 @@ describe("scan-ndjson codec", () => {
     expect(out).toEqual(payload);
   });
 
+  test("carries optional engine timings through the meta line", async () => {
+    const payload: ScanPayload = { ...sample(), timings: { scanMs: 12, analyzeMs: 340 } };
+    const meta = (JSON.parse([...scanNdjsonLines(payload)][0]!) as { meta: { timings?: unknown } })
+      .meta;
+    expect(meta.timings).toEqual({ scanMs: 12, analyzeMs: 340 });
+    const out = await readScanNdjson(ndjsonResponse(scanNdjsonStream(payload)));
+    expect(out.timings).toEqual({ scanMs: 12, analyzeMs: 340 });
+  });
+
   test("reassembles lines split across chunk boundaries", async () => {
     const payload = sample();
     const text = [...scanNdjsonLines(payload)].join("");

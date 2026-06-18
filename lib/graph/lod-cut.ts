@@ -32,54 +32,105 @@ export interface CutOptions {
   margin?: number;
 }
 
+export type CutDecision = "open" | "collapse";
+/** Why a directory was collapsed (or, for "opened", that it was opened). */
+export type CutReason = "off-screen" | "too-small" | "no-content" | "budget" | "opened";
+
+/** One directory's decision during a cut — the per-dir telemetry trace entry. */
+export interface CutTraceEntry {
+  path: string;
+  depth: number;
+  onScreen: boolean;
+  screenHeightPx: number;
+  thresholdPx: number;
+  decision: CutDecision;
+  reason: CutReason;
+}
+
+/** Full cut result with telemetry: the collapsed set plus why each dir landed there. */
+export interface CutResult {
+  cut: Set<string>;
+  trace: CutTraceEntry[];
+  /** Directories examined this cut. */
+  dirsEvaluated: number;
+  /** Of those, how many were on screen. */
+  dirsOnScreen: number;
+  /** Estimated rendered cards (collapsed aggregates + opened files). */
+  cards: number;
+}
+
 /**
- * Compute the collapsed-directory set for the current camera. Walks the tree
- * top-down (heaviest child first — the tree is pre-sorted): a directory is
- * collapsed (shown as one aggregate card) when it is off-screen, too small to be
- * legible, or the card budget is spent; otherwise it opens and its children are
- * tested recursively. The cut contains only the outermost collapsed dirs (the
- * frontier), matching `collapseClusters`' outermost-first absorption.
+ * Core cut walk. When `trace` is non-null, every directory's decision is recorded
+ * (the telemetry path); when null, it's the zero-allocation hot path. Walks the
+ * tree top-down (heaviest child first): a directory is collapsed (one aggregate
+ * card) when off-screen, too small to be legible, contentless, or the card budget
+ * is spent; otherwise it opens and its children recurse. The cut holds only the
+ * outermost collapsed dirs, matching `collapseClusters`' absorption.
  */
-export function computeCut(
+function cutCore(
   root: DirNode,
   boxes: Map<string, Box>,
   cam: Camera,
   vp: Viewport,
   opts: CutOptions,
-): Set<string> {
+  trace: CutTraceEntry[] | null,
+): CutResult {
   const { openPx, maxCards, hysteresis = 0.8, prevCut, margin = 0 } = opts;
   const collapsed = new Set<string>();
-  let cards = 0; // running estimate of rendered cards
+  let cards = 0;
+  let dirsEvaluated = 0;
+  let dirsOnScreen = 0;
 
   const wasOpen = (path: string) => prevCut !== undefined && !prevCut.has(path);
 
-  const collapse = (node: DirNode) => {
-    collapsed.add(node.path);
-    cards += 1; // one aggregate card
+  const record = (
+    node: DirNode,
+    onScreen: boolean,
+    screenHeightPx: number,
+    thresholdPx: number,
+    decision: CutDecision,
+    reason: CutReason,
+  ) => {
+    dirsEvaluated += 1;
+    if (onScreen) dirsOnScreen += 1;
+    if (decision === "collapse") {
+      collapsed.add(node.path);
+      cards += 1;
+    }
+    if (trace) {
+      trace.push({
+        path: node.path,
+        depth: node.depth,
+        onScreen,
+        screenHeightPx,
+        thresholdPx,
+        decision,
+        reason,
+      });
+    }
   };
 
   const visit = (node: DirNode) => {
     const box = boxes.get(node.path);
-    // No box (shouldn't happen) or off-screen → collapse to one card.
     if (!box || !intersectsViewport(worldToScreen(box, cam), vp, margin)) {
-      collapse(node);
+      record(node, false, box ? screenHeight(box, cam.scale) : 0, openPx, "collapse", "off-screen");
       return;
     }
-    // Legibility threshold, with hysteresis for a dir that's already open.
     const threshold = wasOpen(node.path) ? openPx * hysteresis : openPx;
-    const openable = screenHeight(box, cam.scale) >= threshold;
+    const sh = screenHeight(box, cam.scale);
     const hasContent = node.children.length + node.files.length > 0;
-    // Budget: opening adds this dir's direct files as cards; if that alone blows
-    // the budget, collapse instead.
-    if (!openable || !hasContent || cards + node.files.length > maxCards) {
-      collapse(node);
-      return;
+    if (!hasContent) return record(node, true, sh, threshold, "collapse", "no-content");
+    if (sh < threshold) return record(node, true, sh, threshold, "collapse", "too-small");
+    if (cards + node.files.length > maxCards) {
+      return record(node, true, sh, threshold, "collapse", "budget");
     }
     // Open: direct files render individually; recurse into child dirs.
+    record(node, true, sh, threshold, "open", "opened");
     cards += node.files.length;
     for (const child of node.children) {
       if (cards >= maxCards) {
-        collapse(child); // budget spent — remaining children stay aggregated
+        const cb = boxes.get(child.path);
+        record(child, !!cb, cb ? screenHeight(cb, cam.scale) : 0, openPx, "collapse", "budget");
         continue;
       }
       visit(child);
@@ -88,12 +139,35 @@ export function computeCut(
 
   for (const child of root.children) {
     if (cards >= maxCards) {
-      collapse(child);
+      const cb = boxes.get(child.path);
+      record(child, !!cb, cb ? screenHeight(cb, cam.scale) : 0, openPx, "collapse", "budget");
       continue;
     }
     visit(child);
   }
-  return collapsed;
+  return { cut: collapsed, trace: trace ?? [], dirsEvaluated, dirsOnScreen, cards };
+}
+
+/** The collapsed-directory set for the current camera (zero-overhead hot path). */
+export function computeCut(
+  root: DirNode,
+  boxes: Map<string, Box>,
+  cam: Camera,
+  vp: Viewport,
+  opts: CutOptions,
+): Set<string> {
+  return cutCore(root, boxes, cam, vp, opts, null).cut;
+}
+
+/** Like {@link computeCut}, but also returns the per-directory decision trace + counts. */
+export function computeCutTraced(
+  root: DirNode,
+  boxes: Map<string, Box>,
+  cam: Camera,
+  vp: Viewport,
+  opts: CutOptions,
+): CutResult {
+  return cutCore(root, boxes, cam, vp, opts, []);
 }
 
 /** Set equality for two collapsed sets (drives the no-op skip on camera moves). */

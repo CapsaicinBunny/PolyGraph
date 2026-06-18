@@ -1,7 +1,22 @@
 "use client";
 
+import { useState } from "react";
 import { Box, Button, Flex, HStack, Stack, Text, chakra } from "@chakra-ui/react";
 import { type Level, LEVELS } from "@/lib/graph/levels/types";
+import { telemetry } from "@/lib/telemetry";
+
+// Save the buffered telemetry as an NDJSON file — the downloadable "session log".
+function downloadSessionLog() {
+  const blob = new Blob([telemetry.toNDJSON()], { type: "application/x-ndjson" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `polygraph-session-${new Date().toISOString().replace(/[:.]/g, "-")}.ndjson`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 const LEVEL_LABEL: Record<Level, string> = {
   workspace: "Workspace",
@@ -29,6 +44,8 @@ interface SettingsPanelProps {
   onEdgeRouting: (v: "curved" | "orthogonal") => void;
   communityCollapse: boolean;
   onCommunityCollapse: (v: boolean) => void;
+  telemetryOn: boolean;
+  onTelemetry: (v: boolean) => void;
   onClose: () => void;
 }
 
@@ -126,8 +143,11 @@ export function SettingsPanel({
   onEdgeRouting,
   communityCollapse,
   onCommunityCollapse,
+  telemetryOn,
+  onTelemetry,
   onClose,
 }: SettingsPanelProps) {
+  const [, setTick] = useState(0); // forces a re-render so the captured-count refreshes
   return (
     <Stack
       w="260px"
@@ -218,6 +238,38 @@ export function SettingsPanel({
         </Choice>
         <Text fontSize="xs" color="fg.muted" mt="2">
           Folds every detected community into one card. Smart layout, Community grouping only.
+        </Text>
+      </Box>
+
+      <Box>
+        <GroupLabel title="Analytics & logging" />
+        <CheckRow
+          checked={telemetryOn}
+          onClick={() => onTelemetry(!telemetryOn)}
+          label="Capture diagnostics (LOD, rendering, analysis)"
+        />
+        <Text fontSize="xs" color="fg.muted" mt="2">
+          Structured console logs plus a downloadable session log — deep LOD-cut traces, per-frame
+          render stats, and scan/analyze timings. On by default; nothing leaves your machine.
+        </Text>
+        <HStack gap="2" mt="3">
+          <Button size="sm" variant="outline" onClick={downloadSessionLog}>
+            Download session log
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            colorPalette="gray"
+            onClick={() => {
+              telemetry.clearAll();
+              setTick((t) => t + 1);
+            }}
+          >
+            Clear
+          </Button>
+        </HStack>
+        <Text fontSize="xs" color="fg.subtle" mt="2">
+          {telemetry.eventCount().toLocaleString()} events captured this session.
         </Text>
       </Box>
     </Stack>

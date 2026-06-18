@@ -80,3 +80,24 @@ manifests }`.
 
 - No live in-app HUD/overlay (chosen: console + downloadable log).
 - No server-side log persistence; the session log is client-side, on demand.
+
+## As-built notes
+
+Small deltas from the sketch above, for honesty against the code:
+
+- The bus method is **`event(category, event, data?, level?)`** (not `log`); plus
+  `metric`, `count`, `time`, `eventCount`, `toNDJSON`, `clearAll`.
+- Render hooks emit **`("render","scene", {payloadBytes, nodes, edges, clusters,
+  renderMs, …rustStats})`** on each data feed, and a throttled (~1/s)
+  **`("render","fps", {fps, frames})`** from the animate loop, with metrics
+  `render.sceneMs` / `render.frameMs` / `render.fps` / `render.payloadBytes`.
+  Rust `RenderStats` carries `nodesTotal/Drawn/Culled`, `edgesTotal/Encoded`,
+  `clustersTotal/Drawn` (counts only; JS supplies timing).
+- Analysis: the server keeps its human-readable `console.error` summary lines; the
+  engine's `scanMs`/`analyzeMs` ride an **additive `timings`** field in the scan
+  NDJSON meta, and the client logs **`("analysis","scan", {…, scanMs, analyzeMs,
+  roundTripMs})`** (round-trip also covers streaming + parse). The browser-read
+  fallback logs `("analysis","analyze", …)`.
+- Layout: `("layout","run", {algorithm, nodes, edges, clusters, layoutMs})` for a
+  fresh layout, plus a separate `("layout","cache-hit", …)` event and a
+  `layout.cacheHits` counter (instead of a `cacheHit` boolean on one event).

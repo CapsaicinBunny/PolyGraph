@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildDirTree } from "./hierarchy";
 import { type Box } from "./lod-screen";
-import { computeCut, type CutOptions, cutEquals } from "./lod-cut";
+import { computeCut, computeCutTraced, type CutOptions, cutEquals } from "./lod-cut";
 import type { GraphModel } from "./types";
 
 const file = (path: string) => ({
@@ -76,6 +76,50 @@ describe("computeCut", () => {
     const a = cut({ x: 0, y: 0, scale: 1 });
     const b = cut({ x: 0, y: 0, scale: 1 });
     expect(cutEquals(a, b)).toBe(true);
+  });
+});
+
+describe("computeCutTraced", () => {
+  test("returns the same cut as computeCut, plus a per-dir decision trace", () => {
+    const cam = { x: 0, y: 0, scale: 1 };
+    const plain = computeCut(root, boxes, cam, vp, base);
+    const traced = computeCutTraced(root, boxes, cam, vp, base);
+    expect(cutEquals(traced.cut, plain)).toBe(true);
+
+    const byPath = new Map(traced.trace.map((e) => [e.path, e]));
+    // 'b' is off-screen (panned far right) → collapsed for that reason.
+    expect(byPath.get("b")).toMatchObject({
+      decision: "collapse",
+      reason: "off-screen",
+      onScreen: false,
+    });
+    // 'a' is big and on-screen → opened.
+    expect(byPath.get("a")).toMatchObject({ decision: "open", reason: "opened", onScreen: true });
+    expect(byPath.get("a")!.screenHeightPx).toBe(1000); // 1000 world * scale 1
+  });
+
+  test("records 'too-small' when a dir is on screen but below the threshold", () => {
+    // scale 0.4: a/x box (500 tall) → 200px < openPx(220) → too-small.
+    const traced = computeCutTraced(root, boxes, { x: 0, y: 0, scale: 0.4 }, vp, base);
+    const ax = traced.trace.find((e) => e.path === "a/x");
+    expect(ax).toMatchObject({ onScreen: true, decision: "collapse", reason: "too-small" });
+    expect(ax!.screenHeightPx).toBe(200);
+  });
+
+  test("reports budget reason and counts when the card budget is hit", () => {
+    const traced = computeCutTraced(root, boxes, { x: 0, y: 0, scale: 1 }, vp, {
+      ...base,
+      maxCards: 2,
+    });
+    expect(traced.trace.some((e) => e.reason === "budget")).toBe(true);
+    expect(traced.dirsEvaluated).toBeGreaterThan(0);
+    expect(traced.cards).toBeGreaterThan(0);
+  });
+
+  test("counts directories evaluated and on screen", () => {
+    const traced = computeCutTraced(root, boxes, { x: 0, y: 0, scale: 1 }, vp, base);
+    expect(traced.dirsEvaluated).toBe(traced.trace.length);
+    expect(traced.dirsOnScreen).toBeLessThanOrEqual(traced.dirsEvaluated);
   });
 });
 

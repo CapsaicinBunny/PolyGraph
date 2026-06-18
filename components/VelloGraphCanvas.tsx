@@ -10,8 +10,9 @@ import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@
 import type { GroupBy, LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import { frameBoxes } from "@/lib/graph/frame";
 import { buildDirTree, type DirNode } from "@/lib/graph/hierarchy";
-import { computeCut, cutEquals } from "@/lib/graph/lod-cut";
+import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
 import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
+import { telemetry } from "@/lib/telemetry";
 import { LayoutOverlay } from "./LayoutOverlay";
 import { useScene } from "./useScene";
 
@@ -106,6 +107,7 @@ const DIM_RGB: [number, number, number] = [90, 99, 112];
 
 interface VelloHandle {
   set_data: (json: string) => void;
+  stats: () => string;
   set_camera: (x: number, y: number, scale: number) => void;
   set_selection: (id: string | undefined) => void;
   set_search: (q: string) => void;
@@ -300,6 +302,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     const ANIM_MIN_SCALE = 0.35;
     let animRaf = 0;
     let phase = 0;
+    let lastFrame = 0;
+    let fpsFrames = 0;
+    let fpsSince = 0;
     const animate = () => {
       animRaf = requestAnimationFrame(animate);
       const vc = vcRef.current;
@@ -307,6 +312,22 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       phase = (phase + 0.6) % 12;
       vc.set_phase(-phase);
       vc.render();
+      // Frame timing → rolling metric; a throttled fps summary → event (~1/s) so the
+      // log isn't flooded with per-frame entries.
+      if (telemetry.isEnabled()) {
+        const now = performance.now();
+        if (lastFrame) telemetry.metric("render.frameMs", now - lastFrame);
+        lastFrame = now;
+        fpsFrames += 1;
+        if (fpsSince === 0) fpsSince = now;
+        else if (now - fpsSince >= 1000) {
+          const fps = (fpsFrames * 1000) / (now - fpsSince);
+          telemetry.metric("render.fps", fps);
+          telemetry.event("render", "fps", { fps: Math.round(fps), frames: fpsFrames }, "debug");
+          fpsFrames = 0;
+          fpsSince = now;
+        }
+      }
     };
 
     const sizeCanvas = () => {
@@ -340,14 +361,47 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       if (l.adaptiveLod && l.onCut) {
         const band = cameraBand(c.scale);
         if (band !== lodBand.current) {
+          const prevBand = lodBand.current;
           lodBand.current = band;
-          const next = computeCut(
-            l.dirTree,
-            sceneBoxes(l.scene),
-            c,
-            { w: canvas.width, h: canvas.height },
-            { openPx: LOD_OPEN_PX, maxCards: LOD_MAX_CARDS, prevCut: l.collapsed },
-          );
+          const boxes = sceneBoxes(l.scene);
+          const vp = { w: canvas.width, h: canvas.height };
+          const cutOpts = { openPx: LOD_OPEN_PX, maxCards: LOD_MAX_CARDS, prevCut: l.collapsed };
+          let next: Set<string>;
+          // When telemetry is on, take the traced path and log everything about
+          // this cut (per-dir decisions, deltas, timings); otherwise the cheap one.
+          if (telemetry.isEnabled()) {
+            const t0 = performance.now();
+            const r = computeCutTraced(l.dirTree, boxes, c, vp, cutOpts);
+            const computeMs = performance.now() - t0;
+            next = r.cut;
+            const changed = !cutEquals(next, l.collapsed);
+            telemetry.event("lod", "cut", {
+              trigger: "zoom",
+              cam: { x: c.x, y: c.y, scale: c.scale },
+              band,
+              prevBand,
+              viewport: vp,
+              openPx: LOD_OPEN_PX,
+              maxCards: LOD_MAX_CARDS,
+              dirsEvaluated: r.dirsEvaluated,
+              dirsOnScreen: r.dirsOnScreen,
+              cutSize: next.size,
+              prevCutSize: l.collapsed.size,
+              cards: r.cards,
+              computeMs,
+              changed,
+              opened: [...l.collapsed].filter((p) => !next.has(p)), // collapsed → open
+              collapsed: [...next].filter((p) => !l.collapsed.has(p)), // open → collapsed
+              trace: r.trace,
+            });
+            telemetry.metric("lod.computeMs", computeMs);
+            telemetry.metric("lod.cutSize", next.size);
+            telemetry.metric("lod.cards", r.cards);
+            telemetry.count("lod.recomputes");
+            if (changed) telemetry.count("lod.cutChanges");
+          } else {
+            next = computeCut(l.dirTree, boxes, c, vp, cutOpts);
+          }
           if (!cutEquals(next, l.collapsed)) l.onCut(next);
         }
       }
@@ -470,7 +524,29 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     prevFitSig.current = fitSignature;
     vc.set_selection(selectedId ?? undefined);
     vc.set_search(search);
-    vc.render();
+    if (telemetry.isEnabled()) {
+      const t0 = performance.now();
+      vc.render();
+      const renderMs = performance.now() - t0;
+      let stats: Record<string, unknown> = {};
+      try {
+        stats = JSON.parse(vc.stats());
+      } catch {
+        /* ignore */
+      }
+      telemetry.event("render", "scene", {
+        payloadBytes: payload.length,
+        nodes: scene.nodes.length,
+        edges: scene.edges.length,
+        clusters: scene.clusters.length,
+        renderMs,
+        ...stats, // nodesDrawn/culled, edgesEncoded, clustersDrawn, …
+      });
+      telemetry.metric("render.sceneMs", renderMs);
+      telemetry.metric("render.payloadBytes", payload.length);
+    } else {
+      vc.render();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, payload, fitSignature]);
 

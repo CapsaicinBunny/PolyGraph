@@ -2,7 +2,7 @@
 // Renders cards + edges + GPU vector text, with a camera (pan/zoom), picking, and
 // selection/search highlighting. Everything is vector and crisp at any zoom.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::{FontRef, MetadataProvider};
 use vello::kurbo::{Affine, BezPath, Circle, CubicBez, Point, RoundedRect, Stroke};
@@ -112,6 +112,20 @@ struct SceneData {
     routing: String,
 }
 
+/// Per-frame render counts exposed to JS telemetry (frame timing is measured
+/// JS-side, since these counts are the part JS can't observe).
+#[derive(Serialize, Default, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+struct RenderStats {
+    nodes_total: usize,
+    nodes_drawn: usize,
+    nodes_culled: usize,
+    edges_total: usize,
+    edges_encoded: usize,
+    clusters_total: usize,
+    clusters_drawn: usize,
+}
+
 #[wasm_bindgen]
 pub struct VelloCanvas {
     context: RenderContext,
@@ -123,6 +137,8 @@ pub struct VelloCanvas {
     /// `FontRef::new`) is wasted work that adds up when many labels are drawn.
     font_ref: FontRef<'static>,
     data: SceneData,
+    /// Counts from the last render(), read by JS via stats().
+    last_stats: RenderStats,
     cam_x: f64,
     cam_y: f64,
     cam_scale: f64,
@@ -184,6 +200,7 @@ impl VelloCanvas {
             font,
             font_ref,
             data: SceneData::default(),
+            last_stats: RenderStats::default(),
             cam_x: 0.0,
             cam_y: 0.0,
             cam_scale: 1.0,
@@ -304,6 +321,11 @@ impl VelloCanvas {
         closest.map(|(_, id)| format!("edge:{id}"))
     }
 
+    /// Counts from the most recent render() as a JSON string (telemetry).
+    pub fn stats(&self) -> String {
+        serde_json::to_string(&self.last_stats).unwrap_or_else(|_| "{}".to_string())
+    }
+
     pub fn render(&mut self) -> Result<(), JsValue> {
         self.scene.reset();
         let camera = self.camera();
@@ -324,6 +346,14 @@ impl VelloCanvas {
         let bottom = top + self.vh / self.cam_scale;
         let on_screen = |x: f64, y: f64, w: f64, h: f64| -> bool {
             x + w >= left && x <= right && y + h >= top && y <= bottom
+        };
+
+        // Telemetry counts for this frame (read by JS via stats()).
+        let mut stats = RenderStats {
+            nodes_total: self.data.nodes.len(),
+            edges_total: self.data.edges.len(),
+            clusters_total: self.data.clusters.len(),
+            ..Default::default()
         };
 
         // Package containers (Smart layout): under the edges + cards, parents first
@@ -348,6 +378,7 @@ impl VelloCanvas {
                 if !on_screen(c.x, c.y, c.w, c.h) {
                     continue;
                 }
+                stats.clusters_drawn += 1;
                 // Low alpha so nested boxes layer into deeper panels. When the box carries
                 // a categorical color (by directory/group), wash the fill + outline + label
                 // in that hue; otherwise fall back to the neutral slate tint.
@@ -443,6 +474,7 @@ impl VelloCanvas {
             else {
                 continue;
             };
+            stats.edges_encoded += 1;
             let dx = sx2 - sx1;
             let dy = sy2 - sy1;
             // Fade long-distance edges so a dense graph's local structure stays
@@ -535,8 +567,10 @@ impl VelloCanvas {
 
         for n in &self.data.nodes {
             if !on_screen(n.x, n.y, n.w, n.h) {
+                stats.nodes_culled += 1;
                 continue;
             }
+            stats.nodes_drawn += 1;
             let accent = Color::from_rgb8(n.color[0], n.color[1], n.color[2]);
             let selected = Some(&n.id) == self.selected.as_ref();
             let r = n.x + n.w;
@@ -652,6 +686,8 @@ impl VelloCanvas {
                     .draw(Fill::NonZero, bglyphs.into_iter());
             }
         }
+
+        self.last_stats = stats;
 
         let device_handle = &self.context.devices[self.surface.dev_id];
         self.renderer

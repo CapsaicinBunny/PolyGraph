@@ -39,6 +39,7 @@ import { Sidebar } from "./Sidebar";
 import { ThemeToggle } from "./ThemeToggle";
 import { UploadDropzone } from "./UploadDropzone";
 import type { ExplorerWorkspaceState } from "@/lib/workspace/schema";
+import { telemetry } from "@/lib/telemetry";
 
 // Vello renders via WebGPU (browser-only), so load it client-side.
 const VelloGraphCanvas = dynamic(
@@ -101,6 +102,14 @@ export function Explorer() {
   // Adaptive level-of-detail (LOD): recompute the collapsed cut as the camera
   // zooms so a huge repo stays drawable. Off by default — see docs/SCALE-100K.md.
   const [adaptiveLod, setAdaptiveLod] = useState(true);
+  // Analytics & logging (telemetry) — mirrors the bus's persisted enabled flag so the
+  // Settings toggle reflects and controls it. Default on; persisted to localStorage.
+  const [telemetryOn, setTelemetryOn] = useState(telemetry.isEnabled());
+  const handleTelemetry = useCallback((v: boolean) => {
+    telemetry.setEnabled(v);
+    setTelemetryOn(v);
+    telemetry.event("scene", "telemetry-toggled", { enabled: v });
+  }, []);
 
   const baseGraph = result?.graph ?? null;
 
@@ -657,6 +666,8 @@ export function Explorer() {
             onEdgeRouting={setEdgeRouting}
             communityCollapse={communityCollapse}
             onCommunityCollapse={setCommunityCollapse}
+            telemetryOn={telemetryOn}
+            onTelemetry={handleTelemetry}
             onClose={() => setSettingsOpen(false)}
           />
         )}
