@@ -1,29 +1,19 @@
 "use client";
 
 import { type ReactNode, useState } from "react";
-import { Box, Flex, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, HStack, Stack, Text } from "@chakra-ui/react";
 import type { ViewEdgeKind } from "@/lib/aggregate";
-import { type Level, LEVELS } from "@/lib/graph/levels/types";
 import type { SavedSearch } from "@/lib/graph/query-language";
 import { QueryBar, type QueryMode } from "./QueryBar";
 import {
   EDGE_STYLES,
-  EXTERNAL_STYLES,
   FILTERABLE_EDGE_KINDS,
   FILTERABLE_NODE_KINDS,
   KIND_GLYPH,
   NODE_KIND_LAYERS,
   NODE_STYLES,
-  ROLE_STYLES,
 } from "@/lib/graph/visual";
-import type {
-  Environment,
-  ExternalKind,
-  NodeCategory,
-  NodeKind,
-  NodeRole,
-  Runtime,
-} from "@/lib/graph/types";
+import type { Environment, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
 import {
   DIRECTIONAL_ALGORITHMS,
   type GroupBy,
@@ -32,9 +22,6 @@ import {
 } from "@/lib/layout";
 
 interface SidebarProps {
-  level: Level;
-  onLevel: (level: Level) => void;
-  packageCount: number;
   search: string;
   onSearch: (value: string) => void;
   queryMode: QueryMode;
@@ -64,8 +51,6 @@ interface SidebarProps {
   onDirection: (direction: LayoutDirection) => void;
   groupBy: GroupBy;
   onGroupBy: (groupBy: GroupBy) => void;
-  density: number;
-  onDensity: (density: number) => void;
 }
 
 const CATEGORIES: { value: NodeCategory; label: string; color: string }[] = [
@@ -98,12 +83,6 @@ const GROUP_BY: { value: GroupBy; label: string; glyph: string }[] = [
   { value: "directory", label: "Directory", glyph: "🗀" },
   { value: "community", label: "Community", glyph: "⬡" },
   { value: "none", label: "None", glyph: "∅" },
-];
-
-const DENSITIES: { value: number; label: string; glyph: string }[] = [
-  { value: 1.6, label: "Sparse", glyph: "↔" },
-  { value: 1.0, label: "Normal", glyph: "≡" },
-  { value: 0.6, label: "Dense", glyph: "▦" },
 ];
 
 const DIRECTIONS: { value: LayoutDirection; label: string; glyph: string }[] = [
@@ -284,29 +263,7 @@ function MiniLabel({ children }: { children: ReactNode }) {
   );
 }
 
-function LegendItem({ color, label }: { color: string; label: string }) {
-  return (
-    <HStack gap="2">
-      <Box w="8px" h="8px" rounded="full" flexShrink={0} style={{ backgroundColor: color }} />
-      <Text fontSize="xs" color="fg.muted" lineClamp={1}>
-        {label}
-      </Text>
-    </HStack>
-  );
-}
-
-const LEVEL_META: Record<Level, { label: string; glyph: string }> = {
-  workspace: { label: "Workspace", glyph: "▦" },
-  package: { label: "Package", glyph: "📦" },
-  directory: { label: "Directory", glyph: "🗀" },
-  file: { label: "File", glyph: "🗎" },
-  symbol: { label: "Symbol", glyph: "◇" },
-};
-
 export function Sidebar({
-  level,
-  onLevel,
-  packageCount,
   search,
   onSearch,
   queryMode,
@@ -336,8 +293,6 @@ export function Sidebar({
   onDirection,
   groupBy,
   onGroupBy,
-  density,
-  onDensity,
 }: SidebarProps) {
   const directionEnabled = DIRECTIONAL_ALGORITHMS.includes(algorithm);
 
@@ -374,25 +329,6 @@ export function Sidebar({
         onReset={onResetFilters}
       />
 
-      <Section title="Abstraction level">
-        <ChipRow>
-          {LEVELS.map((lv) => (
-            <Chip
-              key={lv}
-              label={LEVEL_META[lv].label}
-              glyph={LEVEL_META[lv].glyph}
-              active={level === lv}
-              onClick={() => onLevel(lv)}
-            />
-          ))}
-        </ChipRow>
-        {(level === "package" || level === "workspace") && (
-          <Text fontSize="10px" color="fg.subtle" mt="2">
-            {packageCount} package{packageCount === 1 ? "" : "s"} detected from manifests.
-          </Text>
-        )}
-      </Section>
-
       <Section title="Layout">
         <ChipRow>
           {ALGORITHMS.map((a) => (
@@ -405,21 +341,22 @@ export function Sidebar({
             />
           ))}
         </ChipRow>
-        <Box mt="3">
-          <MiniLabel>Direction{directionEnabled ? "" : " · layered / tree only"}</MiniLabel>
-          <ChipRow>
-            {DIRECTIONS.map((d) => (
-              <Chip
-                key={d.value}
-                label={d.label}
-                glyph={d.glyph}
-                active={direction === d.value}
-                disabled={!directionEnabled}
-                onClick={() => onDirection(d.value)}
-              />
-            ))}
-          </ChipRow>
-        </Box>
+        {directionEnabled && (
+          <Box mt="3">
+            <MiniLabel>Direction</MiniLabel>
+            <ChipRow>
+              {DIRECTIONS.map((d) => (
+                <Chip
+                  key={d.value}
+                  label={d.label}
+                  glyph={d.glyph}
+                  active={direction === d.value}
+                  onClick={() => onDirection(d.value)}
+                />
+              ))}
+            </ChipRow>
+          </Box>
+        )}
         {algorithm === "smart" && (
           <Box mt="3">
             <MiniLabel>Group by</MiniLabel>
@@ -434,20 +371,6 @@ export function Sidebar({
                 />
               ))}
             </ChipRow>
-            <Box mt="3">
-              <MiniLabel>Density</MiniLabel>
-              <ChipRow>
-                {DENSITIES.map((d) => (
-                  <Chip
-                    key={d.label}
-                    label={d.label}
-                    glyph={d.glyph}
-                    active={density === d.value}
-                    onClick={() => onDensity(d.value)}
-                  />
-                ))}
-              </ChipRow>
-            </Box>
           </Box>
         )}
       </Section>
@@ -565,38 +488,6 @@ export function Sidebar({
                 />
               ))}
             </ChipRow>
-          </Box>
-        </Stack>
-      </Section>
-
-      <Section title="Legend" defaultOpen={false}>
-        <Stack gap="4">
-          <Box>
-            <MiniLabel>Detected roles</MiniLabel>
-            <SimpleGrid columns={2} gap="2">
-              {(Object.keys(ROLE_STYLES) as NodeRole[]).map((role) => (
-                <LegendItem
-                  key={role}
-                  color={ROLE_STYLES[role].color}
-                  label={ROLE_STYLES[role].label}
-                />
-              ))}
-            </SimpleGrid>
-          </Box>
-          <Box>
-            <MiniLabel>External sources</MiniLabel>
-            <SimpleGrid columns={2} gap="2">
-              {(Object.keys(EXTERNAL_STYLES) as ExternalKind[]).map((ext) => (
-                <LegendItem
-                  key={ext}
-                  color={EXTERNAL_STYLES[ext].color}
-                  label={EXTERNAL_STYLES[ext].label}
-                />
-              ))}
-            </SimpleGrid>
-            <Text fontSize="11px" color="fg.subtle" mt="2.5" lineHeight="1.5">
-              Toggle “Externals” in the toolbar to show imported packages and Node/Deno/Bun APIs.
-            </Text>
           </Box>
         </Stack>
       </Section>

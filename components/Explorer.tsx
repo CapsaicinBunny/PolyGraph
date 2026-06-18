@@ -539,9 +539,6 @@ export function Explorer() {
 
       <Flex flex="1" minH="0">
         <Sidebar
-          level={level}
-          onLevel={handleLevel}
-          packageCount={manifests.length}
           search={search}
           onSearch={setSearch}
           queryMode={queryMode}
@@ -571,8 +568,6 @@ export function Explorer() {
           onDirection={setDirection}
           groupBy={groupBy}
           onGroupBy={setGroupBy}
-          density={density}
-          onDensity={setDensity}
         />
         <Box flex="1" minW="0" position="relative">
           <VelloGraphCanvas
@@ -623,6 +618,11 @@ export function Explorer() {
         )}
         {settingsOpen && (
           <SettingsPanel
+            level={level}
+            onLevel={handleLevel}
+            packageCount={manifests.length}
+            density={density}
+            onDensity={setDensity}
             edgeRouting={edgeRouting}
             onEdgeRouting={setEdgeRouting}
             communityCollapse={communityCollapse}
