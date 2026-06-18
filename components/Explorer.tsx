@@ -249,7 +249,15 @@ export function Explorer() {
 
   const handleToggleExpandAll = useCallback(() => {
     setExpanded(allExpanded ? new Set() : new Set(fileIds));
-  }, [allExpanded, fileIds]);
+    // Reseed the collapsed-cluster cut the way a fresh scan does. Without this, a
+    // stale cut (e.g. the coarse one the adaptive-LOD pass writes while everything is
+    // expanded) lingers after collapsing and most nodes stay folded until a rescan.
+    setCollapsedClusters(
+      baseGraph
+        ? (autoCollapseDirs(baseGraph, AUTO_COLLAPSE_MAX_CARDS)?.collapsed ?? new Set())
+        : new Set(),
+    );
+  }, [allExpanded, fileIds, baseGraph]);
 
   const handleResult = useCallback(
     (res: AnalyzeResult, s: Stats, m: PackageManifest[], scannedPath = "") => {
