@@ -18,6 +18,7 @@ import {
   type XYPosition,
 } from "@/lib/layout";
 import { layoutInWorker } from "@/lib/layout-client";
+import { telemetry } from "@/lib/telemetry";
 
 const EMPTY_POS: Map<string, XYPosition> = new Map();
 const EMPTY_CLUSTERS: ClusterBox[] = [];
@@ -84,6 +85,15 @@ export function useScene(
   useEffect(() => {
     const cached = layoutCacheGet(structure.signature);
     if (cached) {
+      // A cache hit costs no layout work — record it so the metrics show how often
+      // re-layout is avoided (a high hit rate is why panning/filtering stays smooth).
+      telemetry.count("layout.cacheHits");
+      telemetry.event(
+        "layout",
+        "cache-hit",
+        { nodes: structure.layoutInput.nodes.length, clusters: cached.clusters.length },
+        "debug",
+      );
       setPositions(cached.positions);
       setClusters(cached.clusters);
       setLayingOut(false);
@@ -95,15 +105,31 @@ export function useScene(
     layoutInWorker(structure.layoutInput, structure.options)
       .then(({ positions: pos, clusters: cl }) => {
         if (myReq !== reqId.current) return; // a newer request superseded this one
-        console.info(
-          `[polygraph] layout (${structure.options.algorithm ?? "layered"}) ${(performance.now() - tLayout).toFixed(0)}ms, ${structure.layoutInput.nodes.length} nodes`,
-        );
+        const layoutMs = performance.now() - tLayout;
+        telemetry.event("layout", "run", {
+          algorithm: structure.options.algorithm ?? "layered",
+          nodes: structure.layoutInput.nodes.length,
+          edges: structure.layoutInput.edges.length,
+          clusters: cl.length,
+          layoutMs,
+        });
+        telemetry.metric("layout.ms", layoutMs);
+        telemetry.metric("layout.nodes", structure.layoutInput.nodes.length);
+        telemetry.count("layout.runs");
         layoutCacheSet(structure.signature, { positions: pos, clusters: cl });
         setPositions(pos);
         setClusters(cl);
         setLayingOut(false);
       })
-      .catch(() => {
+      .catch((err) => {
+        // Tag superseded rejections so a stale layout that errors after a newer one
+        // started isn't read as a real failure in the log.
+        telemetry.event(
+          "layout",
+          "error",
+          { message: String(err), superseded: myReq !== reqId.current },
+          "error",
+        );
         if (myReq === reqId.current) setLayingOut(false);
       });
   }, [structure]);

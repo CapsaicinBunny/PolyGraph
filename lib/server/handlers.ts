@@ -22,6 +22,8 @@ export interface ScanData {
   root: string;
   /** Packages discovered from manifest files, for the Package/Workspace levels. */
   manifests: PackageManifest[];
+  /** Engine timings (ms), carried to the client so they land in the session log. */
+  timings: { scanMs: number; analyzeMs: number };
 }
 
 export interface AnalyzeData {
@@ -96,7 +98,19 @@ export async function runScan(
     console.error(
       `[scan] ${fileCount} files | read ${scanMs.toFixed(0)}ms | analyze ${analyzeMs.toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges | ${manifests.length} packages`,
     );
-    return { ok: true, value: { graph, errors, unresolved, fileCount, skipped, root, manifests } };
+    return {
+      ok: true,
+      value: {
+        graph,
+        errors,
+        unresolved,
+        fileCount,
+        skipped,
+        root,
+        manifests,
+        timings: { scanMs, analyzeMs },
+      },
+    };
   } catch (err) {
     return { ok: false, status: 500, error: err instanceof Error ? err.message : "Scan failed" };
   }

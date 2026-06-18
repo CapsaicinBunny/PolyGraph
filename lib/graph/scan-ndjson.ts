@@ -30,6 +30,8 @@ export interface ScanPayload {
   skipped: number;
   root: string;
   manifests: PackageManifest[];
+  /** Optional engine timings (ms); present on a server scan, absent in tests/CLI. */
+  timings?: { scanMs: number; analyzeMs: number };
 }
 
 interface ScanMeta {
@@ -41,11 +43,12 @@ interface ScanMeta {
   errors: AnalyzeError[];
   unresolved: UnresolvedRef[];
   manifests: PackageManifest[];
+  timings?: { scanMs: number; analyzeMs: number };
 }
 
 /** Lazily yield each NDJSON line (meta, then nodes, then edges). */
 export function* scanNdjsonLines(value: ScanPayload): Generator<string> {
-  const { graph, errors, unresolved, fileCount, skipped, root, manifests } = value;
+  const { graph, errors, unresolved, fileCount, skipped, root, manifests, timings } = value;
   const meta: ScanMeta = {
     nodeCount: graph.nodes.length,
     edgeCount: graph.edges.length,
@@ -55,6 +58,7 @@ export function* scanNdjsonLines(value: ScanPayload): Generator<string> {
     errors,
     unresolved,
     manifests,
+    ...(timings ? { timings } : {}),
   };
   yield `${JSON.stringify({ meta })}\n`;
   for (const n of graph.nodes) yield `${JSON.stringify(n)}\n`;
@@ -136,5 +140,6 @@ export async function readScanNdjson(res: Response): Promise<ScanPayload> {
     skipped: m.skipped,
     root: m.root,
     manifests: m.manifests,
+    ...(m.timings ? { timings: m.timings } : {}),
   };
 }

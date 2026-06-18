@@ -34,6 +34,10 @@ export class VelloCanvas {
      * `false` = light (soft slate canvas, white cards). The caller re-renders.
      */
     set_theme(dark: boolean): void;
+    /**
+     * Counts from the most recent render() as a JSON string (telemetry).
+     */
+    stats(): string;
 }
 
 export function start(): void;
@@ -55,6 +59,7 @@ export interface InitOutput {
     readonly vellocanvas_set_search: (a: number, b: number, c: number) => void;
     readonly vellocanvas_set_selection: (a: number, b: number, c: number) => void;
     readonly vellocanvas_set_theme: (a: number, b: number) => void;
+    readonly vellocanvas_stats: (a: number) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h8d0a2bd66ba9dad6: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h26b056603e6c5143: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h1f61da4447a6259c: (a: number, b: number, c: any) => void;

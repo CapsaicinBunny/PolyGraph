@@ -23,6 +23,7 @@ import { isTauri } from "@/lib/client/env";
 import type { PackageManifest } from "@/lib/graph/levels/types";
 import { readScanNdjson } from "@/lib/graph/scan-ndjson";
 import type { AnalyzeResult, SourceFileMap } from "@/lib/graph/types";
+import { telemetry } from "@/lib/telemetry";
 import { ThemeToggle } from "./ThemeToggle";
 
 // Shown when the scan response can't be loaded — the usual cause on an enormous
@@ -232,7 +233,34 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         } catch {
           throw new Error(TOO_LARGE_MESSAGE);
         }
-        console.info(`[polygraph] /scan round-trip ${(performance.now() - t0).toFixed(0)}ms`);
+        const roundTripMs = performance.now() - t0;
+        // Telemetry is best-effort and must never break the result flow below.
+        try {
+          // The analysis engine's own read/analyze timings ride in the NDJSON meta;
+          // pair them with the client round-trip (also covers streaming + parse).
+          telemetry.event("analysis", "scan", {
+            path: trimmed,
+            fileCount: data.fileCount || data.graph.nodes.length,
+            nodes: data.graph.nodes.length,
+            edges: data.graph.edges.length,
+            packages: data.manifests.length,
+            parseWarnings: data.errors.length,
+            unresolved: data.unresolved.length,
+            skipped: data.skipped,
+            scanMs: data.timings?.scanMs,
+            analyzeMs: data.timings?.analyzeMs,
+            roundTripMs,
+          });
+          if (data.timings) {
+            telemetry.metric("analysis.scanMs", data.timings.scanMs);
+            telemetry.metric("analysis.analyzeMs", data.timings.analyzeMs);
+          }
+          telemetry.metric("analysis.nodes", data.graph.nodes.length);
+          telemetry.metric("analysis.edges", data.graph.edges.length);
+          telemetry.metric("analysis.roundTripMs", roundTripMs);
+        } catch {
+          /* never break the result flow */
+        }
         onResult(
           { graph: data.graph, errors: data.errors, unresolved: data.unresolved },
           { fileCount: data.fileCount || data.graph.nodes.length, skipped: data.skipped },
@@ -250,7 +278,16 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         fileCount?: number;
         oversize?: boolean;
       };
-      console.info(`[polygraph] /scan round-trip ${(performance.now() - t0).toFixed(0)}ms`);
+      try {
+        telemetry.event("analysis", "scan-reply", {
+          path: trimmed,
+          roundTripMs: performance.now() - t0,
+          oversize: !!data.oversize,
+          fileCount: data.fileCount,
+        });
+      } catch {
+        /* never break the result flow */
+      }
       if (res.ok && data.oversize) {
         setPhase("idle");
         setPendingConfirm({ path: trimmed, fileCount: data.fileCount ?? 0 });
@@ -268,6 +305,7 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
     const count = Object.keys(files).length;
     setFileCount(count);
     setPhase("analyzing");
+    const t0 = performance.now();
 
     // Serializing the whole file map can exceed V8's max string length
     // (~512 MB) on very large projects — there's no way around it in the
@@ -295,6 +333,20 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         throw new Error(body.error ?? `Analysis failed (${res.status})`);
       }
       const result = (await res.json()) as AnalyzeResult & { manifests?: PackageManifest[] };
+      try {
+        telemetry.event("analysis", "analyze", {
+          fileCount: count,
+          nodes: result.graph.nodes.length,
+          edges: result.graph.edges.length,
+          packages: result.manifests?.length ?? 0,
+          parseWarnings: result.errors.length,
+          roundTripMs: performance.now() - t0,
+        });
+        telemetry.metric("analysis.nodes", result.graph.nodes.length);
+        telemetry.metric("analysis.edges", result.graph.edges.length);
+      } catch {
+        /* never break the result flow */
+      }
       onResult(result, { fileCount: count, skipped }, result.manifests ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed");
