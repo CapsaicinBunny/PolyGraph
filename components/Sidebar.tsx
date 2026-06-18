@@ -44,6 +44,10 @@ interface SidebarProps {
   onToggleEnvironment: (env: Environment) => void;
   enabledRuntimes: Set<Runtime>;
   onToggleRuntime: (rt: Runtime) => void;
+  /** Scope values actually present in the scanned graph; empty groups are hidden. */
+  presentCategories: Set<NodeCategory>;
+  presentEnvironments: Set<Environment>;
+  presentRuntimes: Set<Runtime>;
   onResetFilters: () => void;
   algorithm: LayoutAlgorithm;
   onAlgorithm: (algorithm: LayoutAlgorithm) => void;
@@ -286,6 +290,9 @@ export function Sidebar({
   onToggleEnvironment,
   enabledRuntimes,
   onToggleRuntime,
+  presentCategories,
+  presentEnvironments,
+  presentRuntimes,
   onResetFilters,
   algorithm,
   onAlgorithm,
@@ -298,10 +305,18 @@ export function Sidebar({
 
   const relationshipsModified = enabledEdgeKinds.size !== FILTERABLE_EDGE_KINDS.length;
   const nodeTypesModified = enabledNodeKinds.size !== FILTERABLE_NODE_KINDS.length;
+
+  // Only surface scope values the codebase actually has. On a C/Rust project the
+  // JS/TS-oriented Category / Environment / Runtime heuristics produce nothing,
+  // so each group — and the whole section — collapses away.
+  const categories = CATEGORIES.filter((c) => presentCategories.has(c.value));
+  const environments = ENVIRONMENTS.filter((e) => presentEnvironments.has(e.value));
+  const runtimes = RUNTIMES.filter((r) => presentRuntimes.has(r.value));
+  const hasScope = categories.length > 0 || environments.length > 0 || runtimes.length > 0;
   const scopeModified =
-    enabledCategories.size !== CATEGORIES.length ||
-    enabledEnvironments.size !== ENVIRONMENTS.length ||
-    enabledRuntimes.size !== RUNTIMES.length;
+    [...presentCategories].some((c) => !enabledCategories.has(c)) ||
+    [...presentEnvironments].some((e) => !enabledEnvironments.has(e)) ||
+    [...presentRuntimes].some((r) => !enabledRuntimes.has(r));
 
   return (
     <Stack
@@ -445,52 +460,60 @@ export function Sidebar({
         </Stack>
       </Section>
 
-      <Section title="Scope" defaultOpen={false} modified={scopeModified}>
-        <Stack gap="3">
-          <Box>
-            <MiniLabel>Category</MiniLabel>
-            <ChipRow>
-              {CATEGORIES.map((c) => (
-                <Chip
-                  key={c.value}
-                  label={c.label}
-                  color={c.color}
-                  active={enabledCategories.has(c.value)}
-                  onClick={() => onToggleCategory(c.value)}
-                />
-              ))}
-            </ChipRow>
-          </Box>
-          <Box>
-            <MiniLabel>Environment</MiniLabel>
-            <ChipRow>
-              {ENVIRONMENTS.map((e) => (
-                <Chip
-                  key={e.value}
-                  label={e.label}
-                  color={e.color}
-                  active={enabledEnvironments.has(e.value)}
-                  onClick={() => onToggleEnvironment(e.value)}
-                />
-              ))}
-            </ChipRow>
-          </Box>
-          <Box>
-            <MiniLabel>Runtime</MiniLabel>
-            <ChipRow>
-              {RUNTIMES.map((r) => (
-                <Chip
-                  key={r.value}
-                  label={r.label}
-                  color={r.color}
-                  active={enabledRuntimes.has(r.value)}
-                  onClick={() => onToggleRuntime(r.value)}
-                />
-              ))}
-            </ChipRow>
-          </Box>
-        </Stack>
-      </Section>
+      {hasScope && (
+        <Section title="Scope" defaultOpen={false} modified={scopeModified}>
+          <Stack gap="3">
+            {categories.length > 0 && (
+              <Box>
+                <MiniLabel>Category</MiniLabel>
+                <ChipRow>
+                  {categories.map((c) => (
+                    <Chip
+                      key={c.value}
+                      label={c.label}
+                      color={c.color}
+                      active={enabledCategories.has(c.value)}
+                      onClick={() => onToggleCategory(c.value)}
+                    />
+                  ))}
+                </ChipRow>
+              </Box>
+            )}
+            {environments.length > 0 && (
+              <Box>
+                <MiniLabel>Environment</MiniLabel>
+                <ChipRow>
+                  {environments.map((e) => (
+                    <Chip
+                      key={e.value}
+                      label={e.label}
+                      color={e.color}
+                      active={enabledEnvironments.has(e.value)}
+                      onClick={() => onToggleEnvironment(e.value)}
+                    />
+                  ))}
+                </ChipRow>
+              </Box>
+            )}
+            {runtimes.length > 0 && (
+              <Box>
+                <MiniLabel>Runtime</MiniLabel>
+                <ChipRow>
+                  {runtimes.map((r) => (
+                    <Chip
+                      key={r.value}
+                      label={r.label}
+                      color={r.color}
+                      active={enabledRuntimes.has(r.value)}
+                      onClick={() => onToggleRuntime(r.value)}
+                    />
+                  ))}
+                </ChipRow>
+              </Box>
+            )}
+          </Stack>
+        </Section>
+      )}
     </Stack>
   );
 }
