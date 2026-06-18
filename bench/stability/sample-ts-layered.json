@@ -1,0 +1,9 @@
+{
+  "src/app.test.ts": [0, 40],
+  "src/app.ts": [290, 40],
+  "src/geometry.ts": [870, 80],
+  "src/shapes.ts": [580, 15],
+  "src/types.ts": [870, 0],
+  "src/cycle-a.ts": [0, 196],
+  "src/cycle-b.ts": [290, 196]
+}

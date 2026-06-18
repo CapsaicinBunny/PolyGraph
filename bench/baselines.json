@@ -1,0 +1,48 @@
+{
+  "sample-ts": {
+    "scanMs": 0.09,
+    "incrementalMs": 0.04,
+    "smartLayoutMs": 2.74,
+    "layeredLayoutMs": 1.87,
+    "rssMb": 0.02
+  },
+  "sample-py": {
+    "scanMs": 8.61,
+    "incrementalMs": 7.81,
+    "smartLayoutMs": 0.33,
+    "layeredLayoutMs": 0.38,
+    "rssMb": 0
+  },
+  "sample-go": {
+    "scanMs": 2.63,
+    "incrementalMs": 2.28,
+    "smartLayoutMs": 0.3,
+    "layeredLayoutMs": 0.24,
+    "rssMb": 0.12
+  },
+  "self": {
+    "scanMs": 47.41,
+    "incrementalMs": 46.98,
+    "smartLayoutMs": 81.5,
+    "layeredLayoutMs": 187.73,
+    "rssMb": 5.44
+  },
+  "scale-1000": {
+    "layoutMs": 48.02,
+    "hierarchyMs": 0.17,
+    "cutMs": 0.01,
+    "autoCollapseMs": 0.01
+  },
+  "scale-8000": {
+    "layoutMs": 15.12,
+    "hierarchyMs": 0.57,
+    "cutMs": 0.03,
+    "autoCollapseMs": 3.25
+  },
+  "scale-100000": {
+    "layoutMs": 222.72,
+    "hierarchyMs": 8.81,
+    "cutMs": 0.04,
+    "autoCollapseMs": 53.4
+  }
+}

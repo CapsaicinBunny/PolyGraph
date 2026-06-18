@@ -38,3 +38,7 @@ next-env.d.ts
 # tauri updater signing key — NEVER commit; store the private key as a CI secret
 /src-tauri/.updater-private-key
 /src-tauri/.updater-private-key.pub
+
+# Benchmark artifacts
+bench/.fixtures/
+bench/results/
