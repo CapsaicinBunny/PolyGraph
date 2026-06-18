@@ -19,18 +19,28 @@ type FlatPositions = [string, number, number][];
 // force a near-linear `grid` so layout always terminates. (Auto-collapse normally
 // keeps inputs far below this; this is defense in depth — see docs/SCALE-100K.md.)
 const LAYOUT_MAX_HEAVY = 6000;
+// Dagre's crossing-minimization also blows up on *dense* graphs regardless of node
+// count — telemetry on the Linux kernel saw a 176-node/2410-edge cut take 5.2s and a
+// 3580-node/9673-edge cut take 7s, while a sparser 53k-node cut took 0.28s. Set high
+// enough not to regress normal repos (linux/fs's 8k-edge cuts stay on `smart`); it
+// only pre-empts genuinely huge cuts. The short timeout below catches the rest —
+// the mid-density blow-ups aren't predictable from edge count alone.
+const LAYOUT_MAX_EDGES = 10000;
 // If the worker hasn't answered in this long (hung on a pathological input), fall
-// back to a synchronous grid so the "laying out…" overlay can't spin forever.
-const LAYOUT_TIMEOUT_MS = 8000;
+// back to a synchronous grid so the "laying out…" overlay can't spin forever. Kept
+// short so a pathological dagre layout can't freeze a frame for seconds — the grid
+// fallback is near-instant on the (bounded) cut.
+const LAYOUT_TIMEOUT_MS = 2000;
 
 /** A cheap, near-linear layout used for huge inputs and as the timeout fallback. */
 function gridOptions(options: LayoutOptions): LayoutOptions {
   return { ...options, algorithm: "grid", groupBy: "none" };
 }
 
-/** Force a near-linear layout when the input is too large for the heavy algorithms. */
+/** Force a near-linear layout when the input is too large or too dense for the heavy algorithms. */
 export function guardOptions(input: LayoutInput, options: LayoutOptions): LayoutOptions {
-  return input.nodes.length > LAYOUT_MAX_HEAVY ? gridOptions(options) : options;
+  const tooBig = input.nodes.length > LAYOUT_MAX_HEAVY || input.edges.length > LAYOUT_MAX_EDGES;
+  return tooBig ? gridOptions(options) : options;
 }
 
 let worker: Worker | null = null;

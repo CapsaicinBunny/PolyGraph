@@ -21,6 +21,11 @@ import { useScene } from "./useScene";
 // MAX_CARDS cards. These want desktop calibration (see docs/SCALE-100K.md).
 const LOD_OPEN_PX = 240;
 const LOD_MAX_CARDS = 800;
+// Debounce the adaptive recompute so a single zoom *gesture* (many wheel ticks
+// across bands) triggers ONE cut+rebuild after it settles — not one per tick. The
+// rebuild reprocesses the whole base graph (1.39M nodes on the kernel), so coalescing
+// is the difference between a usable zoom and a multi-second-per-frame freeze.
+const LOD_RECUT_DEBOUNCE_MS = 200;
 
 export interface GraphViewProps {
   graph: GraphModel;
@@ -347,6 +352,61 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     let dragging = false;
     let last = { x: 0, y: 0 };
     let moved = 0;
+    let recutTimer: ReturnType<typeof setTimeout> | undefined;
+
+    // Recompute the adaptive cut from what's currently on screen and hand the new
+    // collapsed set up. The box coordinates come from the live scene, so the cut
+    // decision matches exactly what the user sees. No-op unless adaptiveLod is on or
+    // the zoom band hasn't actually changed since the last cut.
+    const recomputeCut = () => {
+      const l = lod.current;
+      if (!l.adaptiveLod || !l.onCut) return;
+      const c = cam.current;
+      const band = cameraBand(c.scale);
+      if (band === lodBand.current) return;
+      const prevBand = lodBand.current;
+      lodBand.current = band;
+      const boxes = sceneBoxes(l.scene);
+      const vp = { w: canvas.width, h: canvas.height };
+      const cutOpts = { openPx: LOD_OPEN_PX, maxCards: LOD_MAX_CARDS, prevCut: l.collapsed };
+      let next: Set<string>;
+      // When telemetry is on, take the traced path and log everything about this cut
+      // (per-dir decisions, deltas, timings); otherwise the cheap one.
+      if (telemetry.isEnabled()) {
+        const t0 = performance.now();
+        const r = computeCutTraced(l.dirTree, boxes, c, vp, cutOpts);
+        const computeMs = performance.now() - t0;
+        next = r.cut;
+        const changed = !cutEquals(next, l.collapsed);
+        telemetry.event("lod", "cut", {
+          trigger: "zoom",
+          cam: { x: c.x, y: c.y, scale: c.scale },
+          band,
+          prevBand,
+          viewport: vp,
+          openPx: LOD_OPEN_PX,
+          maxCards: LOD_MAX_CARDS,
+          dirsEvaluated: r.dirsEvaluated,
+          dirsOnScreen: r.dirsOnScreen,
+          cutSize: next.size,
+          prevCutSize: l.collapsed.size,
+          cards: r.cards,
+          computeMs,
+          changed,
+          opened: [...l.collapsed].filter((p) => !next.has(p)), // collapsed → open
+          collapsed: [...next].filter((p) => !l.collapsed.has(p)), // open → collapsed
+          trace: r.trace,
+        });
+        telemetry.metric("lod.computeMs", computeMs);
+        telemetry.metric("lod.cutSize", next.size);
+        telemetry.metric("lod.cards", r.cards);
+        telemetry.count("lod.recomputes");
+        if (changed) telemetry.count("lod.cutChanges");
+      } else {
+        next = computeCut(l.dirTree, boxes, c, vp, cutOpts);
+      }
+      if (!cutEquals(next, l.collapsed)) l.onCut(next);
+    };
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -360,58 +420,10 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       c.scale = next;
       vcRef.current?.set_camera(c.x, c.y, c.scale);
       renderSoon();
-      // Adaptive LOD: when the zoom crosses a band, recompute the directory cut
-      // from what's currently on screen and hand the new collapsed set up. The
-      // box coordinates come from the live scene, so the cut decision matches
-      // exactly what the user sees. No-op unless adaptiveLod is enabled.
-      const l = lod.current;
-      if (l.adaptiveLod && l.onCut) {
-        const band = cameraBand(c.scale);
-        if (band !== lodBand.current) {
-          const prevBand = lodBand.current;
-          lodBand.current = band;
-          const boxes = sceneBoxes(l.scene);
-          const vp = { w: canvas.width, h: canvas.height };
-          const cutOpts = { openPx: LOD_OPEN_PX, maxCards: LOD_MAX_CARDS, prevCut: l.collapsed };
-          let next: Set<string>;
-          // When telemetry is on, take the traced path and log everything about
-          // this cut (per-dir decisions, deltas, timings); otherwise the cheap one.
-          if (telemetry.isEnabled()) {
-            const t0 = performance.now();
-            const r = computeCutTraced(l.dirTree, boxes, c, vp, cutOpts);
-            const computeMs = performance.now() - t0;
-            next = r.cut;
-            const changed = !cutEquals(next, l.collapsed);
-            telemetry.event("lod", "cut", {
-              trigger: "zoom",
-              cam: { x: c.x, y: c.y, scale: c.scale },
-              band,
-              prevBand,
-              viewport: vp,
-              openPx: LOD_OPEN_PX,
-              maxCards: LOD_MAX_CARDS,
-              dirsEvaluated: r.dirsEvaluated,
-              dirsOnScreen: r.dirsOnScreen,
-              cutSize: next.size,
-              prevCutSize: l.collapsed.size,
-              cards: r.cards,
-              computeMs,
-              changed,
-              opened: [...l.collapsed].filter((p) => !next.has(p)), // collapsed → open
-              collapsed: [...next].filter((p) => !l.collapsed.has(p)), // open → collapsed
-              trace: r.trace,
-            });
-            telemetry.metric("lod.computeMs", computeMs);
-            telemetry.metric("lod.cutSize", next.size);
-            telemetry.metric("lod.cards", r.cards);
-            telemetry.count("lod.recomputes");
-            if (changed) telemetry.count("lod.cutChanges");
-          } else {
-            next = computeCut(l.dirTree, boxes, c, vp, cutOpts);
-          }
-          if (!cutEquals(next, l.collapsed)) l.onCut(next);
-        }
-      }
+      // Debounce the recompute: one cut+rebuild after the zoom gesture settles,
+      // not one per wheel tick (each rebuild reprocesses the whole base graph).
+      clearTimeout(recutTimer);
+      recutTimer = setTimeout(recomputeCut, LOD_RECUT_DEBOUNCE_MS);
     };
     const onDown = (e: PointerEvent) => {
       dragging = true;
@@ -498,6 +510,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       if (raf) cancelAnimationFrame(raf);
       if (animRaf) cancelAnimationFrame(animRaf);
       ro.disconnect();
+      clearTimeout(recutTimer);
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("pointerdown", onDown);
       el.removeEventListener("pointermove", onMove);
