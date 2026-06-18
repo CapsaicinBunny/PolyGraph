@@ -1,6 +1,56 @@
 // Browser helpers for delivering an export to the user: trigger a file download,
 // rasterize SVG → PNG, and copy text. Browser-only (DOM APIs); not unit-tested.
 
+import { isTauri } from "./env";
+
+/** A Save-dialog file filter derived from a filename's extension. */
+function filtersFor(filename: string): { name: string; extensions: string[] }[] | undefined {
+  const ext = filename.split(".").pop();
+  return ext ? [{ name: ext.toUpperCase(), extensions: [ext] }] : undefined;
+}
+
+/**
+ * Save `text` as `filename`. On the desktop app this opens a native Save-As dialog
+ * (the user picks where) and writes the chosen path; in the browser it falls back to
+ * a download. Returns false if the user cancelled the dialog.
+ */
+export async function saveTextFile(
+  filename: string,
+  text: string,
+  mime = "text/plain",
+): Promise<boolean> {
+  if (isTauri()) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const path = await save({ defaultPath: filename, filters: filtersFor(filename) });
+    if (!path) return false;
+    await invoke("write_file", { path, content: text });
+    return true;
+  }
+  downloadText(filename, text, mime);
+  return true;
+}
+
+/** Save a binary Blob as `filename` (native Save-As on desktop, download in browser). */
+export async function saveBlobFile(filename: string, blob: Blob): Promise<boolean> {
+  if (isTauri()) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const path = await save({ defaultPath: filename, filters: filtersFor(filename) });
+    if (!path) return false;
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bin = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    await invoke("write_file_base64", { path, base64: btoa(bin) });
+    return true;
+  }
+  downloadBlob(filename, blob);
+  return true;
+}
+
 /** Trigger a download of `text` as `filename` with the given MIME type. */
 export function downloadText(filename: string, text: string, mime = "text/plain"): void {
   downloadBlob(filename, new Blob([text], { type: `${mime};charset=utf-8` }));

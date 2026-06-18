@@ -682,8 +682,6 @@ export function Explorer() {
             packageCount={manifests.length}
             density={density}
             onDensity={setDensity}
-            adaptiveLod={adaptiveLod}
-            onAdaptiveLod={setAdaptiveLod}
             minimap={minimap}
             onMinimap={setMinimap}
             edgeRouting={edgeRouting}

@@ -2,24 +2,18 @@
 
 import { useState } from "react";
 import { Box, Button, Flex, HStack, Stack, Text, chakra } from "@chakra-ui/react";
+import { saveTextFile } from "@/lib/client/download";
 import { type Level, LEVELS } from "@/lib/graph/levels/types";
 import { telemetry } from "@/lib/telemetry";
 
-// Save the buffered telemetry as an NDJSON file — the downloadable "session log".
-// Best-effort: a blocked blob URL / OOM must not throw out of the click handler.
-function downloadSessionLog() {
+// Save the buffered telemetry as an NDJSON file via a native Save-As dialog (desktop)
+// or a browser download. Best-effort: a failure must not throw out of the handler.
+async function downloadSessionLog() {
   try {
-    const blob = new Blob([telemetry.toNDJSON()], { type: "application/x-ndjson" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `polygraph-session-${new Date().toISOString().replace(/[:.]/g, "-")}.ndjson`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    const name = `polygraph-session-${new Date().toISOString().replace(/[:.]/g, "-")}.ndjson`;
+    await saveTextFile(name, telemetry.toNDJSON(), "application/x-ndjson");
   } catch (err) {
-    console.error("[polygraph] couldn't generate the session log", err);
+    console.error("[polygraph] couldn't save the session log", err);
   }
 }
 
@@ -43,8 +37,6 @@ interface SettingsPanelProps {
   packageCount: number;
   density: number;
   onDensity: (v: number) => void;
-  adaptiveLod: boolean;
-  onAdaptiveLod: (v: boolean) => void;
   minimap: boolean;
   onMinimap: (v: boolean) => void;
   edgeRouting: "curved" | "orthogonal";
@@ -144,8 +136,6 @@ export function SettingsPanel({
   packageCount,
   density,
   onDensity,
-  adaptiveLod,
-  onAdaptiveLod,
   minimap,
   onMinimap,
   edgeRouting,
@@ -184,19 +174,6 @@ export function SettingsPanel({
           ✕
         </chakra.button>
       </Flex>
-
-      <Box>
-        <GroupLabel title="Adaptive LOD" />
-        <CheckRow
-          checked={adaptiveLod}
-          onClick={() => onAdaptiveLod(!adaptiveLod)}
-          label="Camera-driven level of detail"
-        />
-        <Text fontSize="xs" color="fg.muted" mt="2">
-          Collapses off-screen and distant directories as you zoom — keeps huge graphs fast. On by
-          default.
-        </Text>
-      </Box>
 
       <Box>
         <GroupLabel title="Minimap" />
@@ -275,7 +252,7 @@ export function SettingsPanel({
           render stats, and scan/analyze timings. On by default; nothing leaves your machine.
         </Text>
         <HStack gap="2" mt="3">
-          <Button size="sm" variant="outline" onClick={downloadSessionLog}>
+          <Button size="sm" variant="outline" onClick={() => void downloadSessionLog()}>
             Download session log
           </Button>
           <Button

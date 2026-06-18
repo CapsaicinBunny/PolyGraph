@@ -80,6 +80,25 @@ fn append_session_log(content: String, reset: bool) -> Result<(), String> {
   Ok(())
 }
 
+/// Write `content` to an arbitrary `path` the user picked via a Save-As dialog.
+/// (The path is user-chosen, so there's no project-root sandbox here, unlike the
+/// read side.) Used by Export and the telemetry log download.
+#[tauri::command]
+fn write_file(path: String, content: String) -> Result<(), String> {
+  std::fs::write(&path, content).map_err(|e| format!("write {path}: {e}"))
+}
+
+/// Write a binary file (e.g. a PNG export) to a user-chosen `path`. The bytes
+/// arrive base64-encoded since the JS->Rust bridge carries strings, not blobs.
+#[tauri::command]
+fn write_file_base64(path: String, base64: String) -> Result<(), String> {
+  use base64::Engine;
+  let bytes = base64::engine::general_purpose::STANDARD
+    .decode(base64.as_bytes())
+    .map_err(|e| format!("decode base64: {e}"))?;
+  std::fs::write(&path, bytes).map_err(|e| format!("write {path}: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   use tauri_plugin_log::{Target, TargetKind};
@@ -98,7 +117,9 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       spawn_detached,
       read_source_slice,
-      append_session_log
+      append_session_log,
+      write_file,
+      write_file_base64
     ])
     // Logging is on in every build (Info in debug, Warn+ in release) so a
     // packaged-app failure leaves a diagnostic trail — written to ./logs next to

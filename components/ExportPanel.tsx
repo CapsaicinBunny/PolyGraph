@@ -24,7 +24,7 @@ import { layoutCacheGet } from "@/lib/layout";
 import { toDOT, toGraphML, toMermaid, toPolyGraphJSON } from "@/lib/export/graph-formats";
 import { boundsOf, sceneToSVG } from "@/lib/export/svg";
 import { toHTMLReport } from "@/lib/export/html-report";
-import { downloadBlob, downloadText, svgToPngBlob } from "@/lib/client/download";
+import { saveBlobFile, saveTextFile, svgToPngBlob } from "@/lib/client/download";
 import type { ExplorerWorkspaceState } from "@/lib/workspace/schema";
 import {
   captureWorkspace,
@@ -119,14 +119,14 @@ export function ExportPanel({
     return scene;
   };
 
-  const exportText = (ext: string, text: string, mime: string) => {
-    downloadText(`${project}.${ext}`, text, mime);
-    setStatus(`Exported ${project}.${ext}`);
+  const exportText = async (ext: string, text: string, mime: string) => {
+    const fileName = `${project}.${ext}`;
+    if (await saveTextFile(fileName, text, mime)) setStatus(`Exported ${fileName}`);
   };
 
   const exportSVG = () => {
     const scene = sceneOrWarn();
-    if (scene) exportText("svg", sceneToSVG(scene), "image/svg+xml");
+    if (scene) void exportText("svg", sceneToSVG(scene), "image/svg+xml");
   };
 
   const exportPNG = async () => {
@@ -135,8 +135,7 @@ export function ExportPanel({
     try {
       const b = boundsOf(scene);
       const blob = await svgToPngBlob(sceneToSVG(scene), b.width, b.height, 2);
-      downloadBlob(`${project}.png`, blob);
-      setStatus(`Exported ${project}.png`);
+      if (await saveBlobFile(`${project}.png`, blob)) setStatus(`Exported ${project}.png`);
     } catch (e) {
       setStatus(`PNG export failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -152,16 +151,16 @@ export function ExportPanel({
       insights,
       generatedAt: new Date().toLocaleString(),
     });
-    exportText("html", html, "text/html");
+    void exportText("html", html, "text/html");
   };
 
-  const exportWorkspaceFile = () => {
-    downloadText(
-      `${project}.polygraph-workspace.json`,
-      workspaceToJSON(captureWorkspace(state)),
-      "application/json",
-    );
-    setStatus("Exported workspace JSON");
+  const exportWorkspaceFile = async () => {
+    const fileName = `${project}.polygraph-workspace.json`;
+    if (
+      await saveTextFile(fileName, workspaceToJSON(captureWorkspace(state)), "application/json")
+    ) {
+      setStatus("Exported workspace JSON");
+    }
   };
 
   const saveNamed = () => {
@@ -230,28 +229,30 @@ export function ExportPanel({
           <Button
             size="sm"
             variant="subtle"
-            onClick={() => exportText("json", toPolyGraphJSON(graph), "application/json")}
+            onClick={() => void exportText("json", toPolyGraphJSON(graph), "application/json")}
           >
             JSON
           </Button>
           <Button
             size="sm"
             variant="subtle"
-            onClick={() => exportText("dot", toDOT(graph, state.direction), "text/vnd.graphviz")}
+            onClick={() =>
+              void exportText("dot", toDOT(graph, state.direction), "text/vnd.graphviz")
+            }
           >
             DOT
           </Button>
           <Button
             size="sm"
             variant="subtle"
-            onClick={() => exportText("graphml", toGraphML(graph), "application/xml")}
+            onClick={() => void exportText("graphml", toGraphML(graph), "application/xml")}
           >
             GraphML
           </Button>
           <Button
             size="sm"
             variant="subtle"
-            onClick={() => exportText("mmd", toMermaid(graph, state.direction), "text/plain")}
+            onClick={() => void exportText("mmd", toMermaid(graph, state.direction), "text/plain")}
           >
             Mermaid
           </Button>
@@ -297,7 +298,7 @@ export function ExportPanel({
           </Button>
         </HStack>
         <HStack gap="2">
-          <Button size="sm" variant="subtle" onClick={exportWorkspaceFile}>
+          <Button size="sm" variant="subtle" onClick={() => void exportWorkspaceFile()}>
             Export JSON
           </Button>
           <Button size="sm" variant="subtle" onClick={() => fileInput.current?.click()}>
