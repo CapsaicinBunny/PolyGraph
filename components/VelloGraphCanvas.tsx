@@ -449,6 +449,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     const recomputeCut = () => {
       const l = lod.current;
       if (!l.adaptiveLod || !l.onCut) return;
+      // The cut measures each directory's on-screen size from the layout's cluster
+      // boxes. The grid fallback (forced on large/dense graphs) and groupBy:"none"
+      // produce NO clusters, so every dir reads as "off-screen, height 0" and the cut
+      // would wrongly collapse the whole graph to a few aggregates (the disappearing
+      // view). With no clusters to measure, leave the cut alone.
+      if (l.scene.clusters.length === 0) return;
       const c = cam.current;
       const band = cameraBand(c.scale);
       // Monotonic LOD: only ever REFINE (open more detail) as the user zooms IN —
