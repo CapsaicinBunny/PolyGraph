@@ -40,6 +40,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { UploadDropzone } from "./UploadDropzone";
 import type { ExplorerWorkspaceState } from "@/lib/workspace/schema";
 import { telemetry } from "@/lib/telemetry";
+import { startSessionLogPersist } from "@/lib/telemetry/persist";
 
 // Vello renders via WebGPU (browser-only), so load it client-side.
 const VelloGraphCanvas = dynamic(
@@ -153,6 +154,12 @@ export function Explorer() {
       graph ? [...analyzeInsights(graph), ...unresolvedToInsights(result?.unresolved ?? [])] : [],
     [graph, result],
   );
+
+  // Mirror telemetry to logs/session.ndjson on desktop so the LOD/render trace
+  // survives a crash (no-op in the browser; Settings "Download session log" there).
+  useEffect(() => {
+    startSessionLogPersist();
+  }, []);
 
   // Load / persist user saved searches.
   const SAVED_KEY = "polygraph.savedSearches";

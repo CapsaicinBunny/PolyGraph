@@ -50,6 +50,36 @@ fn read_source_slice(
   Ok(lines[s..e].join("\n"))
 }
 
+/// The `logs/` folder next to the executable — where both the Rust app log and the
+/// webview's session telemetry are written. None if the exe path can't be resolved.
+fn logs_dir() -> Option<std::path::PathBuf> {
+  std::env::current_exe()
+    .ok()
+    .and_then(|p| p.parent().map(|dir| dir.join("logs")))
+}
+
+/// Append the webview's telemetry (NDJSON) to logs/session.ndjson, alongside the
+/// app log, so the rich LOD/render trace survives a crash (the in-memory buffer is
+/// otherwise lost when the page dies). `reset` truncates first — the JS flusher
+/// passes it once at session start so each run starts a fresh file.
+#[tauri::command]
+fn append_session_log(content: String, reset: bool) -> Result<(), String> {
+  let dir = logs_dir().ok_or_else(|| "cannot resolve logs dir".to_string())?;
+  std::fs::create_dir_all(&dir).map_err(|e| format!("create logs dir: {e}"))?;
+  let path = dir.join("session.ndjson");
+  let mut opts = std::fs::OpenOptions::new();
+  opts.create(true);
+  if reset {
+    opts.write(true).truncate(true);
+  } else {
+    opts.append(true);
+  }
+  use std::io::Write;
+  let mut f = opts.open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+  f.write_all(content.as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))?;
+  Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   use tauri_plugin_log::{Target, TargetKind};
@@ -57,10 +87,7 @@ pub fn run() {
   // Write the log file to a `logs/` folder right next to the executable so it's
   // easy to find while testing — instead of the buried OS app-data dir. Fall back
   // to the default app-log dir only if the exe path can't be resolved.
-  let file_target = match std::env::current_exe()
-    .ok()
-    .and_then(|p| p.parent().map(|dir| dir.join("logs")))
-  {
+  let file_target = match logs_dir() {
     Some(dir) => Target::new(TargetKind::Folder { path: dir, file_name: None }),
     None => Target::new(TargetKind::LogDir { file_name: None }),
   };
@@ -68,7 +95,11 @@ pub fn run() {
   let builder = tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
-    .invoke_handler(tauri::generate_handler![spawn_detached, read_source_slice])
+    .invoke_handler(tauri::generate_handler![
+      spawn_detached,
+      read_source_slice,
+      append_session_log
+    ])
     // Logging is on in every build (Info in debug, Warn+ in release) so a
     // packaged-app failure leaves a diagnostic trail — written to ./logs next to
     // the app plus stdout, not the OS app-data dir.
