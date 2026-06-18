@@ -38,16 +38,16 @@ need a separate headless-WebGPU harness — a future phase.
 (`bench/synthetic.ts`, deterministic, no scanning) at sizes the real fixtures don't
 reach:
 
-| Metric | Source | Notes |
-| --- | --- | --- |
-| Layout (guarded) | `layoutGraph` | above 6000 nodes the layout-client size guard drops to `grid`, so this is the real layout the app runs at scale |
-| Hierarchy build | `lib/graph/hierarchy.ts` `buildDirTree` | directory tree from the graph |
-| Adaptive cut | `lib/graph/lod-cut.ts` `computeCut` | the camera-driven LOD cut (the render-engine core) |
-| Auto-collapse | `lib/graph/auto-collapse.ts` `autoCollapseDirs` | huge-graph aggregation |
+| Metric           | Source                                          | Notes                                                                                                           |
+| ---------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Layout (guarded) | `layoutGraph`                                   | above 6000 nodes the layout-client size guard drops to `grid`, so this is the real layout the app runs at scale |
+| Hierarchy build  | `lib/graph/hierarchy.ts` `buildDirTree`         | directory tree from the graph                                                                                   |
+| Adaptive cut     | `lib/graph/lod-cut.ts` `computeCut`             | the camera-driven LOD cut (the render-engine core)                                                              |
+| Auto-collapse    | `lib/graph/auto-collapse.ts` `autoCollapseDirs` | huge-graph aggregation                                                                                          |
 
-Sizes are `SCALE_SIZES` in `run.ts` (default 1000 + 8000 — 8000 crosses both the
-layout guard and the analyzer batch threshold). These feed the same baselines /
-`bench:check` gating as the fixture metrics.
+Sizes are `SCALE_SIZES` in `run.ts` (default 1000, 8000, 100000 — 8000 crosses the
+layout guard + analyzer batch threshold; 100000 is the headline scale target). These
+feed the same baselines / `bench:check` gating as the fixture metrics.
 
 ## Fixtures (`bench/fixtures.ts`)
 
