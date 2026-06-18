@@ -40,6 +40,14 @@ describe("guardOptions", () => {
       "grid",
     );
   });
+
+  test("caps smart at the low threshold when grouping is off (it degenerates to one dagre)", () => {
+    // groupBy:"none" puts every node in the root cluster → one monolithic dagre, no
+    // cluster boxes, so smart loses its scaling and gets the low cap like the rest.
+    expect(
+      guardOptions(nodes(6001), { algorithm: "smart", direction: "LR", groupBy: "none" }).algorithm,
+    ).toBe("grid");
+  });
 });
 
 describe("layoutInWorker fallback", () => {

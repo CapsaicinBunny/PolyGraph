@@ -15,12 +15,16 @@ export interface WorkerLayout {
 type FlatPositions = [string, number, number][];
 
 // Above how many nodes a heavy layout is forced down to near-linear `grid`. This is
-// per-algorithm: `smart` is cluster-based and scales (telemetry: a 53k-node kernel
-// cut laid out in ~0.28s) AND it produces the directory cluster boxes the adaptive
-// cut needs — forcing it to grid (groupBy:"none") would strip those and defeat the
-// LOD, so it gets plenty of headroom. Monolithic dagre (`layered`/`tree`) is ~O(V·E)
-// and force is O(N·ticks); those stay capped low. The timeout below is the final
-// safety for any pathological (dense) layout, regardless of algorithm.
+// per-algorithm: `smart` *with grouping* is cluster-based and scales (telemetry: a
+// 53k-node kernel cut laid out in ~0.28s) because directory/community grouping splits
+// the graph into many small per-cluster dagre runs, AND it produces the cluster boxes
+// the adaptive cut needs — so it gets plenty of headroom. The catch: with
+// groupBy:"none" smart degenerates to ONE monolithic dagre over every node (smart.ts
+// puts everything in the root cluster), which is just as slow as `layered` (~30s at
+// 15k nodes, ~108s at 40k — far past the timeout) and yields no clusters, so it is
+// capped low like the other non-scaling layouts. Monolithic dagre (`layered`/`tree`)
+// is ~O(V·E) and force is O(N·ticks). The timeout below is the final safety for any
+// pathological (dense) layout, regardless of algorithm.
 const LAYOUT_MAX_HEAVY_SMART = 60_000;
 const LAYOUT_MAX_HEAVY_OTHER = 6_000;
 // If the worker hasn't answered in this long (hung on a pathological input), fall
@@ -36,7 +40,11 @@ function gridOptions(options: LayoutOptions): LayoutOptions {
 
 /** Force a near-linear layout only when the input is too large for the chosen algorithm. */
 export function guardOptions(input: LayoutInput, options: LayoutOptions): LayoutOptions {
-  const limit = options.algorithm === "smart" ? LAYOUT_MAX_HEAVY_SMART : LAYOUT_MAX_HEAVY_OTHER;
+  // Smart earns the high headroom only WITH grouping; with groupBy:"none" it
+  // degenerates to a single monolithic dagre and scales no better than `layered`.
+  // (undefined groupBy resolves to "directory" in smart.ts, so it keeps the headroom.)
+  const scalesWell = options.algorithm === "smart" && options.groupBy !== "none";
+  const limit = scalesWell ? LAYOUT_MAX_HEAVY_SMART : LAYOUT_MAX_HEAVY_OTHER;
   return input.nodes.length > limit ? gridOptions(options) : options;
 }
 
