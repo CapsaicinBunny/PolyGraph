@@ -12,7 +12,7 @@ import {
 import type { GraphEdge, GraphModel } from "@/lib/graph/types";
 import { EDGE_STYLES, EXTERNAL_STYLES, NODE_STYLES, ROLE_STYLES } from "@/lib/graph/visual";
 import { isTauri } from "@/lib/client/env";
-import { openInEditor, revealInFileManager } from "@/lib/client/native";
+import { openWithDefault, revealInFileManager } from "@/lib/client/native";
 import { copyText } from "@/lib/client/download";
 import { symbolPath } from "@/lib/editor/commands";
 import { SourcePreview } from "./SourcePreview";
@@ -106,7 +106,7 @@ export function NodeDetailPanel({
             onClick={(e) => {
               e.stopPropagation();
               runAction("Opened call site", () =>
-                openInEditor("vscode", projectPath, occurrence.filePath, occurrence.line),
+                openWithDefault(projectPath, occurrence.filePath),
               );
             }}
           >
@@ -272,24 +272,12 @@ export function NodeDetailPanel({
                   <Button
                     size="xs"
                     variant="subtle"
+                    title="Open with your default app for this file type"
                     onClick={() =>
-                      runAction("Opened in VS Code", () =>
-                        openInEditor("vscode", projectPath, node.filePath, node.line),
-                      )
+                      runAction("Opened", () => openWithDefault(projectPath, node.filePath))
                     }
                   >
-                    VS Code
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="subtle"
-                    onClick={() =>
-                      runAction("Opened in JetBrains", () =>
-                        openInEditor("jetbrains", projectPath, node.filePath, node.line),
-                      )
-                    }
-                  >
-                    JetBrains
+                    Open
                   </Button>
                   <Button
                     size="xs"

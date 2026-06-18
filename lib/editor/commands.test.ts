@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   editorInvocation,
   fileLocation,
+  openInvocation,
   revealInvocation,
   symbolPath,
   toAbsolute,
@@ -58,6 +59,27 @@ describe("revealInvocation", () => {
     expect(revealInvocation("/p", "src/a.ts", "linux")).toEqual({
       program: "xdg-open",
       args: ["/p/src"],
+    });
+  });
+});
+
+describe("openInvocation (OS default app)", () => {
+  test("windows uses start via cmd", () => {
+    expect(openInvocation("C:\\p", "src/a.ts", "win32")).toEqual({
+      program: "cmd",
+      args: ["/c", "start", "", "C:\\p\\src\\a.ts"],
+    });
+  });
+  test("macOS uses open", () => {
+    expect(openInvocation("/p", "src/a.ts", "darwin")).toEqual({
+      program: "open",
+      args: ["/p/src/a.ts"],
+    });
+  });
+  test("linux uses xdg-open on the file", () => {
+    expect(openInvocation("/p", "src/a.ts", "linux")).toEqual({
+      program: "xdg-open",
+      args: ["/p/src/a.ts"],
     });
   });
 });

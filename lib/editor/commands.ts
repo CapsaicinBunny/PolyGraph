@@ -50,6 +50,22 @@ export function editorInvocation(
   return { program, args: ["--line", String(ln), "--column", String(col), abs] };
 }
 
+/**
+ * Command to open a file with the OS's default application for its type (file
+ * association) — the OS picks the program, not us. No line number: the default
+ * handler decides. Windows uses `start` (via cmd), which wraps ShellExecute.
+ */
+export function openInvocation(
+  projectRoot: string,
+  relPath: string,
+  platform: Platform,
+): Invocation {
+  const abs = toAbsolute(projectRoot, relPath, platform);
+  if (platform === "win32") return { program: "cmd", args: ["/c", "start", "", abs] };
+  if (platform === "darwin") return { program: "open", args: [abs] };
+  return { program: "xdg-open", args: [abs] };
+}
+
 /** Command to reveal a file in the OS file manager (selected where supported). */
 export function revealInvocation(
   projectRoot: string,
