@@ -451,7 +451,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       if (!l.adaptiveLod || !l.onCut) return;
       const c = cam.current;
       const band = cameraBand(c.scale);
-      if (band === lodBand.current) return;
+      // Monotonic LOD: only ever REFINE (open more detail) as the user zooms IN —
+      // never re-collapse on zoom-OUT. Collapsing the view you're looking at when you
+      // zoom out is the disliked behavior; once a region is opened it stays open. The
+      // cut resets (re-fits lodBand) on a new scan / expand / collapse-all. computeCut
+      // still caps the result at maxCards, so the open set stays bounded.
+      if (band <= lodBand.current) return;
       const prevBand = lodBand.current;
       lodBand.current = band;
       const boxes = sceneBoxes(l.scene);
