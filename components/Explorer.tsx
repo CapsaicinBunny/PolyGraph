@@ -100,7 +100,7 @@ export function Explorer() {
   const [projectPath, setProjectPath] = useState("");
   // Adaptive level-of-detail (LOD): recompute the collapsed cut as the camera
   // zooms so a huge repo stays drawable. Off by default — see docs/SCALE-100K.md.
-  const [adaptiveLod, setAdaptiveLod] = useState(false);
+  const [adaptiveLod, setAdaptiveLod] = useState(true);
 
   const baseGraph = result?.graph ?? null;
 
@@ -623,6 +623,8 @@ export function Explorer() {
             packageCount={manifests.length}
             density={density}
             onDensity={setDensity}
+            adaptiveLod={adaptiveLod}
+            onAdaptiveLod={setAdaptiveLod}
             edgeRouting={edgeRouting}
             onEdgeRouting={setEdgeRouting}
             communityCollapse={communityCollapse}

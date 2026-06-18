@@ -23,6 +23,8 @@ interface SettingsPanelProps {
   packageCount: number;
   density: number;
   onDensity: (v: number) => void;
+  adaptiveLod: boolean;
+  onAdaptiveLod: (v: boolean) => void;
   edgeRouting: "curved" | "orthogonal";
   onEdgeRouting: (v: "curved" | "orthogonal") => void;
   communityCollapse: boolean;
@@ -67,12 +69,59 @@ function Choice({
   );
 }
 
+function CheckRow({
+  checked,
+  onClick,
+  label,
+}: {
+  checked: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <chakra.button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      onClick={onClick}
+      display="flex"
+      alignItems="center"
+      gap="2"
+      w="full"
+      textAlign="left"
+    >
+      <Box
+        w="16px"
+        h="16px"
+        rounded="sm"
+        flexShrink="0"
+        borderWidth="1px"
+        borderColor={checked ? "blue.solid" : "border.emphasized"}
+        bg={checked ? "blue.solid" : "transparent"}
+        color="white"
+        display="flex"
+        alignItems="center"
+        justifyContent="center"
+        fontSize="11px"
+        lineHeight="1"
+      >
+        {checked ? "✓" : ""}
+      </Box>
+      <Text fontSize="sm" color="fg">
+        {label}
+      </Text>
+    </chakra.button>
+  );
+}
+
 export function SettingsPanel({
   level,
   onLevel,
   packageCount,
   density,
   onDensity,
+  adaptiveLod,
+  onAdaptiveLod,
   edgeRouting,
   onEdgeRouting,
   communityCollapse,
@@ -106,6 +155,19 @@ export function SettingsPanel({
           ✕
         </chakra.button>
       </Flex>
+
+      <Box>
+        <GroupLabel title="Adaptive LOD" />
+        <CheckRow
+          checked={adaptiveLod}
+          onClick={() => onAdaptiveLod(!adaptiveLod)}
+          label="Camera-driven level of detail"
+        />
+        <Text fontSize="xs" color="fg.muted" mt="2">
+          Collapses off-screen and distant directories as you zoom — keeps huge graphs fast. On by
+          default.
+        </Text>
+      </Box>
 
       <Box>
         <GroupLabel title="Abstraction level" />
