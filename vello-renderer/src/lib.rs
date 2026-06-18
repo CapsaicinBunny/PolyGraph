@@ -40,6 +40,14 @@ const BADGE_SIZE: f32 = 9.0; // language-code text size inside file icons
 const LABEL_MIN_SCALE: f64 = 0.5; // only lay out labels/icons when readable
 const EDGE_DASH_BUDGET: usize = 300; // above this many edges, draw solid (dashing overruns the allocator)
 const EDGE_RENDER_CAP: usize = 60_000; // max edges encoded per frame; above this, sample a uniform subset (LOD)
+// Zoomed-out render LOD: when the whole graph is on screen the cull can't drop
+// anything, so a huge expanded scene (e.g. the kernel: ~29k nodes + ~56k edges)
+// would draw everything every frame (~11fps). Below LABEL_MIN_SCALE we already hide
+// labels/icons; also (a) draw each node as a single dot instead of a 3-op card, and
+// (b) sample far fewer edges — individual cards/edges are imperceptible at that
+// zoom, so detail is no loss but throughput jumps.
+const EDGE_RENDER_CAP_LOD: usize = 8_000; // edge cap when zoomed out (below LABEL_MIN_SCALE)
+const DOT_LOD_PX: f64 = 7.0; // below this on-screen card height, draw a dot, not a card
 const ICON_R: f64 = 6.0; // icon half-size in world units
 
 #[wasm_bindgen(start)]
@@ -462,7 +470,12 @@ impl VelloCanvas {
         // encoding hundreds of thousands of curves overruns the wasm scene allocator
         // (the proximate "fails to render" failure). Zoomed-in views clip to far fewer
         // than the cap, so the stride is invisible in practice.
-        let edge_step = (self.data.edges.len() / EDGE_RENDER_CAP).max(1);
+        let edge_cap = if self.cam_scale < LABEL_MIN_SCALE {
+            EDGE_RENDER_CAP_LOD
+        } else {
+            EDGE_RENDER_CAP
+        };
+        let edge_step = (self.data.edges.len() / edge_cap).max(1);
         for (i, e) in self.data.edges.iter().enumerate() {
             if i % edge_step != 0 {
                 continue;
@@ -572,6 +585,19 @@ impl VelloCanvas {
             }
             stats.nodes_drawn += 1;
             let accent = Color::from_rgb8(n.color[0], n.color[1], n.color[2]);
+
+            // Zoomed-out LOD: when this card is only a few pixels tall, draw it as a
+            // single screen-space dot (one fill) instead of the 3-op card + chrome.
+            // Imperceptible as a shape at that size, but a big throughput win when the
+            // whole graph is on screen.
+            if n.h * self.cam_scale < DOT_LOD_PX {
+                let scx = (n.x + n.w / 2.0) * self.cam_scale + self.cam_x;
+                let scy = (n.y + n.h / 2.0) * self.cam_scale + self.cam_y;
+                let dot = RoundedRect::new(scx - 1.6, scy - 1.6, scx + 1.6, scy + 1.6, 1.6);
+                self.scene.fill(Fill::NonZero, Affine::IDENTITY, accent, None, &dot);
+                continue;
+            }
+
             let selected = Some(&n.id) == self.selected.as_ref();
             let r = n.x + n.w;
             let b = n.y + n.h;
