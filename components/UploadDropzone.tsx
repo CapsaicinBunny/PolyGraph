@@ -21,8 +21,14 @@ import { readSourceFiles } from "@/lib/client/read-files";
 import { apiBase } from "@/lib/client/api";
 import { isTauri } from "@/lib/client/env";
 import type { PackageManifest } from "@/lib/graph/levels/types";
+import { readScanNdjson } from "@/lib/graph/scan-ndjson";
 import type { AnalyzeResult, SourceFileMap } from "@/lib/graph/types";
 import { ThemeToggle } from "./ThemeToggle";
+
+// Shown when the scan response can't be loaded — the usual cause on an enormous
+// codebase is the analyzer or the app running out of memory mid-result.
+const TOO_LARGE_MESSAGE =
+  "This project produced more data than the app can load — it may be too large to analyze in full, or memory ran out mid-scan. Try scanning a subfolder (for example, a single top-level directory).";
 
 interface UploadDropzoneProps {
   onResult: (
@@ -213,31 +219,44 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ path: trimmed, force }),
       });
-      const data = (await res.json().catch(() => ({}))) as Partial<AnalyzeResult> & {
+
+      // The graph result arrives as an NDJSON stream (read incrementally so a huge
+      // codebase never has to be buffered as one giant JSON string). A failure to
+      // read the stream on a project this size almost always means it overran
+      // memory, so report that rather than a bare status code.
+      const contentType = res.headers.get("content-type") ?? "";
+      if (res.ok && contentType.includes("ndjson")) {
+        let data: Awaited<ReturnType<typeof readScanNdjson>>;
+        try {
+          data = await readScanNdjson(res);
+        } catch {
+          throw new Error(TOO_LARGE_MESSAGE);
+        }
+        console.info(`[polygraph] /scan round-trip ${(performance.now() - t0).toFixed(0)}ms`);
+        onResult(
+          { graph: data.graph, errors: data.errors, unresolved: data.unresolved },
+          { fileCount: data.fileCount || data.graph.nodes.length, skipped: data.skipped },
+          data.manifests,
+          // The server scan returns the resolved root; fall back to the typed path.
+          data.root || trimmed,
+        );
+        return;
+      }
+
+      // Everything else is small regular JSON: the over-size confirmation gate or
+      // an error payload.
+      const data = (await res.json().catch(() => ({}))) as {
         error?: string;
         fileCount?: number;
-        skipped?: number;
         oversize?: boolean;
-        manifests?: PackageManifest[];
-        root?: string;
       };
       console.info(`[polygraph] /scan round-trip ${(performance.now() - t0).toFixed(0)}ms`);
-      // Large scan — let the user confirm before we run the heavy analysis.
       if (res.ok && data.oversize) {
         setPhase("idle");
         setPendingConfirm({ path: trimmed, fileCount: data.fileCount ?? 0 });
         return;
       }
-      if (!res.ok || !data.graph) {
-        throw new Error(data.error ?? `Scan failed (${res.status})`);
-      }
-      onResult(
-        { graph: data.graph, errors: data.errors ?? [], unresolved: data.unresolved ?? [] },
-        { fileCount: data.fileCount ?? data.graph.nodes.length, skipped: data.skipped ?? 0 },
-        data.manifests ?? [],
-        // The server scan returns the resolved root; fall back to the typed path.
-        data.root ?? trimmed,
-      );
+      throw new Error(data.error ?? (res.ok ? TOO_LARGE_MESSAGE : `Scan failed (${res.status})`));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
       setPhase("idle");

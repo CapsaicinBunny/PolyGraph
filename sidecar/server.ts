@@ -3,6 +3,7 @@
 // with `bun build --compile` for the Tauri bundle. Binds 127.0.0.1 only (no
 // firewall prompt) and prints the chosen port so the Tauri Rust core can read it.
 
+import { SCAN_NDJSON_CONTENT_TYPE, scanNdjsonStream } from "../lib/graph/scan-ndjson";
 import type { SourceFileMap } from "../lib/graph/types";
 import { runAnalyze, runScan } from "../lib/server/handlers";
 
@@ -13,7 +14,21 @@ const CORS: Record<string, string> = {
 };
 
 function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
+  let text: string;
+  try {
+    text = JSON.stringify(body);
+  } catch (err) {
+    // A graph large enough to overflow V8's ~512MB string ceiling throws here;
+    // answer with a clear 507 instead of letting the handler crash the request.
+    text = JSON.stringify({
+      error: err instanceof Error ? err.message : "Response too large to serialize",
+    });
+    return new Response(text, {
+      status: 507,
+      headers: { "content-type": "application/json", ...CORS },
+    });
+  }
+  return new Response(text, {
     status,
     headers: { "content-type": "application/json", ...CORS },
   });
@@ -38,7 +53,17 @@ export function startServer(port = Number(process.env.POLYGRAPH_PORT) || 0): Run
       if (req.method === "POST" && pathname === "/scan") {
         const body = (await req.json().catch(() => ({}))) as { path?: string; force?: boolean };
         const r = await runScan(body.path, { force: body.force });
-        return r.ok ? json(r.value) : json({ error: r.error }, r.status);
+        if (!r.ok) return json({ error: r.error }, r.status);
+        // Stream the graph as NDJSON so a huge codebase never has to be held as one
+        // serialized string. The over-size confirmation reply carries no graph, so
+        // it stays a small regular JSON response.
+        if ("graph" in r.value) {
+          return new Response(scanNdjsonStream(r.value), {
+            status: 200,
+            headers: { "content-type": SCAN_NDJSON_CONTENT_TYPE, ...CORS },
+          });
+        }
+        return json(r.value);
       }
 
       if (req.method === "POST" && pathname === "/analyze") {

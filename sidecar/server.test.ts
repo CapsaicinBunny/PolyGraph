@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readScanNdjson } from "../lib/graph/scan-ndjson";
 import { startServer, type RunningServer } from "./server";
 
 let server: RunningServer;
@@ -26,14 +27,15 @@ test("GET /health returns ok", async () => {
   expect(await res.json()).toEqual({ ok: true });
 });
 
-test("POST /scan analyzes a directory", async () => {
+test("POST /scan streams the graph as NDJSON", async () => {
   const res = await fetch(`${base}/scan`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ path: dir }),
   });
   expect(res.status).toBe(200);
-  const data = (await res.json()) as { graph: { nodes: unknown[] }; fileCount: number };
+  expect(res.headers.get("content-type")).toContain("ndjson");
+  const data = await readScanNdjson(res);
   expect(data.fileCount).toBe(1);
   expect(data.graph.nodes.length).toBeGreaterThan(0);
 });
