@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { Box, Button, Flex, HStack, Stack, Text, chakra } from "@chakra-ui/react";
 import { saveTextFile } from "@/lib/client/download";
 import { type Level, LEVELS } from "@/lib/graph/levels/types";
@@ -146,7 +145,6 @@ export function SettingsPanel({
   onTelemetry,
   onClose,
 }: SettingsPanelProps) {
-  const [, setTick] = useState(0); // forces a re-render so the captured-count refreshes
   return (
     <Stack
       w="260px"
@@ -176,16 +174,36 @@ export function SettingsPanel({
       </Flex>
 
       <Box>
-        <GroupLabel title="Minimap" />
-        <CheckRow
-          checked={minimap}
-          onClick={() => onMinimap(!minimap)}
-          label="Show navigation minimap"
-        />
-        <Text fontSize="xs" color="fg.muted" mt="2">
-          A graph-extent overview with the current viewport; click or drag it to recenter. On by
-          default.
-        </Text>
+        <Stack gap="2.5">
+          <CheckRow
+            checked={minimap}
+            onClick={() => onMinimap(!minimap)}
+            label="Show navigation minimap"
+          />
+          <CheckRow
+            checked={telemetryOn}
+            onClick={() => onTelemetry(!telemetryOn)}
+            label="Local logs"
+          />
+        </Stack>
+        <HStack gap="2" mt="3">
+          <Button
+            size="xs"
+            variant="ghost"
+            colorPalette="gray"
+            onClick={() => void downloadSessionLog()}
+          >
+            Download log
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            colorPalette="gray"
+            onClick={() => telemetry.clearAll()}
+          >
+            Clear
+          </Button>
+        </HStack>
       </Box>
 
       <Box>
@@ -237,38 +255,6 @@ export function SettingsPanel({
         </Choice>
         <Text fontSize="xs" color="fg.muted" mt="2">
           Folds every detected community into one card. Smart layout, Community grouping only.
-        </Text>
-      </Box>
-
-      <Box>
-        <GroupLabel title="Analytics & logging" />
-        <CheckRow
-          checked={telemetryOn}
-          onClick={() => onTelemetry(!telemetryOn)}
-          label="Capture diagnostics (LOD, rendering, analysis)"
-        />
-        <Text fontSize="xs" color="fg.muted" mt="2">
-          Structured console logs plus a downloadable session log — deep LOD-cut traces, per-frame
-          render stats, and scan/analyze timings. On by default; nothing leaves your machine.
-        </Text>
-        <HStack gap="2" mt="3">
-          <Button size="sm" variant="outline" onClick={() => void downloadSessionLog()}>
-            Download session log
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            colorPalette="gray"
-            onClick={() => {
-              telemetry.clearAll();
-              setTick((t) => t + 1);
-            }}
-          >
-            Clear
-          </Button>
-        </HStack>
-        <Text fontSize="xs" color="fg.subtle" mt="2">
-          {telemetry.eventCount().toLocaleString()} events captured this session.
         </Text>
       </Box>
     </Stack>
