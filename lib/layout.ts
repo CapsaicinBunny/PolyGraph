@@ -357,9 +357,16 @@ function radialLayout(view: LayoutInput): Positions {
     (byDepth.get(d) ?? byDepth.set(d, []).get(d))?.push(nd.id);
   }
 
-  const RING = 260;
+  // Arc allowance per node (≈ widest card + breathing room) and the minimum radial
+  // gap between consecutive rings. A ring's radius is the larger of "big enough to fit
+  // all its nodes around the circumference" and "clear of the inner ring", so a crowded
+  // ring grows outward instead of cramming its nodes into an overlapping circle.
+  const ARC = 220;
+  const RING_GAP = 220;
   const nodeById = new Map(view.nodes.map((nd) => [nd.id, nd]));
   let prevRing: string[] = [];
+  let prevRadius = 0;
+  let first = true;
   for (const d of [...byDepth.keys()].sort((a, b) => a - b)) {
     const ringIds = byDepth.get(d)!;
     // Inner ring first; subsequent rings ordered by barycenter of inner-ring neighbors.
@@ -377,7 +384,10 @@ function radialLayout(view: LayoutInput): Positions {
               return ns;
             });
           })();
-    const radius = d === 0 ? (ringIds.length > 1 ? RING * 0.5 : 0) : d * RING;
+    const fitRadius = (ordered.length * ARC) / (2 * Math.PI);
+    let radius: number;
+    if (first) radius = ordered.length > 1 ? fitRadius : 0;
+    else radius = Math.max(prevRadius + RING_GAP, fitRadius);
     ordered.forEach((id, i) => {
       const node = nodeById.get(id);
       if (!node) return;
@@ -385,6 +395,8 @@ function radialLayout(view: LayoutInput): Positions {
       positions.set(...topLeft(node, Math.cos(angle) * radius, Math.sin(angle) * radius));
     });
     prevRing = ordered;
+    prevRadius = radius;
+    first = false;
   }
   return positions;
 }

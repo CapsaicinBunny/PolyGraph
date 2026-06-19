@@ -171,7 +171,15 @@ describe("circular layout is graph-aware (not input order)", () => {
     })),
     edges: ["a:b", "b:c", "c:d", "d:a"].map((p) => {
       const [s, t] = p.split(":");
-      return { id: `${s}->${t}:import`, source: s, target: t, kind: "import" as const, occurrences: [], count: 1, originalEdgeIds: [] };
+      return {
+        id: `${s}->${t}:import`,
+        source: s,
+        target: t,
+        kind: "import" as const,
+        occurrences: [],
+        count: 1,
+        originalEdgeIds: [],
+      };
     }),
   };
 
@@ -235,7 +243,10 @@ describe("radial layout is graph-aware (directed rings + stable)", () => {
     originalEdgeIds: [],
   });
   // r → a, r → b, a → c  (dependency depth: r=0, a/b=1, c=2)
-  const tree: GraphView = { nodes: ["r", "a", "b", "c"].map(mk), edges: [ed("r", "a"), ed("r", "b"), ed("a", "c")] };
+  const tree: GraphView = {
+    nodes: ["r", "a", "b", "c"].map(mk),
+    edges: [ed("r", "a"), ed("r", "b"), ed("a", "c")],
+  };
   const centerOf = (p: { x: number; y: number }) => ({ x: p.x + 100, y: p.y + 28 });
   const dist = (p: { x: number; y: number }, q: { x: number; y: number }) => {
     const a = centerOf(p);
@@ -298,7 +309,10 @@ describe("tree layout is a real tidy tree", () => {
     originalEdgeIds: [],
   });
   // r → a, r → b, a → c
-  const tree: GraphView = { nodes: ["r", "a", "b", "c"].map(mk), edges: [ed("r", "a"), ed("r", "b"), ed("a", "c")] };
+  const tree: GraphView = {
+    nodes: ["r", "a", "b", "c"].map(mk),
+    edges: [ed("r", "a"), ed("r", "b"), ed("a", "c")],
+  };
 
   test("TB places parents above children and spreads siblings horizontally", () => {
     const pos = layoutView(tree, { algorithm: "tree", direction: "TB" });
@@ -407,5 +421,37 @@ describe("stress layout (cola.js)", () => {
     const p1 = layoutView(g, { algorithm: "stress" });
     const p2 = layoutView(g, { algorithm: "stress" });
     for (const id of ["a", "b", "c"]) expect(p2.get(id)).toEqual(p1.get(id));
+  });
+});
+
+describe("radial ring sizing (no overlap on crowded rings)", () => {
+  test("expands a ring's radius to fit its node count", () => {
+    // 1 root with 24 children all at depth 1: the ring must be large enough that
+    // adjacent children don't overlap (old fixed radius=260 crammed them together).
+    const n = 24;
+    const nodes: LayoutInput["nodes"] = [
+      { id: "root", kind: "file" },
+      ...Array.from({ length: n }, (_, i) => ({ id: `c${i}`, kind: "file" as const })),
+    ];
+    const edges: LayoutInput["edges"] = Array.from({ length: n }, (_, i) => ({
+      source: "root",
+      target: `c${i}`,
+      kind: "import" as const,
+      count: 1,
+      weight: edgeWeight("import", 1),
+    }));
+    const pos = layoutView({ nodes, edges }, { algorithm: "radial" });
+    const centers = Array.from({ length: n }, (_, i) => {
+      const p = pos.get(`c${i}`)!;
+      return { x: p.x + 100, y: p.y + 28 };
+    });
+    let minDist = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++)
+        minDist = Math.min(
+          minDist,
+          Math.hypot(centers[i].x - centers[j].x, centers[i].y - centers[j].y),
+        );
+    expect(minDist).toBeGreaterThan(140); // ~no overlap (cards are ~200 wide)
   });
 });
