@@ -30,6 +30,18 @@ export interface CutOptions {
   prevCut?: Set<string>;
   /** Viewport cull margin (px), matching the renderer's on-screen padding. */
   margin?: number;
+  /**
+   * Layout-node cost of opening one file — `1 + its visible symbols`. Defaults to 1
+   * (file = card). When files are expanded their symbols enter the layout too, so a
+   * dir can be cheap in CARDS yet far too expensive in NODES for the layout engine.
+   */
+  nodeCost?: (fileId: string) => number;
+  /**
+   * Cap on estimated layout NODES (opened files × {@link nodeCost} + aggregate cards).
+   * Opens stop once this is reached, keeping the input small enough that Smart lays it
+   * out within its interactive budget instead of timing out to a grid. Default Infinity.
+   */
+  nodeBudget?: number;
 }
 
 export type CutDecision = "open" | "collapse";
@@ -75,13 +87,28 @@ function cutCore(
   opts: CutOptions,
   trace: CutTraceEntry[] | null,
 ): CutResult {
-  const { openPx, maxCards, hysteresis = 0.8, prevCut, margin = 0 } = opts;
+  const {
+    openPx,
+    maxCards,
+    hysteresis = 0.8,
+    prevCut,
+    margin = 0,
+    nodeCost = () => 1,
+    nodeBudget = Infinity,
+  } = opts;
   const collapsed = new Set<string>();
   let cards = 0;
+  let nodes = 0;
   let dirsEvaluated = 0;
   let dirsOnScreen = 0;
 
   const wasOpen = (path: string) => prevCut !== undefined && !prevCut.has(path);
+  // Layout-node cost of opening this dir's direct files (default 1 each = file count).
+  const openCost = (node: DirNode) => {
+    let c = 0;
+    for (const f of node.files) c += nodeCost(f);
+    return c;
+  };
 
   const record = (
     node: DirNode,
@@ -96,6 +123,7 @@ function cutCore(
     if (decision === "collapse") {
       collapsed.add(node.path);
       cards += 1;
+      nodes += 1; // an aggregate card is one layout node
     }
     if (trace) {
       trace.push({
@@ -121,14 +149,15 @@ function cutCore(
     const hasContent = node.children.length + node.files.length > 0;
     if (!hasContent) return record(node, true, sh, threshold, "collapse", "no-content");
     if (sh < threshold) return record(node, true, sh, threshold, "collapse", "too-small");
-    if (cards + node.files.length > maxCards) {
+    if (cards + node.files.length > maxCards || nodes + openCost(node) > nodeBudget) {
       return record(node, true, sh, threshold, "collapse", "budget");
     }
     // Open: direct files render individually; recurse into child dirs.
     record(node, true, sh, threshold, "open", "opened");
     cards += node.files.length;
+    nodes += openCost(node);
     for (const child of node.children) {
-      if (cards >= maxCards) {
+      if (cards >= maxCards || nodes >= nodeBudget) {
         const cb = boxes.get(child.path);
         record(child, !!cb, cb ? screenHeight(cb, cam.scale) : 0, openPx, "collapse", "budget");
         continue;
@@ -138,7 +167,7 @@ function cutCore(
   };
 
   for (const child of root.children) {
-    if (cards >= maxCards) {
+    if (cards >= maxCards || nodes >= nodeBudget) {
       const cb = boxes.get(child.path);
       record(child, !!cb, cb ? screenHeight(cb, cam.scale) : 0, openPx, "collapse", "budget");
       continue;

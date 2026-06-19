@@ -79,6 +79,35 @@ describe("computeCut", () => {
   });
 });
 
+describe("computeCut node budget", () => {
+  // At scale 1 the default cut opens 'a', 'a/x' and 'a/y' (see above). A node budget
+  // models symbol cost: when each file is expanded it adds its symbols to the layout,
+  // so opening a dir can blow past what Smart can lay out even though the CARD budget
+  // is fine. nodeCost(f) = 1 + symbols(f).
+  const heavy = () => 101; // every file costs 1 + 100 symbols
+
+  test("default nodeCost/nodeBudget leave the cut unchanged", () => {
+    const withDefaults = cut({ x: 0, y: 0, scale: 1 }, { nodeBudget: Infinity });
+    expect(cutEquals(withDefaults, cut({ x: 0, y: 0, scale: 1 }))).toBe(true);
+  });
+
+  test("collapses symbol-heavy directories the card budget would open", () => {
+    const c = cut({ x: 0, y: 0, scale: 1 }, { nodeBudget: 50, nodeCost: heavy });
+    expect(c.has("a/x")).toBe(true); // 2 files × 101 = 202 > 50 → collapse
+    expect(c.has("a/y")).toBe(true); // would push the running total over 50 too
+    // Without the node budget those same dirs open:
+    const d = cut({ x: 0, y: 0, scale: 1 });
+    expect(d.has("a/x")).toBe(false);
+    expect(d.has("a/y")).toBe(false);
+  });
+
+  test("opens what fits and collapses the overflow (heaviest dir first)", () => {
+    const c = cut({ x: 0, y: 0, scale: 1 }, { nodeBudget: 150, nodeCost: heavy });
+    expect(c.has("a/x")).toBe(true); // visited first (2 files), 202 > 150 → collapse
+    expect(c.has("a/y")).toBe(false); // 1 file × 101 = 101 fits the remaining budget → open
+  });
+});
+
 describe("computeCutTraced", () => {
   test("returns the same cut as computeCut, plus a per-dir decision trace", () => {
     const cam = { x: 0, y: 0, scale: 1 };
