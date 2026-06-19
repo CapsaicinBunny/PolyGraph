@@ -766,14 +766,18 @@ export function runLayout(input: LayoutInput, options: LayoutOptions = {}): Layo
 // e.g. stress builds an O(N²) distance matrix BEFORE any iteration, so capping its
 // iterations is not enough. Caps are on node count (not iterations), plus a shared edge
 // cap as a backstop for dense components (dagre is ~O(V·E), stress's SP is ~O(V·E)).
+// Calibrated from measured per-component times so each engine stays comfortably under
+// the 8s worker timeout at its cap (with margin for dense components and a busy machine):
+// stress is ~O(N²) (~5s @1000 → lowest cap), layered ~O(V·E) (~8s @1800 → capped well
+// below that), force/backbone iterative, tree near-linear. Above the cap → cheap grid.
 const HEAVY_COMPONENT_CAP = {
-  stress: 1000,
-  layered: 1800,
-  tree: 3000,
-  backbone: 2000,
-  force: 2000,
+  stress: 700,
+  layered: 1200,
+  tree: 2500,
+  backbone: 1500,
+  force: 1800,
 } as const;
-const HEAVY_EDGE_CAP = 15_000;
+const HEAVY_EDGE_CAP = 8_000;
 
 /** True when a (sub)graph is too big for a heavy engine to lay out within the time budget. */
 function tooHeavy(view: LayoutInput, nodeCap: number): boolean {
