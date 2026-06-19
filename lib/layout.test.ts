@@ -455,3 +455,39 @@ describe("radial ring sizing (no overlap on crowded rings)", () => {
     expect(minDist).toBeGreaterThan(140); // ~no overlap (cards are ~200 wide)
   });
 });
+
+describe("heavy-engine safety caps (no engine pins a core)", () => {
+  // Grid fallback packs nodes into ~sqrt(n) columns, so a small distinct-x count proves
+  // the heavy engine was bypassed (real stress/force give ~n continuous x positions).
+  const distinctColumns = (pos: Map<string, { x: number; y: number }>) =>
+    new Set([...pos.values()].map((p) => Math.round(p.x))).size;
+
+  test("stress falls back to grid for an oversized connected component", () => {
+    const n = 1100; // > the stress per-component cap (1000)
+    const nodes: LayoutInput["nodes"] = [
+      { id: "hub", kind: "file" },
+      ...Array.from({ length: n - 1 }, (_, i) => ({ id: `s${i}`, kind: "file" as const })),
+    ];
+    const edges: LayoutInput["edges"] = Array.from({ length: n - 1 }, (_, i) => ({
+      source: "hub",
+      target: `s${i}`,
+      kind: "import" as const,
+      count: 1,
+      weight: edgeWeight("import", 1),
+    }));
+    const pos = layoutView({ nodes, edges }, { algorithm: "stress" });
+    expect(pos.size).toBe(n);
+    expect(distinctColumns(pos)).toBeLessThan(100); // gridded, not run through stress
+  });
+
+  test("force falls back to grid for an oversized view", () => {
+    const n = 2100; // > the force whole-view cap (2000)
+    const nodes: LayoutInput["nodes"] = Array.from({ length: n }, (_, i) => ({
+      id: `n${i}`,
+      kind: "file" as const,
+    }));
+    const pos = layoutView({ nodes, edges: [] }, { algorithm: "force" });
+    expect(pos.size).toBe(n);
+    expect(distinctColumns(pos)).toBeLessThan(120);
+  });
+});

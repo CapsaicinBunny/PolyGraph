@@ -13,13 +13,17 @@ export interface WorkerLayout {
 
 type FlatPositions = [string, number, number][];
 
-// Heavy layouts (dagre `layered`/`tree`/`smart`, d3-`force`) don't scale: dagre is
-// ~O(V·E) and unusable past ~10k nodes, force is O(N·ticks). Above this node count
-// force a near-linear `grid` so layout always terminates. (Auto-collapse normally
-// keeps inputs far below this; this is defense in depth — see docs/SCALE-100K.md.)
+// Smart WITH grouping (groupBy !== "none") scales: it clusters by directory/community
+// and runs small per-cluster layouts, and the adaptive LOD cut bounds its input — so it
+// gets high headroom. EVERY other path (an explicitly selected engine, Community, None)
+// is bounded only here plus the per-component caps in lib/layout.ts, so it stays low.
+// Critically, Smart+grouping must NOT be forced to grid: grid emits ZERO cluster boxes,
+// which self-disables the LOD cut (it measures dir-keyed boxes to drive the recut).
+const LAYOUT_MAX_SCALABLE = 60_000;
 const LAYOUT_MAX_HEAVY = 6000;
-// If the worker hasn't answered in this long (hung on a pathological input), fall
-// back to a synchronous grid so the "laying out…" overlay can't spin forever.
+// If the worker hasn't answered in this long (hung on a pathological input), fall back
+// to a synchronous grid so the "laying out…" overlay can't spin forever. A safety net
+// for the deterministic heavy engines, not a tuning knob — keep it 8000.
 const LAYOUT_TIMEOUT_MS = 8000;
 
 /** A cheap, near-linear layout used for huge inputs and as the timeout fallback. */
@@ -27,9 +31,15 @@ function gridOptions(options: LayoutOptions): LayoutOptions {
   return { ...options, algorithm: "grid", groupBy: "none" };
 }
 
-/** Force a near-linear layout when the input is too large for the heavy algorithms. */
+/**
+ * Force a near-linear layout when the input is too large for the chosen algorithm.
+ * Per-algorithm: Smart+grouping scales (high headroom); everything else caps low and
+ * relies on the per-component caps in lib/layout.ts for the rest.
+ */
 export function guardOptions(input: LayoutInput, options: LayoutOptions): LayoutOptions {
-  return input.nodes.length > LAYOUT_MAX_HEAVY ? gridOptions(options) : options;
+  const scalesWell = options.algorithm === "smart" && options.groupBy !== "none";
+  const limit = scalesWell ? LAYOUT_MAX_SCALABLE : LAYOUT_MAX_HEAVY;
+  return input.nodes.length > limit ? gridOptions(options) : options;
 }
 
 let worker: Worker | null = null;

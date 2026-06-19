@@ -27,6 +27,16 @@ describe("smartLayout", () => {
     expect(boxOf(clusters, "pkg").depth).toBe(0);
   });
 
+  test("Smart + Directory keys each ClusterBox by its directory path (LOD contract)", () => {
+    // The adaptive LOD cut measures one box per directory, keyed by the dir path
+    // (buildClusterTree path === sceneBoxes key === DirNode.path). Breaking this
+    // self-disables the cut, so keep it asserted.
+    const { clusters } = smartLayout(view, { groupBy: "directory", direction: "LR" });
+    const ids = new Set(clusters.map((c) => c.id));
+    expect(ids.has("pkg")).toBe(true);
+    expect(ids.has("util")).toBe(true);
+  });
+
   test("every node sits inside its cluster box", () => {
     const { nodes, clusters } = smartLayout(view, { direction: "LR" });
     const pkg = boxOf(clusters, "pkg");

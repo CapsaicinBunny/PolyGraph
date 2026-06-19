@@ -759,6 +759,38 @@ export function runLayout(input: LayoutInput, options: LayoutOptions = {}): Layo
   return { nodes: layoutView(input, options), clusters: [] };
 }
 
+// Per-connected-component caps for the heavy engines. The adaptive LOD cut only bounds
+// the Smart+Directory path; for EVERY explicitly-selected engine these caps (plus
+// guardOptions) are the only protection. Above a cap a component is laid out with the
+// cheap deterministic grid, so no engine can blow the 8s worker timeout or pin a core —
+// e.g. stress builds an O(N²) distance matrix BEFORE any iteration, so capping its
+// iterations is not enough. Caps are on node count (not iterations), plus a shared edge
+// cap as a backstop for dense components (dagre is ~O(V·E), stress's SP is ~O(V·E)).
+const HEAVY_COMPONENT_CAP = {
+  stress: 1000,
+  layered: 1800,
+  tree: 3000,
+  backbone: 2000,
+  force: 2000,
+} as const;
+const HEAVY_EDGE_CAP = 15_000;
+
+/** True when a (sub)graph is too big for a heavy engine to lay out within the time budget. */
+function tooHeavy(view: LayoutInput, nodeCap: number): boolean {
+  return view.nodes.length > nodeCap || view.edges.length > HEAVY_EDGE_CAP;
+}
+
+/** Lay each component out with `engine`, falling back to grid for any oversized component. */
+function cappedComponents(
+  view: LayoutInput,
+  nodeCap: number,
+  engine: (sub: LayoutInput) => Positions,
+): Positions {
+  return layoutByComponents(view, (sub) =>
+    tooHeavy(sub, nodeCap) ? gridLayout(sub) : engine(sub),
+  );
+}
+
 export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Positions {
   const { algorithm = "layered", direction = "LR" } = options;
   switch (algorithm) {
@@ -770,7 +802,7 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
         communityOf: options.communityOf,
       }).nodes;
     case "tree":
-      return layoutByComponents(view, (sub) => treeLayout(sub, direction));
+      return cappedComponents(view, HEAVY_COMPONENT_CAP.tree, (sub) => treeLayout(sub, direction));
     case "radial":
       return layoutByComponents(view, radialLayout);
     case "circular":
@@ -778,12 +810,20 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
     case "grid":
       return gridLayout(view);
     case "backbone":
-      return layoutByComponents(view, (sub) => backboneLayout(sub));
+      return cappedComponents(view, HEAVY_COMPONENT_CAP.backbone, (sub) => backboneLayout(sub));
     case "stress":
-      return layoutByComponents(view, (sub) => stressLayout(sub, options));
+      return cappedComponents(view, HEAVY_COMPONENT_CAP.stress, (sub) =>
+        stressLayout(sub, options),
+      );
     case "force":
-      return forceLayout(view, options);
+      // Force runs as one whole-view simulation (charge spreads the components), so cap
+      // on the total size rather than per component.
+      return tooHeavy(view, HEAVY_COMPONENT_CAP.force)
+        ? gridLayout(view)
+        : forceLayout(view, options);
     default:
-      return layoutByComponents(view, (sub) => dagreLayout(sub, direction, "network-simplex"));
+      return cappedComponents(view, HEAVY_COMPONENT_CAP.layered, (sub) =>
+        dagreLayout(sub, direction, "network-simplex"),
+      );
   }
 }
