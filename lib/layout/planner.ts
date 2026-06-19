@@ -8,6 +8,9 @@ import type { GraphShape } from "./shape";
 
 /** Largest cyclic component for which a single ring stays legible. */
 const CIRCULAR_MAX = 60;
+// Stress majorization is ~O(n²); only AUTO-select it where it finishes fast. Manual
+// selection allows larger components (see HEAVY_COMPONENT_CAP.stress in layout.ts).
+const STRESS_AUTO_MAX = 400;
 
 /**
  * Choose the best concrete engine for a graph of the given shape. Order matters —
@@ -24,9 +27,18 @@ export function chooseEngine(shape: GraphShape): LayoutAlgorithm {
   // A small, mostly-cyclic component → a single ordered ring.
   if (shape.sccNodeRatio > 0.5 && shape.nodeCount <= CIRCULAR_MAX) return "circular";
   // A dense core with lots of leaves hanging off → backbone (core + satellites).
-  if (shape.leafRatio > 0.4 && shape.sccNodeRatio > 0.1) return "backbone";
-  // Dense / community-structured / large tangle → force.
-  if (shape.density > 0.15 || shape.communityCount > 1) return "force";
+  // Either leaf-dominance over a cyclic core, or strong degree skew with real hubs
+  // (a few nodes own most of the edges) — the latter uses degreeGini/hubRatio.
+  if (
+    (shape.leafRatio > 0.4 && shape.sccNodeRatio > 0.1) ||
+    (shape.leafRatio > 0.3 && shape.hubRatio > 0.02 && shape.degreeGini > 0.45)
+  )
+    return "backbone";
+  // Substantially cyclic and small enough that stress majorization stays fast → stress
+  // untangles it best (and covers big rings too large for a single circle).
+  if (shape.sccNodeRatio > 0.3 && shape.nodeCount <= STRESS_AUTO_MAX) return "stress";
+  // Dense / large tangle → force (Barnes–Hut scales beyond stress's reach).
+  if (shape.density > 0.15) return "force";
   // Mild cycles otherwise: layered handles the condensation fine.
   return "layered";
 }

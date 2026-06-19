@@ -771,7 +771,7 @@ export function runLayout(input: LayoutInput, options: LayoutOptions = {}): Layo
 // stress is ~O(N²) (~5s @1000 → lowest cap), layered ~O(V·E) (~8s @1800 → capped well
 // below that), force/backbone iterative, tree near-linear. Above the cap → cheap grid.
 const HEAVY_COMPONENT_CAP = {
-  stress: 700,
+  stress: 800,
   layered: 1200,
   tree: 2500,
   backbone: 1500,

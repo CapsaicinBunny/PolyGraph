@@ -39,16 +39,20 @@ export interface GraphShape {
   communityCount: number;
 }
 
+// Gini coefficient via the sorted formula — O(n log n), not the O(n²) pairwise sum.
+// This runs inside the Smart planner's per-cluster shape analysis, which must stay
+// near-linear, so the double loop was a real hazard on large clusters. Equivalent to
+// (Σᵢ Σⱼ |xᵢ − xⱼ|) / (2n²·mean).
 function giniOf(values: number[]): number {
   const n = values.length;
+  if (n === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
   let total = 0;
-  for (const v of values) total += v;
-  if (n === 0 || total === 0) return 0;
-  let absDiff = 0;
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) absDiff += Math.abs(values[i] - values[j]);
-  }
-  return absDiff / (2 * n * total);
+  for (const v of sorted) total += v;
+  if (total === 0) return 0;
+  let weighted = 0;
+  for (let i = 0; i < n; i++) weighted += (i + 1) * sorted[i];
+  return (2 * weighted) / (n * total) - (n + 1) / n;
 }
 
 export function graphShape(nodeIds: string[], edges: Edge[]): GraphShape {

@@ -35,6 +35,14 @@ describe("chooseEngine (Smart planner)", () => {
     expect(chooseEngine(shape)).toBe("backbone");
   });
 
+  test("picks stress for a large cyclic component (too big for a single ring)", () => {
+    // A 70-node directed cycle: one SCC, but past CIRCULAR_MAX, so circular is out and
+    // stress (which untangles cycles well) should win while it's still under the cap.
+    const ids = Array.from({ length: 70 }, (_, i) => `n${i}`);
+    const edges = ids.map((id, i) => E(id, ids[(i + 1) % ids.length]));
+    expect(chooseEngine(graphShape(ids, edges))).toBe("stress");
+  });
+
   test("never returns 'smart' (no infinite recursion)", () => {
     const shape = graphShape(["a", "b"], [E("a", "b")]);
     expect(chooseEngine(shape)).not.toBe("smart");
