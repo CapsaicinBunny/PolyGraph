@@ -26,18 +26,26 @@ export interface AutoCollapse {
  * structure under the budget; if even depth 1 overflows (a very wide root) we use
  * depth 1 as the coarsest possible.
  */
-export function autoCollapseDirs(graph: GraphModel, maxCards: number): AutoCollapse | null {
+export function autoCollapseDirs(
+  graph: GraphModel,
+  maxCards: number,
+  nodeCost: (fileId: string) => number = () => 1,
+): AutoCollapse | null {
   const files = graph.nodes.filter((n) => n.kind === "file");
-  if (files.length <= maxCards) return null;
+  // Budget on layout-node cost, not file count: an expanded file also contributes its
+  // symbols (nodeCost = 1 + symbols), so the same file count can be far more nodes.
+  const totalCost = files.reduce((s, n) => s + nodeCost(n.id), 0);
+  if (totalCost <= maxCards) return null;
 
   const dirsAtDepth = new Map<number, Set<string>>();
-  // filesDeepEnough[d] = number of files whose directory depth is >= d (i.e. files
-  // that a depth-d collapse would absorb).
-  const filesDeepEnough = new Map<number, number>();
+  // costDeepEnough[d] = summed nodeCost of files whose directory depth is >= d — the
+  // files a depth-d collapse absorbs into one-node aggregates (so their cost drops out).
+  const costDeepEnough = new Map<number, number>();
   let maxDepth = 0;
 
   for (const n of files) {
     const prefixes = dirPrefixes(n);
+    const cost = nodeCost(n.id);
     maxDepth = Math.max(maxDepth, prefixes.length);
     prefixes.forEach((path, i) => {
       const d = i + 1;
@@ -47,15 +55,14 @@ export function autoCollapseDirs(graph: GraphModel, maxCards: number): AutoColla
         dirsAtDepth.set(d, set);
       }
       set.add(path);
-      filesDeepEnough.set(d, (filesDeepEnough.get(d) ?? 0) + 1);
+      costDeepEnough.set(d, (costDeepEnough.get(d) ?? 0) + cost);
     });
   }
 
-  const total = files.length;
   const rendered = (d: number): number => {
     const dirs = dirsAtDepth.get(d)?.size ?? 0;
-    const absorbed = filesDeepEnough.get(d) ?? 0;
-    return dirs + (total - absorbed);
+    const absorbedCost = costDeepEnough.get(d) ?? 0;
+    return dirs + (totalCost - absorbedCost);
   };
 
   let chosen = 0;

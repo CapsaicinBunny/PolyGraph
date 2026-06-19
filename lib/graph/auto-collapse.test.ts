@@ -59,3 +59,26 @@ describe("autoCollapseDirs", () => {
     expect(collapseClusters(g, r.collapsed).nodes).toHaveLength(3);
   });
 });
+
+describe("autoCollapseDirs node cost", () => {
+  test("default cost is unchanged (count-based)", () => {
+    // 6 files fit a budget of 10 by count → no collapse, same as before.
+    expect(autoCollapseDirs(graph, 10)).toBeNull();
+  });
+
+  test("collapses on node cost even when the file COUNT fits the budget", () => {
+    // 6 files ≤ 10 by count, but at cost 11 each (1 + 10 symbols) the layout is 66 nodes.
+    expect(autoCollapseDirs(graph, 10, () => 11)).not.toBeNull();
+  });
+
+  test("symbol cost on an un-absorbed shallow file forces a shallower collapse", () => {
+    // "a/top.c" sits directly in "a" (depth 1), so a depth-2 collapse does NOT absorb
+    // it — its cost then counts toward rendered(2).
+    const withTop: GraphModel = { nodes: [...graph.nodes, file("a/top.c")], edges: [] };
+    const heavyTop = (id: string) => (id === "a/top.c" ? 11 : 1);
+    // By count, depth 2 fits budget 5 (3 dirs + 1 un-absorbed file = 4).
+    expect(autoCollapseDirs(withTop, 5)!.depth).toBe(2);
+    // With a/top.c costing 11, depth 2 = 3 + 11 = 14 > 5 → fall back to depth 1.
+    expect(autoCollapseDirs(withTop, 5, heavyTop)!.depth).toBe(1);
+  });
+});
