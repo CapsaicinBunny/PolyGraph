@@ -166,6 +166,12 @@ function cutCore(
     }
   };
 
+  // Root-level files (directly at the repo root) can't be absorbed by any directory
+  // collapse, so they always render. Count them up front so the node budget reserves
+  // headroom for them and doesn't over-open dirs on top. (Node budget only — leaves the
+  // card-count path, and thus default behavior, untouched.)
+  for (const f of root.files) nodes += nodeCost(f);
+
   for (const child of root.children) {
     if (cards >= maxCards || nodes >= nodeBudget) {
       const cb = boxes.get(child.path);

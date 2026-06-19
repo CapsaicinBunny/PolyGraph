@@ -106,6 +106,29 @@ describe("computeCut node budget", () => {
     expect(c.has("a/x")).toBe(true); // visited first (2 files), 202 > 150 → collapse
     expect(c.has("a/y")).toBe(false); // 1 file × 101 = 101 fits the remaining budget → open
   });
+
+  test("root-level files count against the node budget (reserve headroom)", () => {
+    // A repo-root file can't be collapsed away; its cost must still consume the budget
+    // so the cut doesn't open dirs on top of it and overrun the layout engine.
+    const rootGraph: GraphModel = {
+      nodes: [file("big.c"), file("a/x/f1.c"), file("a/x/f2.c")],
+      edges: [],
+    };
+    const rootTree = buildDirTree(rootGraph);
+    const rootBoxes = new Map<string, Box>([
+      ["a", { x: 0, y: 0, w: 1000, h: 1000 }],
+      ["a/x", { x: 0, y: 0, w: 1000, h: 1000 }],
+    ]);
+    const heavyRoot = (id: string) => (id === "big.c" ? 199 : 1);
+    const opts = { openPx: 220, maxCards: 1000, nodeBudget: 200, nodeCost: heavyRoot };
+    const c = computeCut(rootTree, rootBoxes, { x: 0, y: 0, scale: 1 }, vp, opts);
+    // big.c (199) eats almost the whole 200 budget, so a/x (2 nodes) can't open on top.
+    expect(c.has("a/x")).toBe(true);
+    // Without root files counted, the same budget would open a/x (2 ≤ 200):
+    const ignoreRoot = { ...opts, nodeCost: () => 1 as number };
+    const c2 = computeCut(rootTree, rootBoxes, { x: 0, y: 0, scale: 1 }, vp, ignoreRoot);
+    expect(c2.has("a/x")).toBe(false);
+  });
 });
 
 describe("computeCutTraced", () => {

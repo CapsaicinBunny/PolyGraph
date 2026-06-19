@@ -27,6 +27,7 @@ import {
   DEFAULT_HIDDEN_LANGUAGES,
 } from "@/lib/graph/filters";
 import { autoCollapseDirs } from "@/lib/graph/auto-collapse";
+import { buildDirTree, type DirNode, dirIndex } from "@/lib/graph/hierarchy";
 import { FiltersPanel } from "./FiltersPanel";
 import { graphKeyFor, type SceneEdge } from "@/lib/graph/scene";
 import { EdgeDetailPanel } from "./EdgeDetailPanel";
@@ -292,6 +293,13 @@ export function Explorer() {
     return map;
   }, [baseGraph]);
 
+  // Directory tree index (path → node), so drilling into an aggregate can reveal just
+  // its immediate child directories instead of its whole subtree.
+  const dirNodes = useMemo<Map<string, DirNode>>(
+    () => (baseGraph ? dirIndex(buildDirTree(baseGraph)) : new Map()),
+    [baseGraph],
+  );
+
   const fileIds = useMemo(
     () => (baseGraph?.nodes ?? []).filter((n) => n.kind === "file").map((n) => n.id),
     [baseGraph],
@@ -402,14 +410,27 @@ export function Explorer() {
     });
   }, []);
 
-  const handleToggleCollapse = useCallback((clusterId: string) => {
-    setCollapsedClusters((prev) => {
-      const next = new Set(prev);
-      if (next.has(clusterId)) next.delete(clusterId);
-      else next.add(clusterId);
-      return next;
-    });
-  }, []);
+  const handleToggleCollapse = useCallback(
+    (clusterId: string) => {
+      setCollapsedClusters((prev) => {
+        const next = new Set(prev);
+        if (next.has(clusterId)) {
+          // Drill in ONE level: un-collapse this aggregate but fold its immediate child
+          // directories, so the layout grows by a handful of child aggregates instead of
+          // the dir's entire subtree (which on a big dir would dump thousands of
+          // files+symbols in, time Smart out, and lock the view to grid). Direct files
+          // of this dir still render; deeper dirs stay aggregated and can be drilled too.
+          next.delete(clusterId);
+          const node = dirNodes.get(clusterId);
+          if (node) for (const child of node.children) next.add(child.path);
+        } else {
+          next.add(clusterId);
+        }
+        return next;
+      });
+    },
+    [dirNodes],
+  );
 
   const handleToggleEdgeKind = useCallback((kind: ViewEdgeKind) => {
     setEnabledEdgeKinds((prev) => {
