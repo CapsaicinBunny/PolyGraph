@@ -293,12 +293,14 @@ export function Explorer() {
     return map;
   }, [baseGraph]);
 
-  // Directory tree index (path → node), so drilling into an aggregate can reveal just
-  // its immediate child directories instead of its whole subtree.
+  // Directory tree: an index (path → node) so drilling into an aggregate reveals just
+  // its immediate child directories, plus the top-level dir paths for "Collapse all".
+  const dirTree = useMemo(() => (baseGraph ? buildDirTree(baseGraph) : null), [baseGraph]);
   const dirNodes = useMemo<Map<string, DirNode>>(
-    () => (baseGraph ? dirIndex(buildDirTree(baseGraph)) : new Map()),
-    [baseGraph],
+    () => (dirTree ? dirIndex(dirTree) : new Map()),
+    [dirTree],
   );
+  const topDirs = useMemo(() => dirTree?.children.map((c) => c.path) ?? [], [dirTree]);
 
   const fileIds = useMemo(
     () => (baseGraph?.nodes ?? []).filter((n) => n.kind === "file").map((n) => n.id),
@@ -307,19 +309,26 @@ export function Explorer() {
   const allExpanded = fileIds.length > 0 && fileIds.every((id) => expanded.has(id));
 
   const handleToggleExpandAll = useCallback(() => {
-    setExpanded(allExpanded ? new Set() : new Set(fileIds));
-    // Reseed the collapsed-cluster cut the way a fresh scan does. Without this, a
-    // stale cut (e.g. the coarse one the adaptive-LOD pass writes while everything is
-    // expanded) lingers after collapsing and most nodes stay folded until a rescan.
-    // When EXPANDING everything, each un-absorbed file also emits its symbols into the
-    // layout, so seed on node cost (1 + symbols) under the larger node budget — else
-    // the input balloons past what Smart can lay out and it falls back to a grid.
-    const cost = (id: string) => 1 + (allExpanded ? 0 : (symbolCount.get(id) ?? 0));
-    const budget = allExpanded ? AUTO_COLLAPSE_MAX_CARDS : LOD_NODE_BUDGET;
-    setCollapsedClusters(
-      baseGraph ? (autoCollapseDirs(baseGraph, budget, cost)?.collapsed ?? new Set()) : new Set(),
-    );
-  }, [allExpanded, fileIds, baseGraph, symbolCount]);
+    if (allExpanded) {
+      // Collapse all → the coarsest overview: every top-level directory as one
+      // aggregate. (Always tiny, so it's unambiguously "more collapsed" than expand-all
+      // and never overruns the layout.)
+      setExpanded(new Set());
+      setCollapsedClusters(new Set(topDirs));
+    } else {
+      // Expand all → as much detail as the layout budget allows. Expanding pulls every
+      // file's symbols into the layout, so seed the collapse on node cost (1 + symbols)
+      // under the node budget — else the input balloons past what Smart can lay out and
+      // it falls back to a grid. The cut then opens further detail where you zoom.
+      setExpanded(new Set(fileIds));
+      const cost = (id: string) => 1 + (symbolCount.get(id) ?? 0);
+      setCollapsedClusters(
+        baseGraph
+          ? (autoCollapseDirs(baseGraph, LOD_NODE_BUDGET, cost)?.collapsed ?? new Set())
+          : new Set(),
+      );
+    }
+  }, [allExpanded, fileIds, baseGraph, symbolCount, topDirs]);
 
   const handleResult = useCallback(
     (res: AnalyzeResult, s: Stats, m: PackageManifest[], scannedPath = "") => {

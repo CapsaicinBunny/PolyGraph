@@ -249,7 +249,17 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     collapsed: Set<string>;
     expanded: Set<string>;
     symbolCount: Map<string, number>;
-  }>({ adaptiveLod, onCut, dirTree, scene, collapsed: collapsedClusters, expanded, symbolCount });
+    groupBy: GroupBy;
+  }>({
+    adaptiveLod,
+    onCut,
+    dirTree,
+    scene,
+    collapsed: collapsedClusters,
+    expanded,
+    symbolCount,
+    groupBy,
+  });
   lod.current.adaptiveLod = adaptiveLod;
   lod.current.onCut = onCut;
   lod.current.dirTree = dirTree;
@@ -257,6 +267,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.collapsed = collapsedClusters;
   lod.current.expanded = expanded;
   lod.current.symbolCount = symbolCount;
+  lod.current.groupBy = groupBy;
   const lodBand = useRef(cameraBand(1));
 
   // The JSON payload Vello consumes. Built from the positioned scene.
@@ -461,6 +472,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     const recomputeCut = () => {
       const l = lod.current;
       if (!l.adaptiveLod || !l.onCut) return;
+      // The cut walks the DIRECTORY tree and measures boxes keyed by dir path. Under
+      // Community grouping the scene's boxes are keyed by community id (no dir match) so
+      // every dir would read as off-screen and the cut would wrongly collapse the whole
+      // view; under "none" there are no cluster boxes at all. The adaptive cut only makes
+      // sense for Directory grouping — leave the other modes' layouts alone.
+      if (l.groupBy !== "directory") return;
       // The cut measures each directory's on-screen size from the layout's cluster
       // boxes. The grid fallback (forced on large/dense graphs) and groupBy:"none"
       // produce NO clusters, so every dir reads as "off-screen, height 0" and the cut
