@@ -1,6 +1,5 @@
 /// <reference lib="webworker" />
-import { type LayoutInput, type LayoutOptions, layoutView } from "./layout";
-import { smartLayout } from "./layout/smart";
+import { type LayoutInput, type LayoutOptions, runLayout } from "./layout";
 
 interface Request {
   id: number;
@@ -11,15 +10,7 @@ interface Request {
 // Run layout off the main thread and post back flat positions + cluster boxes.
 self.onmessage = (event: MessageEvent<Request>) => {
   const { id, input, options } = event.data;
-  const result =
-    options.algorithm === "smart"
-      ? smartLayout(input, {
-          direction: options.direction,
-          groupBy: options.groupBy,
-          density: options.density,
-          communityOf: options.communityOf,
-        })
-      : { nodes: layoutView(input, options), clusters: [] };
+  const result = runLayout(input, options);
   const flat: [string, number, number][] = [];
   result.nodes.forEach((p, key) => flat.push([key, p.x, p.y]));
   (self as unknown as Worker).postMessage({ id, positions: flat, clusters: result.clusters });

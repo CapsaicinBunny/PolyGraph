@@ -20,6 +20,7 @@ import type {
   Runtime,
 } from "./types";
 import { detectCommunities } from "../layout/community";
+import { edgeWeight } from "../layout/weight";
 import { collapseClusters } from "./collapse";
 import { fileLanguage, topFolderOf } from "./filters";
 import {
@@ -292,7 +293,13 @@ export function buildSceneStructure(
     signature,
     layoutInput: {
       nodes: view.nodes.map((n) => ({ id: n.id, kind: n.kind })),
-      edges: visibleEdges.map((e) => ({ source: e.source, target: e.target })),
+      edges: visibleEdges.map((e) => ({
+        source: e.source,
+        target: e.target,
+        kind: e.kind,
+        count: e.count,
+        weight: edgeWeight(e.kind, e.count),
+      })),
     },
     options: { algorithm, direction, groupBy, density, communityOf },
   };

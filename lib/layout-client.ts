@@ -2,10 +2,9 @@ import {
   type ClusterBox,
   type LayoutInput,
   type LayoutOptions,
-  layoutView,
+  runLayout,
   type XYPosition,
 } from "./layout";
-import { smartLayout } from "./layout/smart";
 
 export interface WorkerLayout {
   positions: Map<string, XYPosition>;
@@ -64,16 +63,8 @@ function ensureWorker(): Worker | null {
 
 /** Synchronous fallback shared with the no-Worker path (and tests). */
 function layoutSync(input: LayoutInput, options: LayoutOptions): WorkerLayout {
-  if (options.algorithm === "smart") {
-    const r = smartLayout(input, {
-      direction: options.direction,
-      groupBy: options.groupBy,
-      density: options.density,
-      communityOf: options.communityOf,
-    });
-    return { positions: r.nodes, clusters: r.clusters };
-  }
-  return { positions: layoutView(input, options), clusters: [] };
+  const r = runLayout(input, options);
+  return { positions: r.nodes, clusters: r.clusters };
 }
 
 /**

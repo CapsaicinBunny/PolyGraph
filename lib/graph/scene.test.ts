@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { edgeWeight } from "../layout/weight";
 import type { Environment, GraphModel, NodeCategory, Runtime } from "./types";
 import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "./visual";
 import { buildSceneStructure, type SceneFilters } from "./scene";
@@ -191,6 +192,30 @@ test("focusing symbol nodes also surfaces their parent file (not an empty canvas
   expect(ids).toContain("src/a.ts#foo");
   expect(ids).toContain("src/a.ts#bar");
   expect(ids).toContain("src/a.ts"); // parent file shown as the container
+});
+
+// One import edge with a real count, so the layout input must expose a weight.
+const weighted: GraphModel = {
+  nodes: [fileNode("src/a.ts"), fileNode("src/b.ts")],
+  edges: [
+    {
+      id: "src/a.ts->src/b.ts:import",
+      source: "src/a.ts",
+      target: "src/b.ts",
+      kind: "import",
+      occurrences: [],
+      count: 3,
+    },
+  ],
+};
+
+test("layoutInput edges carry kind, count, and a precomputed weight (Gap B)", () => {
+  const s = buildSceneStructure(weighted, new Set(), filters(), "layered", "LR");
+  const e = s.layoutInput.edges.find((x) => x.source === "src/a.ts" && x.target === "src/b.ts");
+  expect(e).toBeDefined();
+  expect(e?.kind).toBe("import");
+  expect(e?.count).toBe(3);
+  expect(e?.weight).toBe(edgeWeight("import", 3));
 });
 
 test("queryIds narrows the visible set and intersects with the filters", () => {

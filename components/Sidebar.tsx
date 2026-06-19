@@ -81,6 +81,8 @@ const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
   { value: "circular", label: "Circular", glyph: "○" },
   { value: "grid", label: "Grid", glyph: "▦" },
   { value: "force", label: "Force", glyph: "✸" },
+  { value: "stress", label: "Stress", glyph: "◈" },
+  { value: "backbone", label: "Backbone", glyph: "⊕" },
 ];
 
 const GROUP_BY: { value: GroupBy; label: string; glyph: string }[] = [

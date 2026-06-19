@@ -7,7 +7,15 @@ import {
   forceSimulation,
   type SimulationNodeDatum,
 } from "d3-force";
+import { stratify, tree as d3tree } from "d3-hierarchy";
+import { Layout as ColaLayout } from "webcola";
+import type { ViewEdgeKind } from "./aggregate";
+import { coreness } from "./layout/backbone";
+import { fiedlerOrder, orderByBarycenter, stableOrder } from "./layout/ordering";
+import { chooseEngine } from "./layout/planner";
+import { graphShape } from "./layout/shape";
 import { smartLayout } from "./layout/smart";
+import { buildArborescence } from "./layout/tree";
 
 export interface XYPosition {
   x: number;
@@ -16,11 +24,14 @@ export interface XYPosition {
 
 /**
  * Minimal layout input — just what the algorithms read. A full GraphView is
- * assignable to this, and it's small enough to post to a Web Worker.
+ * assignable to this, and it's small enough to post to a Web Worker. Edges carry
+ * the relationship `kind`/`count` and a precomputed `weight` (see lib/layout/weight.ts)
+ * so weighted engines (layered, ordering) can rank architectural edges above
+ * incidental ones; all three are optional so unweighted callers/tests still apply.
  */
 export interface LayoutInput {
   nodes: { id: string; kind: string }[];
-  edges: { source: string; target: string }[];
+  edges: { source: string; target: string; kind?: ViewEdgeKind; count?: number; weight?: number }[];
 }
 
 export interface NodeSize {
@@ -46,7 +57,9 @@ export type LayoutAlgorithm =
   | "radial"
   | "circular"
   | "grid"
-  | "force";
+  | "force"
+  | "stress"
+  | "backbone";
 
 /** Algorithms for which the direction selector is meaningful. */
 export const DIRECTIONAL_ALGORITHMS: LayoutAlgorithm[] = ["smart", "layered", "tree"];
@@ -65,6 +78,12 @@ export interface LayoutOptions {
    * Smart layout and the collapse transform share a single source of truth.
    */
   communityOf?: Map<string, string>;
+  /**
+   * Previous top-left positions, keyed by node id. Engines seed from these so a
+   * re-layout after a filter/zoom change preserves the mental map instead of
+   * reshuffling. Nodes without a prior position fall back to the engine default.
+   */
+  previousPositions?: Map<string, XYPosition>;
 }
 
 /** A directory/package container box emitted by the Smart layout. World-space, top-left origin. */
@@ -117,7 +136,13 @@ function dagreLayout(
     g.setNode(node.id, { width, height });
   }
   for (const edge of view.edges) {
-    if (g.hasNode(edge.source) && g.hasNode(edge.target)) g.setEdge(edge.source, edge.target);
+    if (g.hasNode(edge.source) && g.hasNode(edge.target)) {
+      // Weight ranking + crossing reduction by the relationship's importance, so a
+      // single `extends` outranks many incidental `call`s. Falls back to 1 (dagre's
+      // default) for unweighted callers and structural ("contains") edges.
+      const w = edge.weight ?? 1;
+      g.setEdge(edge.source, edge.target, { weight: w > 0 ? w : 1 });
+    }
   }
 
   dagre.layout(g);
@@ -173,7 +198,11 @@ interface Box {
   height: number;
 }
 
-/** Row-major shelf packing (tallest box first); returns a top-left offset per box. */
+/**
+ * Row-major shelf packing in the GIVEN order (callers pre-sort by a stable key so
+ * the arrangement doesn't reshuffle when a component's size changes); returns a
+ * top-left offset per box.
+ */
 function shelfPack(boxes: Box[], gap: number): XYPosition[] {
   const offsets: XYPosition[] = boxes.map(() => ({ x: 0, y: 0 }));
   if (boxes.length === 0) return offsets;
@@ -182,7 +211,7 @@ function shelfPack(boxes: Box[], gap: number): XYPosition[] {
   for (const b of boxes) if (b.width > maxWidth) maxWidth = b.width;
   // Roughly square overall, but never narrower than the widest component.
   const rowWidth = Math.max(maxWidth, Math.sqrt(totalArea) * 1.4);
-  const order = boxes.map((_, i) => i).sort((a, b) => boxes[b].height - boxes[a].height);
+  const order = boxes.map((_, i) => i);
   let x = 0;
   let y = 0;
   let shelfH = 0;
@@ -236,6 +265,14 @@ function layoutByComponents(
     return { ids, positions, minX, minY, width: maxX - minX, height: maxY - minY };
   });
 
+  // Pack components in a stable id order (min member id), so adding/removing nodes
+  // elsewhere doesn't reshuffle where each component lands — preserving the mental map.
+  laid.sort((p, q) => {
+    const pm = p.ids.reduce((m, x) => (x < m ? x : m), p.ids[0]);
+    const qm = q.ids.reduce((m, x) => (x < m ? x : m), q.ids[0]);
+    return pm < qm ? -1 : pm > qm ? 1 : 0;
+  });
+
   const offsets = shelfPack(
     laid.map((c) => ({ width: c.width, height: c.height })),
     60,
@@ -253,63 +290,106 @@ function layoutByComponents(
   return out;
 }
 
-/** Concentric rings by graph distance from root (in-degree 0) nodes, for one component. */
+/**
+ * Concentric rings by directed dependency depth from source (in-degree-0) roots.
+ * Rings are ordered inner→outer; each ring's angular order is the barycenter of its
+ * nodes' inner-ring neighbors (crossing reduction), seeded by the stable tie-break —
+ * so subtrees stay angularly grouped and the result is input-order-independent.
+ */
 function radialLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   if (view.nodes.length === 0) return positions;
 
-  const adj = new Map<string, Set<string>>();
+  // Directed outgoing edges drive ring depth (dependency flow); the undirected view
+  // drives angular barycenter (a node's neighbors on the adjacent inner ring).
+  const out = new Map<string, string[]>();
+  const undir = new Map<string, Set<string>>();
   const indeg = new Map<string, number>();
-  for (const n of view.nodes) {
-    adj.set(n.id, new Set());
-    indeg.set(n.id, 0);
+  for (const nd of view.nodes) {
+    out.set(nd.id, []);
+    undir.set(nd.id, new Set());
+    indeg.set(nd.id, 0);
   }
   for (const e of view.edges) {
-    if (!adj.has(e.source) || !adj.has(e.target)) continue;
-    adj.get(e.source)?.add(e.target);
-    adj.get(e.target)?.add(e.source);
+    if (!out.has(e.source) || !out.has(e.target)) continue;
+    out.get(e.source)!.push(e.target);
+    undir.get(e.source)!.add(e.target);
+    undir.get(e.target)!.add(e.source);
     indeg.set(e.target, (indeg.get(e.target) ?? 0) + 1);
   }
 
+  // Roots = sources (in-degree 0). If the component is fully cyclic, fall back to the
+  // highest-out-degree node (most reach), broken deterministically by the stable order.
+  const ids = view.nodes.map((nd) => nd.id);
+  let roots = stableOrder(
+    view.nodes.filter((nd) => (indeg.get(nd.id) ?? 0) === 0).map((nd) => nd.id),
+  );
+  if (roots.length === 0) {
+    roots = [
+      stableOrder(ids).reduce((best, id) =>
+        out.get(id)!.length > out.get(best)!.length ? id : best,
+      ),
+    ];
+  }
+
+  // Directed BFS depth from the roots over outgoing edges.
   const depth = new Map<string, number>();
-  const roots = view.nodes.filter((n) => (indeg.get(n.id) ?? 0) === 0).map((n) => n.id);
-  const queue = roots.length > 0 ? [...roots] : [view.nodes[0].id];
-  for (const r of queue) depth.set(r, 0);
+  const queue = [...roots];
+  for (const r of roots) depth.set(r, 0);
   for (let i = 0; i < queue.length; i++) {
     const id = queue[i];
-    const d = depth.get(id) ?? 0;
-    for (const nb of adj.get(id) ?? []) {
+    const d = depth.get(id)!;
+    for (const nb of out.get(id) ?? []) {
       if (!depth.has(nb)) {
         depth.set(nb, d + 1);
         queue.push(nb);
       }
     }
   }
-  // Disconnected nodes land on an extra outer ring.
+  // Nodes not reachable via outgoing edges (other cycle members, sinks) → outer ring.
   let maxDepth = 0;
   for (const d of depth.values()) if (d > maxDepth) maxDepth = d;
-  for (const n of view.nodes) if (!depth.has(n.id)) depth.set(n.id, maxDepth + 1);
+  for (const nd of view.nodes) if (!depth.has(nd.id)) depth.set(nd.id, maxDepth + 1);
 
   const byDepth = new Map<number, string[]>();
-  for (const n of view.nodes) {
-    const d = depth.get(n.id) ?? 0;
-    (byDepth.get(d) ?? byDepth.set(d, []).get(d))?.push(n.id);
+  for (const nd of view.nodes) {
+    const d = depth.get(nd.id) ?? 0;
+    (byDepth.get(d) ?? byDepth.set(d, []).get(d))?.push(nd.id);
   }
 
   const RING = 260;
-  const nodeById = new Map(view.nodes.map((n) => [n.id, n]));
-  for (const [d, ids] of byDepth) {
-    const radius = d === 0 ? (ids.length > 1 ? RING * 0.5 : 0) : d * RING;
-    ids.forEach((id, i) => {
-      const angle = (i / ids.length) * Math.PI * 2;
+  const nodeById = new Map(view.nodes.map((nd) => [nd.id, nd]));
+  let prevRing: string[] = [];
+  for (const d of [...byDepth.keys()].sort((a, b) => a - b)) {
+    const ringIds = byDepth.get(d)!;
+    // Inner ring first; subsequent rings ordered by barycenter of inner-ring neighbors.
+    const ordered =
+      prevRing.length === 0
+        ? stableOrder(ringIds)
+        : (() => {
+            const prevPos = new Map(prevRing.map((id, i) => [id, i]));
+            return orderByBarycenter(stableOrder(ringIds), (id) => {
+              const ns: { pos: number; weight: number }[] = [];
+              for (const nb of undir.get(id) ?? []) {
+                const p = prevPos.get(nb);
+                if (p !== undefined) ns.push({ pos: p, weight: 1 });
+              }
+              return ns;
+            });
+          })();
+    const radius = d === 0 ? (ringIds.length > 1 ? RING * 0.5 : 0) : d * RING;
+    ordered.forEach((id, i) => {
       const node = nodeById.get(id);
-      if (node) positions.set(...topLeft(node, Math.cos(angle) * radius, Math.sin(angle) * radius));
+      if (!node) return;
+      const angle = (i / ordered.length) * Math.PI * 2;
+      positions.set(...topLeft(node, Math.cos(angle) * radius, Math.sin(angle) * radius));
     });
+    prevRing = ordered;
   }
   return positions;
 }
 
-/** A component's nodes evenly spaced on a single circle. */
+/** A component's nodes on a single circle, ordered by the Fiedler vector. */
 function circularLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   const n = view.nodes.length;
@@ -318,27 +398,189 @@ function circularLayout(view: LayoutInput): Positions {
     positions.set(...topLeft(view.nodes[0], 0, 0));
     return positions;
   }
+  // Order the ring spectrally so graph-adjacent nodes land at adjacent angles (few
+  // chord crossings), rather than placing nodes in arbitrary input order.
+  const order = fiedlerOrder(
+    view.nodes.map((nd) => nd.id),
+    view.edges,
+  );
+  const nodeById = new Map(view.nodes.map((nd) => [nd.id, nd]));
   // Radius from a fixed per-node arc length so nodes never crowd on the ring.
   const radius = Math.max(160, (n * 80) / (2 * Math.PI));
-  view.nodes.forEach((node, i) => {
+  order.forEach((id, i) => {
+    const node = nodeById.get(id);
+    if (!node) return;
     const angle = (i / n) * Math.PI * 2;
     positions.set(...topLeft(node, Math.cos(angle) * radius, Math.sin(angle) * radius));
   });
   return positions;
 }
 
-/** Simple row-major grid. */
+/** Row-major grid, filled in directory-grouped (stable) order rather than input order. */
 function gridLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   const n = view.nodes.length;
   if (n === 0) return positions;
+  // Group same-directory nodes together (and order isolates by dir→path) so the grid
+  // reads as a tidy, locality-preserving table instead of arbitrary input order.
+  const order = stableOrder(view.nodes.map((nd) => nd.id));
+  const nodeById = new Map(view.nodes.map((nd) => [nd.id, nd]));
   const cols = Math.ceil(Math.sqrt(n));
   const cellW = 250;
   const cellH = 110;
-  view.nodes.forEach((node, i) => {
+  order.forEach((id, i) => {
+    const node = nodeById.get(id);
+    if (!node) return;
     const col = i % cols;
     const row = Math.floor(i / cols);
     positions.set(...topLeft(node, col * cellW, row * cellH));
+  });
+  return positions;
+}
+
+interface StratifyDatum {
+  id: string;
+  parentId: string | null;
+}
+
+/**
+ * Tidy tree: extract a spanning arborescence (strongest-parent), then place it with
+ * d3-hierarchy's Buchheim/Walker tidy-tree (linear, deterministic, compact). The
+ * tree axis follows `direction`; non-tree edges are drawn as secondary cross-links.
+ */
+function treeLayout(view: LayoutInput, direction: LayoutDirection): Positions {
+  const positions: Positions = new Map();
+  const n = view.nodes.length;
+  if (n === 0) return positions;
+  if (n === 1) {
+    positions.set(...topLeft(view.nodes[0], 0, 0));
+    return positions;
+  }
+  const nodeById = new Map(view.nodes.map((nd) => [nd.id, nd]));
+  const { parent } = buildArborescence(
+    view.nodes.map((nd) => nd.id),
+    view.edges,
+  );
+  // A single virtual root unifies a forest into one hierarchy for stratify.
+  const VIRTUAL = " treeRoot";
+  const data: StratifyDatum[] = view.nodes.map((nd) => ({
+    id: nd.id,
+    parentId: parent.get(nd.id) ?? VIRTUAL,
+  }));
+  data.push({ id: VIRTUAL, parentId: null });
+  // d3.stratify orders each parent's children by their order in `data`, so sort by id
+  // to make sibling placement independent of input order (deterministic).
+  data.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  let root: ReturnType<ReturnType<typeof d3tree<StratifyDatum>>>;
+  try {
+    const h = stratify<StratifyDatum>()
+      .id((d) => d.id)
+      .parentId((d) => d.parentId)(data);
+    const vertical = direction === "TB" || direction === "BT";
+    const sample = nodeSize("file");
+    const dx = (vertical ? sample.width : sample.height) + 40;
+    const dy = (vertical ? sample.height : sample.width) + 80;
+    root = d3tree<StratifyDatum>().nodeSize([dx, dy])(h);
+  } catch {
+    return gridLayout(view); // defensive: stratify only throws on a malformed forest
+  }
+
+  root.each((dnode) => {
+    if (dnode.data.id === VIRTUAL) return;
+    const node = nodeById.get(dnode.data.id);
+    if (!node) return;
+    const across = dnode.x; // cross-axis (siblings)
+    const depth = dnode.y; // depth-axis (levels)
+    let cx: number;
+    let cy: number;
+    switch (direction) {
+      case "BT":
+        cx = across;
+        cy = -depth;
+        break;
+      case "LR":
+        cx = depth;
+        cy = across;
+        break;
+      case "RL":
+        cx = -depth;
+        cy = across;
+        break;
+      default:
+        cx = across;
+        cy = depth;
+    }
+    positions.set(...topLeft(node, cx, cy));
+  });
+  return positions;
+}
+
+/**
+ * Backbone (core-periphery): lay out the dense 2+-core with force, then hang the
+ * low-coreness periphery (leaves/chains) off it in golden-angle fans via a BFS
+ * outward from the core — so thousands of leaves don't blow the core apart. Falls
+ * back to a tidy tree when there's no real core (everything is 1-core).
+ */
+function backboneLayout(view: LayoutInput): Positions {
+  const ids = view.nodes.map((n) => n.id);
+  const core = coreness(ids, view.edges);
+  let maxCore = 0;
+  for (const c of core.values()) if (c > maxCore) maxCore = c;
+  if (maxCore < 2) return treeLayout(view, "TB");
+
+  const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const nodeById = new Map(view.nodes.map((n) => [n.id, n]));
+  const coreSet = new Set(ids.filter((id) => (core.get(id) ?? 0) >= 2));
+  const positions = forceLayout({
+    nodes: view.nodes.filter((n) => coreSet.has(n.id)),
+    edges: view.edges.filter((e) => coreSet.has(e.source) && coreSet.has(e.target)),
+  });
+
+  const undirected = new Map<string, Set<string>>();
+  for (const id of ids) undirected.set(id, new Set());
+  for (const e of view.edges) {
+    if (e.source === e.target || !undirected.has(e.source) || !undirected.has(e.target)) continue;
+    undirected.get(e.source)!.add(e.target);
+    undirected.get(e.target)!.add(e.source);
+  }
+
+  const centerOf = (id: string): XYPosition => {
+    const p = positions.get(id) ?? { x: 0, y: 0 };
+    const s = nodeSize(nodeById.get(id)?.kind ?? "");
+    return { x: p.x + s.width / 2, y: p.y + s.height / 2 };
+  };
+  const placed = new Set(coreSet);
+  const fan = new Map<string, number>();
+  const SATELLITE_R = 200;
+  const frontier = () =>
+    ids
+      .filter(
+        (id) => !placed.has(id) && [...(undirected.get(id) ?? [])].some((nb) => placed.has(nb)),
+      )
+      .sort(cmp);
+  for (let wave = frontier(); wave.length > 0; wave = frontier()) {
+    for (const id of wave) {
+      if (placed.has(id)) continue;
+      const anchor = [...(undirected.get(id) ?? [])].filter((nb) => placed.has(nb)).sort(cmp)[0];
+      const node = nodeById.get(id);
+      if (!anchor || !node) continue;
+      const c = centerOf(anchor);
+      const k = fan.get(anchor) ?? 0;
+      fan.set(anchor, k + 1);
+      const angle = (k * 2.39996) % (Math.PI * 2); // golden angle → even fan, deterministic
+      positions.set(
+        ...topLeft(node, c.x + Math.cos(angle) * SATELLITE_R, c.y + Math.sin(angle) * SATELLITE_R),
+      );
+      placed.add(id);
+    }
+  }
+  // Anything detached from the core: tuck it into a grid well below.
+  const leftover = ids.filter((id) => !placed.has(id)).sort(cmp);
+  const cols = Math.max(1, Math.ceil(Math.sqrt(leftover.length)));
+  leftover.forEach((id, i) => {
+    const node = nodeById.get(id);
+    if (node) positions.set(...topLeft(node, (i % cols) * 250, 4000 + Math.floor(i / cols) * 110));
   });
   return positions;
 }
@@ -348,11 +590,20 @@ interface SimNode extends SimulationNodeDatum {
 }
 
 /** Force-directed layout via a fixed number of synchronous d3-force ticks. */
-function forceLayout(view: LayoutInput): Positions {
+function forceLayout(view: LayoutInput, options: LayoutOptions = {}): Positions {
   const positions: Positions = new Map();
   if (view.nodes.length === 0) return positions;
 
-  const simNodes: SimNode[] = view.nodes.map((n) => ({ id: n.id }));
+  // Seed from previous positions (top-left → center) so the simulation continues
+  // from the prior layout rather than the default index arrangement — preserving
+  // the mental map. Unseeded nodes get d3's deterministic default placement.
+  const prev = options.previousPositions;
+  const simNodes: SimNode[] = view.nodes.map((n) => {
+    const p = prev?.get(n.id);
+    if (!p) return { id: n.id };
+    const size = nodeSize(n.kind);
+    return { id: n.id, x: p.x + size.width / 2, y: p.y + size.height / 2 };
+  });
   const ids = new Set(simNodes.map((n) => n.id));
   const links = view.edges
     .filter((e) => ids.has(e.source) && ids.has(e.target))
@@ -377,6 +628,53 @@ function forceLayout(view: LayoutInput): Positions {
   view.nodes.forEach((node, i) => {
     const sn = simNodes[i];
     positions.set(...topLeft(node, sn.x ?? 0, sn.y ?? 0));
+  });
+  return positions;
+}
+
+/**
+ * Stress-majorization layout (cola.js): places nodes so Euclidean distance tracks
+ * graph-theoretic distance, with non-overlap constraints. Deterministic — cola uses
+ * a seeded PRNG and we seed initial positions (previous layout, else a ring) and run
+ * a fixed number of synchronous iterations (keepRunning = false). The best
+ * general-purpose engine for irregular, mixed directed/cyclic graphs.
+ */
+function stressLayout(view: LayoutInput, options: LayoutOptions = {}): Positions {
+  const positions: Positions = new Map();
+  const n = view.nodes.length;
+  if (n === 0) return positions;
+  if (n === 1) {
+    positions.set(...topLeft(view.nodes[0], 0, 0));
+    return positions;
+  }
+  const index = new Map(view.nodes.map((nd, i) => [nd.id, i]));
+  const spread = 200 * Math.sqrt(n);
+  const colaNodes = view.nodes.map((nd, i) => {
+    const s = nodeSize(nd.kind);
+    const prev = options.previousPositions?.get(nd.id);
+    const angle = (i / n) * Math.PI * 2;
+    return {
+      x: prev ? prev.x + s.width / 2 : Math.cos(angle) * spread,
+      y: prev ? prev.y + s.height / 2 : Math.sin(angle) * spread,
+      width: s.width + 24,
+      height: s.height + 24,
+    };
+  });
+  const links = view.edges
+    .filter((e) => e.source !== e.target && index.has(e.source) && index.has(e.target))
+    .map((e) => ({ source: index.get(e.source)!, target: index.get(e.target)! }));
+  // Stress majorization is ~O(n²) per iteration, and overlap-avoidance adds more;
+  // scale iterations down (and drop overlap avoidance) for larger components so a
+  // single cluster never blows the worker's time budget. Still fully deterministic.
+  const heavy = n > 500;
+  new ColaLayout()
+    .nodes(colaNodes)
+    .links(links)
+    .avoidOverlaps(!heavy)
+    .linkDistance(160)
+    .start(heavy ? 20 : 60, heavy ? 10 : 30, heavy ? 20 : 60, 0, false, false);
+  view.nodes.forEach((nd, i) => {
+    positions.set(...topLeft(nd, colaNodes[i].x ?? 0, colaNodes[i].y ?? 0));
   });
   return positions;
 }
@@ -414,6 +712,41 @@ export function layoutCacheSet(signature: string, entry: LayoutCacheEntry): void
  * Compute node positions for a view using the chosen algorithm. Returns top-left
  * positions keyed by node id. Deterministic for a given input.
  */
+/** Options forwarded to the clustered (smartLayout) path. */
+function smartOptions(options: LayoutOptions) {
+  return {
+    direction: options.direction,
+    groupBy: options.groupBy,
+    density: options.density,
+    communityOf: options.communityOf,
+  };
+}
+
+/**
+ * Central layout router (used by the worker and the sync fallback). "smart" is the
+ * grouping/clustering mode: it clusters by directory/community, or — when "none" —
+ * resolves to the planner's shape→engine choice run flat. Every OTHER algorithm runs
+ * its own real engine flat, so each layout button is visibly distinct (grouping is a
+ * Smart-mode feature; classic engines don't nest). Returns positions + cluster boxes.
+ */
+export function runLayout(input: LayoutInput, options: LayoutOptions = {}): LayoutResult {
+  const algorithm = options.algorithm ?? "layered";
+  if (algorithm === "smart") {
+    // Smart clusters by directory unless explicitly told "none" (containers off).
+    if ((options.groupBy ?? "directory") !== "none")
+      return smartLayout(input, smartOptions(options));
+    // "none" = no containers, but still pick the engine that fits the graph's shape.
+    const engine = chooseEngine(
+      graphShape(
+        input.nodes.map((n) => n.id),
+        input.edges,
+      ),
+    );
+    return { nodes: layoutView(input, { ...options, algorithm: engine }), clusters: [] };
+  }
+  return { nodes: layoutView(input, options), clusters: [] };
+}
+
 export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Positions {
   const { algorithm = "layered", direction = "LR" } = options;
   switch (algorithm) {
@@ -425,15 +758,19 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
         communityOf: options.communityOf,
       }).nodes;
     case "tree":
-      return layoutByComponents(view, (sub) => dagreLayout(sub, direction, "tight-tree"));
+      return layoutByComponents(view, (sub) => treeLayout(sub, direction));
     case "radial":
       return layoutByComponents(view, radialLayout);
     case "circular":
       return layoutByComponents(view, circularLayout);
     case "grid":
       return gridLayout(view);
+    case "backbone":
+      return layoutByComponents(view, (sub) => backboneLayout(sub));
+    case "stress":
+      return layoutByComponents(view, (sub) => stressLayout(sub, options));
     case "force":
-      return forceLayout(view);
+      return forceLayout(view, options);
     default:
       return layoutByComponents(view, (sub) => dagreLayout(sub, direction, "network-simplex"));
   }
