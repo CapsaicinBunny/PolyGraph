@@ -375,8 +375,9 @@ describe("backbone layout (core + satellites)", () => {
     weight: edgeWeight("import", 1),
   });
 
-  test("hangs a leaf off its core anchor at the satellite radius", () => {
-    // Triangle a,b,c (2-core) + leaf d on a.
+  test("hangs a leaf off its core anchor (fanned, not on the core)", () => {
+    // Triangle a,b,c (2-core) + leaf d on a. The leaf is placed off its anchor at the
+    // phyllotaxis radius — close enough to read as attached, far enough not to overlap.
     const g: LayoutInput = {
       nodes: ["a", "b", "c", "d"].map(mk),
       edges: [ed("a", "b"), ed("b", "c"), ed("c", "a"), ed("a", "d")],
@@ -385,7 +386,9 @@ describe("backbone layout (core + satellites)", () => {
     const ctr = (id: string) => ({ x: pos.get(id)!.x + 100, y: pos.get(id)!.y + 28 });
     const d = ctr("d");
     const a = ctr("a");
-    expect(Math.hypot(d.x - a.x, d.y - a.y)).toBeCloseTo(200, 0);
+    const dist = Math.hypot(d.x - a.x, d.y - a.y);
+    expect(dist).toBeGreaterThan(80);
+    expect(dist).toBeLessThan(400);
   });
 
   test("falls back to a tidy tree when there is no dense core", () => {
@@ -489,5 +492,52 @@ describe("heavy-engine safety caps (no engine pins a core)", () => {
     const pos = layoutView({ nodes, edges: [] }, { algorithm: "force" });
     expect(pos.size).toBe(n);
     expect(distinctColumns(pos)).toBeLessThan(120);
+  });
+});
+
+describe("heavy engines keep cards from overlapping", () => {
+  const W = 200;
+  const H = 56; // file card size
+  const overlaps = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    a.x < b.x + W && b.x < a.x + W && a.y < b.y + H && b.y < a.y + H;
+  const anyOverlap = (pos: Map<string, { x: number; y: number }>, ids: string[]) => {
+    for (let i = 0; i < ids.length; i++)
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = pos.get(ids[i]);
+        const b = pos.get(ids[j]);
+        if (a && b && overlaps(a, b)) return true;
+      }
+    return false;
+  };
+  const ed = (s: string, t: string) => ({
+    source: s,
+    target: t,
+    kind: "import" as const,
+    count: 1,
+    weight: edgeWeight("import", 1),
+  });
+
+  test("stress: avoidOverlaps keeps cards apart", () => {
+    const ids = Array.from({ length: 12 }, (_, i) => `s${i}`);
+    const nodes: LayoutInput["nodes"] = ids.map((id) => ({ id, kind: "file" }));
+    const edges: LayoutInput["edges"] = ids.map((_, i) => ed(`s${i}`, `s${(i + 1) % 12}`));
+    const pos = layoutView({ nodes, edges }, { algorithm: "stress" });
+    expect(anyOverlap(pos, ids)).toBe(false);
+  });
+
+  test("backbone: a hub's many leaves fan out without overlap", () => {
+    const leaves = Array.from({ length: 20 }, (_, i) => `L${i}`);
+    const nodes: LayoutInput["nodes"] = ["a", "b", "c", ...leaves].map((id) => ({
+      id,
+      kind: "file",
+    }));
+    const edges: LayoutInput["edges"] = [
+      ed("a", "b"),
+      ed("b", "c"),
+      ed("c", "a"),
+      ...leaves.map((l) => ed("a", l)),
+    ];
+    const pos = layoutView({ nodes, edges }, { algorithm: "backbone" });
+    expect(anyOverlap(pos, leaves)).toBe(false);
   });
 });

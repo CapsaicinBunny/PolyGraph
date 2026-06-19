@@ -564,7 +564,7 @@ function backboneLayout(view: LayoutInput): Positions {
   };
   const placed = new Set(coreSet);
   const fan = new Map<string, number>();
-  const SATELLITE_R = 200;
+  const SAT_SPACING = 130; // phyllotaxis spacing → nearest satellites ≈ a card apart
   const frontier = () =>
     ids
       .filter(
@@ -580,10 +580,11 @@ function backboneLayout(view: LayoutInput): Positions {
       const c = centerOf(anchor);
       const k = fan.get(anchor) ?? 0;
       fan.set(anchor, k + 1);
-      const angle = (k * 2.39996) % (Math.PI * 2); // golden angle → even fan, deterministic
-      positions.set(
-        ...topLeft(node, c.x + Math.cos(angle) * SATELLITE_R, c.y + Math.sin(angle) * SATELLITE_R),
-      );
+      // Sunflower (phyllotaxis): radius grows with the satellite index, so a hub with
+      // many leaves fans them into a disk instead of crowding one fixed-radius ring.
+      const angle = (k + 1) * 2.39996; // golden angle
+      const r = SAT_SPACING * Math.sqrt(k + 1);
+      positions.set(...topLeft(node, c.x + Math.cos(angle) * r, c.y + Math.sin(angle) * r));
       placed.add(id);
     }
   }
@@ -631,7 +632,7 @@ function forceLayout(view: LayoutInput, options: LayoutOptions = {}): Positions 
         .strength(0.4),
     )
     .force("center", forceCenter(0, 0))
-    .force("collide", forceCollide(110))
+    .force("collide", forceCollide(130))
     .stop();
 
   // Run to convergence synchronously (no animation), deterministic given the input.
@@ -675,16 +676,15 @@ function stressLayout(view: LayoutInput, options: LayoutOptions = {}): Positions
   const links = view.edges
     .filter((e) => e.source !== e.target && index.has(e.source) && index.has(e.target))
     .map((e) => ({ source: index.get(e.source)!, target: index.get(e.target)! }));
-  // Stress majorization is ~O(n²) per iteration, and overlap-avoidance adds more;
-  // scale iterations down (and drop overlap avoidance) for larger components so a
-  // single cluster never blows the worker's time budget. Still fully deterministic.
-  const heavy = n > 500;
+  // The per-component cap (HEAVY_COMPONENT_CAP.stress) bounds n, so overlap avoidance
+  // stays ON at a fixed iteration count — cards never sit on top of each other, and the
+  // run stays well under the worker timeout. Deterministic (seeded + fixed iterations).
   new ColaLayout()
     .nodes(colaNodes)
     .links(links)
-    .avoidOverlaps(!heavy)
-    .linkDistance(160)
-    .start(heavy ? 20 : 60, heavy ? 10 : 30, heavy ? 20 : 60, 0, false, false);
+    .avoidOverlaps(true)
+    .linkDistance(200)
+    .start(30, 20, 40, 0, false, false);
   view.nodes.forEach((nd, i) => {
     positions.set(...topLeft(nd, colaNodes[i].x ?? 0, colaNodes[i].y ?? 0));
   });
