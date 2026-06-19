@@ -27,6 +27,11 @@ import { useScene } from "./useScene";
 // MAX_CARDS cards. These want desktop calibration (see docs/SCALE-100K.md).
 const LOD_OPEN_PX = 240;
 const LOD_MAX_CARDS = 800;
+// Cap on estimated layout NODES (files + their symbols when expanded). Smart lays out
+// ~2.5k dense nodes in ~1s but ~40s at 29k, so keep the cut's input under this and
+// Smart always finishes within the worker timeout (never degrading to the grid
+// fallback). See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
+const LOD_NODE_BUDGET = 2500;
 // Debounce the adaptive recompute so a single zoom *gesture* (many wheel ticks
 // across bands) triggers ONE cut+rebuild after it settles — not one per tick. The
 // rebuild reprocesses the whole base graph (1.39M nodes on the kernel), so coalescing
@@ -36,6 +41,8 @@ const LOD_RECUT_DEBOUNCE_MS = 200;
 export interface GraphViewProps {
   graph: GraphModel;
   expanded: Set<string>;
+  /** Symbols per file id — the cut adds these to its node budget for expanded files. */
+  symbolCount: Map<string, number>;
   enabledEdgeKinds: Set<ViewEdgeKind>;
   search: string;
   selectedId: string | null;
@@ -137,6 +144,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const {
     graph,
     expanded,
+    symbolCount,
     enabledEdgeKinds,
     search,
     selectedId,
@@ -239,12 +247,16 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     dirTree: DirNode;
     scene: Scene;
     collapsed: Set<string>;
-  }>({ adaptiveLod, onCut, dirTree, scene, collapsed: collapsedClusters });
+    expanded: Set<string>;
+    symbolCount: Map<string, number>;
+  }>({ adaptiveLod, onCut, dirTree, scene, collapsed: collapsedClusters, expanded, symbolCount });
   lod.current.adaptiveLod = adaptiveLod;
   lod.current.onCut = onCut;
   lod.current.dirTree = dirTree;
   lod.current.scene = scene;
   lod.current.collapsed = collapsedClusters;
+  lod.current.expanded = expanded;
+  lod.current.symbolCount = symbolCount;
   const lodBand = useRef(cameraBand(1));
 
   // The JSON payload Vello consumes. Built from the positioned scene.
@@ -467,7 +479,19 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       lodBand.current = band;
       const boxes = sceneBoxes(l.scene);
       const vp = { w: canvas.width, h: canvas.height };
-      const cutOpts = { openPx: LOD_OPEN_PX, maxCards: LOD_MAX_CARDS, prevCut: l.collapsed };
+      // An expanded file pulls its symbols into the layout too, so cost it as
+      // 1 + symbols; collapsed/unexpanded files are a single node. Bounding the cut on
+      // this (not just card count) keeps Smart's input small enough to finish in time.
+      const exp = l.expanded;
+      const sc = l.symbolCount;
+      const nodeCost = (id: string) => 1 + (exp.has(id) ? (sc.get(id) ?? 0) : 0);
+      const cutOpts = {
+        openPx: LOD_OPEN_PX,
+        maxCards: LOD_MAX_CARDS,
+        prevCut: l.collapsed,
+        nodeBudget: LOD_NODE_BUDGET,
+        nodeCost,
+      };
       let next: Set<string>;
       // When telemetry is on, take the traced path and log everything about this cut
       // (per-dir decisions, deltas, timings); otherwise the cheap one.

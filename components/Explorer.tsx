@@ -54,6 +54,11 @@ const ALL_CATEGORIES: NodeCategory[] = ["ui", "feature"];
 // Above this many file nodes, auto-collapse directories so the initial scene the
 // renderer receives stays drawable (LOD v0; see docs/SCALE-100K.md).
 const AUTO_COLLAPSE_MAX_CARDS = 2000;
+// Cap on estimated layout NODES (files + their symbols when expanded) used to seed
+// the collapse on expand-all. Keeps the layout input small enough for Smart to finish
+// within the worker timeout instead of falling back to grid. Matches LOD_NODE_BUDGET
+// in VelloGraphCanvas. See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
+const LOD_NODE_BUDGET = 2500;
 
 interface Stats {
   fileCount: number;
@@ -277,6 +282,16 @@ export function Explorer() {
     return map;
   }, [baseGraph]);
 
+  // Symbols per file id — feeds the LOD node budget so the cut and the expand-all seed
+  // account for the symbols an expanded file pulls into the layout, not just the card.
+  const symbolCount = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const n of baseGraph?.nodes ?? []) {
+      if (n.kind !== "file") map.set(n.parentFile, (map.get(n.parentFile) ?? 0) + 1);
+    }
+    return map;
+  }, [baseGraph]);
+
   const fileIds = useMemo(
     () => (baseGraph?.nodes ?? []).filter((n) => n.kind === "file").map((n) => n.id),
     [baseGraph],
@@ -288,12 +303,15 @@ export function Explorer() {
     // Reseed the collapsed-cluster cut the way a fresh scan does. Without this, a
     // stale cut (e.g. the coarse one the adaptive-LOD pass writes while everything is
     // expanded) lingers after collapsing and most nodes stay folded until a rescan.
+    // When EXPANDING everything, each un-absorbed file also emits its symbols into the
+    // layout, so seed on node cost (1 + symbols) under the larger node budget — else
+    // the input balloons past what Smart can lay out and it falls back to a grid.
+    const cost = (id: string) => 1 + (allExpanded ? 0 : (symbolCount.get(id) ?? 0));
+    const budget = allExpanded ? AUTO_COLLAPSE_MAX_CARDS : LOD_NODE_BUDGET;
     setCollapsedClusters(
-      baseGraph
-        ? (autoCollapseDirs(baseGraph, AUTO_COLLAPSE_MAX_CARDS)?.collapsed ?? new Set())
-        : new Set(),
+      baseGraph ? (autoCollapseDirs(baseGraph, budget, cost)?.collapsed ?? new Set()) : new Set(),
     );
-  }, [allExpanded, fileIds, baseGraph]);
+  }, [allExpanded, fileIds, baseGraph, symbolCount]);
 
   const handleResult = useCallback(
     (res: AnalyzeResult, s: Stats, m: PackageManifest[], scannedPath = "") => {
@@ -631,6 +649,7 @@ export function Explorer() {
           <VelloGraphCanvas
             graph={graph}
             expanded={expanded}
+            symbolCount={symbolCount}
             enabledEdgeKinds={enabledEdgeKinds}
             search={search}
             selectedId={selectedId}
