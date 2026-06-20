@@ -184,6 +184,30 @@ function Section({
   );
 }
 
+/** Small right-aligned "hide all" / "show all" toggle used on filter (sub)section headers. */
+function HideAllToggle({ allOn, onToggle }: { allOn: boolean; onToggle: () => void }) {
+  return (
+    <Box
+      role="button"
+      tabIndex={0}
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+      fontSize="10px"
+      color="fg.subtle"
+      cursor="pointer"
+      userSelect="none"
+      _hover={{ color: "fg" }}
+    >
+      {allOn ? "hide all" : "show all"}
+    </Box>
+  );
+}
+
 function Chip({
   label,
   active,
@@ -306,6 +330,15 @@ export function Sidebar({
   const directionEnabled = DIRECTIONAL_ALGORITHMS.includes(algorithm);
 
   const relationshipsModified = enabledEdgeKinds.size !== FILTERABLE_EDGE_KINDS.length;
+  const allEdgesOn = enabledEdgeKinds.size === FILTERABLE_EDGE_KINDS.length;
+  // No bulk edge setter prop exists, so drive "hide all" / "show all" by flipping just the kinds
+  // that need it via the single-toggle prop (its setter is a functional update, so the calls
+  // compound correctly).
+  const setAllEdges = (on: boolean) => {
+    for (const kind of FILTERABLE_EDGE_KINDS) {
+      if (enabledEdgeKinds.has(kind) !== on) onToggleEdgeKind(kind);
+    }
+  };
   const nodeTypesModified = enabledNodeKinds.size !== FILTERABLE_NODE_KINDS.length;
 
   // Only surface scope values the codebase actually has. On a C/Rust project the
@@ -392,7 +425,11 @@ export function Sidebar({
         )}
       </Section>
 
-      <Section title="Relationships" modified={relationshipsModified}>
+      <Section
+        title="Relationships"
+        modified={relationshipsModified}
+        action={<HideAllToggle allOn={allEdgesOn} onToggle={() => setAllEdges(!allEdgesOn)} />}
+      >
         <ChipRow>
           {FILTERABLE_EDGE_KINDS.map((kind) => (
             <Chip
@@ -425,24 +462,10 @@ export function Sidebar({
                   >
                     {layer.label}
                   </Text>
-                  <Box
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onSetNodeKinds(layer.kinds, !allOn)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        onSetNodeKinds(layer.kinds, !allOn);
-                      }
-                    }}
-                    fontSize="10px"
-                    color="fg.subtle"
-                    cursor="pointer"
-                    userSelect="none"
-                    _hover={{ color: "fg" }}
-                  >
-                    {allOn ? "hide all" : "show all"}
-                  </Box>
+                  <HideAllToggle
+                    allOn={allOn}
+                    onToggle={() => onSetNodeKinds(layer.kinds, !allOn)}
+                  />
                 </Flex>
                 <ChipRow>
                   {layer.kinds.map((kind) => (
