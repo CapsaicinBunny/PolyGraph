@@ -14,38 +14,23 @@ export interface WorkerLayout {
 
 type FlatPositions = [string, number, number][];
 
-// Above how many nodes a heavy layout is forced down to near-linear `grid`. This is
-// per-algorithm: `smart` *with grouping* is cluster-based and scales (telemetry: a
-// 53k-node kernel cut laid out in ~0.28s) because directory/community grouping splits
-// the graph into many small per-cluster dagre runs, AND it produces the cluster boxes
-// the adaptive cut needs — so it gets plenty of headroom. The catch: with
-// groupBy:"none" smart degenerates to ONE monolithic dagre over every node (smart.ts
-// puts everything in the root cluster), which is just as slow as `layered` (~30s at
-// 15k nodes, ~108s at 40k — far past the timeout) and yields no clusters, so it is
-// capped low like the other non-scaling layouts. Monolithic dagre (`layered`/`tree`)
-// is ~O(V·E) and force is O(N·ticks). The timeout below is the final safety for any
-// pathological (dense) layout, regardless of algorithm.
-const LAYOUT_MAX_HEAVY_SMART = 60_000;
-const LAYOUT_MAX_HEAVY_OTHER = 6_000;
+// Heavy layouts (dagre `layered`/`tree`/`smart`, d3-`force`) don't scale: dagre is
+// ~O(V·E) and unusable past ~10k nodes, force is O(N·ticks). Above this node count
+// force a near-linear `grid` so layout always terminates. (Auto-collapse normally
+// keeps inputs far below this; this is defense in depth — see docs/SCALE-100K.md.)
+const LAYOUT_MAX_HEAVY = 6000;
 // If the worker hasn't answered in this long (hung on a pathological input), fall
-// back to a synchronous grid so the "laying out…" overlay can't spin forever. Kept
-// short so a dense, slow dagre layout can't freeze a frame for seconds — the grid
-// fallback is near-instant on the (bounded) cut.
-const LAYOUT_TIMEOUT_MS = 2000;
+// back to a synchronous grid so the "laying out…" overlay can't spin forever.
+const LAYOUT_TIMEOUT_MS = 8000;
 
 /** A cheap, near-linear layout used for huge inputs and as the timeout fallback. */
 function gridOptions(options: LayoutOptions): LayoutOptions {
   return { ...options, algorithm: "grid", groupBy: "none" };
 }
 
-/** Force a near-linear layout only when the input is too large for the chosen algorithm. */
+/** Force a near-linear layout when the input is too large for the heavy algorithms. */
 export function guardOptions(input: LayoutInput, options: LayoutOptions): LayoutOptions {
-  // Smart earns the high headroom only WITH grouping; with groupBy:"none" it
-  // degenerates to a single monolithic dagre and scales no better than `layered`.
-  // (undefined groupBy resolves to "directory" in smart.ts, so it keeps the headroom.)
-  const scalesWell = options.algorithm === "smart" && options.groupBy !== "none";
-  const limit = scalesWell ? LAYOUT_MAX_HEAVY_SMART : LAYOUT_MAX_HEAVY_OTHER;
-  return input.nodes.length > limit ? gridOptions(options) : options;
+  return input.nodes.length > LAYOUT_MAX_HEAVY ? gridOptions(options) : options;
 }
 
 let worker: Worker | null = null;
