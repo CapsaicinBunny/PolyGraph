@@ -64,6 +64,11 @@ struct NodeData {
     h: f64,
     /// Accent color (border / glyph / left bar) as [r,g,b].
     color: [u8; 3],
+    /// Optional connection-highlight ring color [r,g,b] (start=blue, destination=red,
+    /// in-between path=yellow). Drawn as an outer ring so the card's own fill/accent —
+    /// which encodes the node's kind — stays unchanged.
+    #[serde(default)]
+    outline: Option<[u8; 3]>,
     label: String,
     #[serde(default)]
     shape: String,
@@ -641,6 +646,14 @@ impl VelloCanvas {
                 let hl = RoundedRect::new(n.x - 2.0, n.y - 2.0, r + 2.0, b + 2.0, 11.0);
                 self.scene
                     .stroke(&Stroke::new(2.0), camera, MATCH, None, &hl);
+            }
+
+            // Connection-highlight ring: start=blue, destination=red, in-between path=yellow.
+            // An outer ring (not a fill) so the card's kind-color/accent stays readable.
+            if let Some(o) = n.outline {
+                let ring = RoundedRect::new(n.x - 2.5, n.y - 2.5, r + 2.5, b + 2.5, 11.5);
+                let oc = Color::from_rgb8(o[0], o[1], o[2]);
+                self.scene.stroke(&Stroke::new(2.5), camera, oc, None, &ring);
             }
 
             if !label_lod {

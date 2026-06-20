@@ -150,9 +150,12 @@ function clusterColor(id: string): [number, number, number] {
 
 // Muted gray for nodes/edges outside the highlight set (readable in both themes).
 const DIM_RGB: [number, number, number] = [90, 99, 112];
-// The two shift-clicked connection endpoints — washed orange so they read as the
-// "from/to" of the path, distinct from the lit (blue) route between them.
-const ANCHOR_RGB: [number, number, number] = [255, 149, 0];
+// Connection-highlight ring colors, drawn as an OUTLINE only (the card keeps its own
+// kind-color so its type still reads): the path's start, its destination, and the nodes
+// in between. Blue start matches the selection outline.
+const CONN_START_RGB: [number, number, number] = [59, 130, 246]; // blue
+const CONN_END_RGB: [number, number, number] = [239, 68, 68]; // red
+const CONN_PATH_RGB: [number, number, number] = [234, 179, 8]; // yellow
 
 interface VelloHandle {
   set_data: (json: string) => void;
@@ -404,9 +407,20 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const payload = useMemo(() => {
     // Mute everything outside the highlight set so the matches pop. Nodes dim by membership.
     const dimNode = (id: string) => effectiveHighlight != null && !effectiveHighlight.has(id);
-    // In connection mode the two endpoints get an orange wash (the renderer tints the card
-    // fill + outline + label by node color) so the "from/to" stand out from the lit path.
-    const anchorSet = conn ? new Set(liveAnchors) : null;
+    // Connection roles → an outline ring (not a fill): first anchor = start (blue), last anchor
+    // = destination (red), nodes between them on the path = yellow. Outline-only keeps each
+    // card's kind-color intact, so the ring reads as "role" rather than "different type".
+    const connStart = conn ? liveAnchors[0] : undefined;
+    const connEnd =
+      conn && liveAnchors.length > 1 ? liveAnchors[liveAnchors.length - 1] : undefined;
+    const connMiddle = conn?.path && conn.path.length > 2 ? new Set(conn.path.slice(1, -1)) : null;
+    const outlineFor = (id: string): [number, number, number] | undefined => {
+      if (!conn) return undefined;
+      if (id === connStart) return CONN_START_RGB;
+      if (id === connEnd) return CONN_END_RGB;
+      if (connMiddle?.has(id)) return CONN_PATH_RGB;
+      return undefined;
+    };
     // Edges dim by EXACT pair in connection mode (so a chord between two lit nodes stays dim),
     // and by "both endpoints lit" in query-highlight mode (which has no edge set).
     const dimEdge = (source: string, target: string) =>
@@ -426,11 +440,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       y: n.y,
       w: n.width,
       h: n.height,
-      color: anchorSet?.has(n.id)
-        ? ANCHOR_RGB
-        : dimNode(n.id)
-          ? lerpRgb(hexToRgb(n.color), DIM_RGB, dimT)
-          : hexToRgb(n.color),
+      color: dimNode(n.id) ? lerpRgb(hexToRgb(n.color), DIM_RGB, dimT) : hexToRgb(n.color),
+      outline: outlineFor(n.id),
       label: n.label,
       shape: n.shape,
       badge: n.isFile && n.symbolCount > 0 ? `+${n.symbolCount}` : "",
@@ -1018,7 +1029,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
           transform="translateX(-50%)"
           maxW="90%"
           truncate
-          fontSize="xs"
+          fontSize="sm"
           px="3"
           py="1.5"
           rounded="md"
