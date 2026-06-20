@@ -869,18 +869,20 @@ function forceLayout(view: LayoutInput, options: LayoutOptions = {}): Positions 
     return { id: n.id, x: p.x + size.width / 2, y: p.y + size.height / 2 };
   });
   const ids = new Set(simNodes.map((n) => n.id));
-  const links = view.edges
+  // Carry edge weight so heavier relationships (extends/implements) pull harder than calls.
+  type Link = { source: string; target: string; weight: number };
+  const links: Link[] = view.edges
     .filter((e) => ids.has(e.source) && ids.has(e.target))
-    .map((e) => ({ source: e.source, target: e.target }));
+    .map((e) => ({ source: e.source, target: e.target, weight: e.weight ?? 1 }));
 
   const sim = forceSimulation(simNodes)
     .force("charge", forceManyBody().strength(-1200).distanceMax(2200))
     .force(
       "link",
-      forceLink<SimNode, { source: string; target: string }>(links)
+      forceLink<SimNode, Link>(links)
         .id((d) => d.id)
         .distance(220)
-        .strength(0.4),
+        .strength((l) => Math.min(0.7, 0.2 + 0.06 * (l.weight ?? 1))),
     )
     .force("center", forceCenter(0, 0))
     .force("collide", forceCollide(130))
