@@ -37,8 +37,9 @@ export function chooseEngine(shape: GraphShape): LayoutAlgorithm {
   // Substantially cyclic and small enough that stress majorization stays fast → stress
   // untangles it best (and covers big rings too large for a single circle).
   if (shape.sccNodeRatio > 0.3 && shape.nodeCount <= STRESS_AUTO_MAX) return "stress";
-  // Dense / large tangle → force (Barnes–Hut scales beyond stress's reach).
-  if (shape.density > 0.15) return "force";
+  // Dense, or REAL community structure (high modularity over several communities — not just
+  // "more than one community", which almost every graph has) → force clusters them well.
+  if (shape.density > 0.15 || (shape.modularity > 0.3 && shape.communityCount >= 3)) return "force";
   // Mild cycles otherwise: layered handles the condensation fine.
   return "layered";
 }

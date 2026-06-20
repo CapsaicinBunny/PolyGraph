@@ -25,7 +25,10 @@ describe("graphShape", () => {
       ["h", "a", "b", "c", "d"],
       [E("h", "a"), E("h", "b"), E("h", "c"), E("h", "d")],
     );
-    const path = graphShape(["a", "b", "c", "d", "e"], [E("a", "b"), E("b", "c"), E("c", "d"), E("d", "e")]);
+    const path = graphShape(
+      ["a", "b", "c", "d", "e"],
+      [E("a", "b"), E("b", "c"), E("c", "d"), E("d", "e")],
+    );
     expect(star.degreeGini).toBeGreaterThan(path.degreeGini);
     expect(star.hubRatio).toBeGreaterThan(0);
     expect(star.leafRatio).toBeGreaterThan(0.5); // the four spokes are leaves
@@ -41,5 +44,24 @@ describe("graphShape", () => {
     const a = graphShape(["c", "a", "b"], [E("b", "c"), E("a", "b")]);
     const b = graphShape(["a", "b", "c"], [E("a", "b"), E("b", "c")]);
     expect(a).toEqual(b);
+  });
+});
+
+describe("graphShape modularity", () => {
+  test("high for clear community structure, low for a clique", () => {
+    // Two triangles joined by one bridge → strong communities.
+    const bridged = graphShape(
+      ["a", "b", "c", "d", "e", "f"],
+      [E("a", "b"), E("b", "c"), E("c", "a"), E("d", "e"), E("e", "f"), E("f", "d"), E("c", "d")],
+    );
+    expect(bridged.modularity).toBeGreaterThan(0.3);
+    expect(bridged.largestCommunityRatio).toBeLessThanOrEqual(0.5);
+
+    // A 4-clique has no community structure → modularity near 0.
+    const ids = ["p", "q", "r", "s"];
+    const edges: { source: string; target: string }[] = [];
+    for (let i = 0; i < ids.length; i++)
+      for (let j = i + 1; j < ids.length; j++) edges.push(E(ids[i], ids[j]));
+    expect(graphShape(ids, edges).modularity).toBeLessThan(0.3);
   });
 });

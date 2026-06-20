@@ -37,6 +37,10 @@ export interface GraphShape {
   hubRatio: number;
   /** Number of detected communities. */
   communityCount: number;
+  /** Modularity of the detected community partition (0 = none, →~1 = strong structure). */
+  modularity: number;
+  /** Size of the largest community / n. */
+  largestCommunityRatio: number;
 }
 
 // Gini coefficient via the sorted formula — O(n log n), not the O(n²) pairwise sum.
@@ -91,6 +95,8 @@ export function graphShape(nodeIds: string[], edges: Edge[]): GraphShape {
       degreeGini: 0,
       hubRatio: 0,
       communityCount: 0,
+      modularity: 0,
+      largestCommunityRatio: 0,
     };
   }
 
@@ -142,7 +148,34 @@ export function graphShape(nodeIds: string[], edges: Edge[]): GraphShape {
   for (const c of sccs) if (c.members.length > 1) sccNodes += c.members.length;
   const sccNodeRatio = sccNodes / n;
 
-  const communities = new Set(detectCommunities(nodeIds, edges).values());
+  // Communities + modularity Q + largest-community share (from the undirected view used
+  // for detection). Modularity tells the planner whether community structure is REAL —
+  // a stronger Force signal than a raw community count (almost any graph has >1 community).
+  const community = detectCommunities(nodeIds, edges);
+  const communityIds = new Set(community.values());
+  const degOf = new Map(nodeIds.map((id, i) => [id, degrees[i]]));
+  const sumDeg = new Map<string, number>();
+  const sizeOf = new Map<string, number>();
+  const intraEndpoints = new Map<string, number>();
+  for (const id of nodeIds) {
+    const c = community.get(id) ?? id;
+    sumDeg.set(c, (sumDeg.get(c) ?? 0) + (degOf.get(id) ?? 0));
+    sizeOf.set(c, (sizeOf.get(c) ?? 0) + 1);
+    let same = 0;
+    for (const nb of undirected.get(id) ?? []) if ((community.get(nb) ?? nb) === c) same += 1;
+    intraEndpoints.set(c, (intraEndpoints.get(c) ?? 0) + same);
+  }
+  const mUndir = degrees.reduce((a, b) => a + b, 0) / 2;
+  let modularity = 0;
+  if (mUndir > 0) {
+    for (const c of communityIds) {
+      const lc = (intraEndpoints.get(c) ?? 0) / 2; // intra-community edges (endpoints counted twice)
+      const dc = sumDeg.get(c) ?? 0;
+      modularity += lc / mUndir - (dc / (2 * mUndir)) ** 2;
+    }
+  }
+  let largestCommunity = 0;
+  for (const s of sizeOf.values()) if (s > largestCommunity) largestCommunity = s;
 
   return {
     nodeCount: n,
@@ -158,6 +191,8 @@ export function graphShape(nodeIds: string[], edges: Edge[]): GraphShape {
     treeScore: treeScore(nodeIds, edges),
     degreeGini: giniOf(degrees),
     hubRatio: hubs / n,
-    communityCount: communities.size,
+    communityCount: communityIds.size,
+    modularity,
+    largestCommunityRatio: largestCommunity / n,
   };
 }
