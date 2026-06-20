@@ -348,16 +348,17 @@ function selectEngineAndLayout(
     });
   };
 
-  // The planner's pick (resolved[0]) is the default; an alternative replaces it only if it
-  // scores meaningfully better (hysteresis), so a marginal win doesn't override the shape
-  // heuristic on noise.
-  const scored = resolved.map((r) => ({ ...r, ...run(r.engine, r.fallbackReason) }));
-  const withScores = scored.map((s) => ({ ...s, score: scoreOf(s.laid) }));
-  const primary = withScores[0];
-  let best = primary;
-  for (let i = 1; i < withScores.length; i++) {
-    if (withScores[i].score < primary.score * 0.85 && withScores[i].score < best.score) {
-      best = withScores[i];
+  // Run + score the planner's pick first. If it's already optimal (no overlaps/crossings/flow
+  // violations), no alternative can beat it, so skip laying the others out at all. Otherwise an
+  // alternative replaces it only if it scores meaningfully better (hysteresis margin).
+  const primary = { ...run(resolved[0].engine, resolved[0].fallbackReason) };
+  const primaryScore = scoreOf(primary.laid);
+  let best = { ...primary, score: primaryScore };
+  if (primaryScore > 0) {
+    for (let i = 1; i < resolved.length; i++) {
+      const r = run(resolved[i].engine, resolved[i].fallbackReason);
+      const score = scoreOf(r.laid);
+      if (score < primaryScore * 0.85 && score < best.score) best = { ...r, score };
     }
   }
   return {
