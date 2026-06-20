@@ -34,6 +34,8 @@ const HEADER_H = 26;
 
 type Item = { id: string; width: number; height: number };
 type Centers = Map<string, XYPosition>;
+/** A collapsed item-level edge between child boxes/nodes, carrying aggregated weight + count. */
+type ItemEdge = { source: string; target: string; weight: number; count: number };
 
 interface ClusterLayout {
   width: number;
@@ -56,10 +58,10 @@ function itemOf(sx: string, nodeId: string, ancestry: Map<string, string[]>): st
   return i + 1 < anc.length ? anc[i + 1] : nodeId;
 }
 
-/** Place sized items with dagre; returns item centers. */
+/** Place sized items with dagre (weighted by relationship strength); returns item centers. */
 function dagreItems(
   items: { id: string; width: number; height: number }[],
-  edges: { source: string; target: string }[],
+  edges: ItemEdge[],
   direction: LayoutDirection,
   spacing: number,
 ): Map<string, XYPosition> {
@@ -78,7 +80,8 @@ function dagreItems(
   for (const it of items) g.setNode(it.id, { width: it.width, height: it.height });
   for (const e of edges) {
     if (e.source !== e.target && g.hasNode(e.source) && g.hasNode(e.target)) {
-      g.setEdge(e.source, e.target);
+      const w = e.weight ?? 1;
+      g.setEdge(e.source, e.target, { weight: w > 0 ? w : 1 });
     }
   }
   dagre.layout(g);
@@ -166,17 +169,26 @@ function forceItems(
   return centers;
 }
 
-type Mode = "grid" | "force" | "layered";
+type Placement = "grid" | "dagre" | "force" | "circular";
 
 /**
- * Pick a CONTAINER cluster's box arrangement from its item-graph size. Leaf clusters no
- * longer use this — they go through the shape planner (chooseEngine) — so this only ranks
- * the placement of child boxes (+ any direct nodes) in a non-leaf cluster.
+ * Map the planner's engine choice onto a CONTAINER's box-placement strategy (arranging child
+ * boxes, not raw nodes): hierarchical → dagre ranks, a small cycle → a ring, dense/cyclic/
+ * hub-heavy → force, nothing connecting → grid. So the top-level package/subsystem boxes are
+ * arranged by the same shape-aware planner the leaf clusters use — not a two-rule heuristic.
  */
-function chooseMode(n: number, m: number): Mode {
-  if (m === 0) return "grid"; // nothing connects — tile tidily
-  if (m > n * 1.6) return "force"; // dense/tangled — dagre would sprawl
-  return "layered"; // a clean DAG — dagre ranks it well
+function containerPlacement(engine: LayoutAlgorithm): Placement {
+  switch (engine) {
+    case "grid":
+      return "grid";
+    case "layered":
+    case "tree":
+      return "dagre";
+    case "circular":
+      return "circular";
+    default:
+      return "force"; // force / stress / backbone / radial → force-place the boxes
+  }
 }
 
 /** Stable source-then-target edge order, so engine output is invariant to input edge order. */
@@ -441,18 +453,38 @@ function layoutCluster(
     items.push({ id, width: size.width, height: size.height });
   }
 
-  // 3. Collapse underlying edges to item-level edges within this cluster.
-  const itemEdges = new Map<string, { source: string; target: string }>();
+  // 3. Collapse underlying edges to item-level edges within this cluster, summing weight +
+  // count so the container planner and weighted dagre see real relationship strength (not a
+  // flattened "there is some connection") between subsystem boxes.
+  const itemEdges = new Map<string, ItemEdge>();
   for (const e of edges) {
     const su = itemOf(node.id, e.source, ancestry);
     const sv = itemOf(node.id, e.target, ancestry);
     if (su == null || sv == null || su === sv) continue;
-    itemEdges.set(edgeKey(su, sv), { source: su, target: sv });
+    const key = edgeKey(su, sv);
+    const cur = itemEdges.get(key);
+    if (cur) {
+      cur.weight += e.weight ?? 0;
+      cur.count += e.count ?? 1;
+    } else {
+      itemEdges.set(key, { source: su, target: sv, weight: e.weight ?? 0, count: e.count ?? 1 });
+    }
   }
 
   // Sort item-edges so layout is invariant to input edge order (dagre/Tarjan can
   // otherwise depend on insertion order).
   const sortedEdges = [...itemEdges.values()].sort(bySourceTarget);
+
+  // Pick the container's box arrangement from the item-graph's SHAPE (same planner the leaves
+  // use), not a two-rule heuristic — so subsystem boxes get layered/force/ring/grid as fits.
+  const placement = containerPlacement(
+    chooseEngine(
+      graphShape(
+        items.map((it) => it.id),
+        sortedEdges,
+      ),
+    ),
+  );
 
   // 4. Collapse cyclic items (SCCs) into ring super-items, lay out the acyclic
   // condensation with an adaptively chosen mode, then expand the rings.
@@ -488,23 +520,31 @@ function layoutCluster(
     condItems.push({ id: comp.id, width: maxX - minX, height: maxY - minY });
   }
 
-  // Condensation edges: remap endpoints to their super-item, drop self/dups, sort.
-  const condEdgeMap = new Map<string, { source: string; target: string }>();
+  // Condensation edges: remap endpoints to their super-item, summing weight + count, sort.
+  const condEdgeMap = new Map<string, ItemEdge>();
   for (const e of sortedEdges) {
     const s = memberToSuper.get(e.source) ?? e.source;
     const t = memberToSuper.get(e.target) ?? e.target;
     if (s === t) continue;
-    condEdgeMap.set(edgeKey(s, t), { source: s, target: t });
+    const key = edgeKey(s, t);
+    const cur = condEdgeMap.get(key);
+    if (cur) {
+      cur.weight += e.weight;
+      cur.count += e.count;
+    } else {
+      condEdgeMap.set(key, { source: s, target: t, weight: e.weight, count: e.count });
+    }
   }
   const condEdges = [...condEdgeMap.values()].sort(bySourceTarget);
 
-  const mode = chooseMode(condItems.length, condEdges.length);
   const condCenters =
-    mode === "grid"
+    placement === "grid"
       ? gridItems(condItems, spacing)
-      : mode === "force"
+      : placement === "force"
         ? forceItems(condItems, condEdges, spacing)
-        : dagreItems(condItems, condEdges, direction, spacing);
+        : placement === "circular"
+          ? circularItems(condItems, spacing)
+          : dagreItems(condItems, condEdges, direction, spacing);
 
   // Expand super-items: each original item id → world-ish center (cluster-local).
   const centers: Centers = new Map();

@@ -323,6 +323,18 @@ describe("grouped Smart runs the shape planner per leaf cluster", () => {
     expect(a.nodes.size).toBe(4);
     expect([...a.nodes.entries()]).toEqual([...b.nodes.entries()]);
   });
+
+  test("container placement ranks subsystem boxes by their dependency flow", () => {
+    // dirA → dirB → dirC at the file level → the top-level boxes form a DAG, so the container
+    // planner arranges them with dagre (ranked), not the old size heuristic. LR → A left of C.
+    const { clusters } = dir({
+      nodes: ["dirA/x.ts", "dirB/y.ts", "dirC/z.ts"].map((id) => N(id)),
+      edges: [E("dirA/x.ts", "dirB/y.ts"), E("dirB/y.ts", "dirC/z.ts")],
+    });
+    const x = (id: string) => clusters.find((c) => c.id === id)!.x;
+    expect(x("dirA")).toBeLessThan(x("dirB"));
+    expect(x("dirB")).toBeLessThan(x("dirC"));
+  });
 });
 
 describe("resolveEngineForBudget (budget guard, separate from chooseEngine)", () => {
