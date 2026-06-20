@@ -7,8 +7,13 @@ dimensions); and (b) a **representation-LOD** model so large graphs render as a 
 cut through a hierarchy of cached proxies* — not a sophisticated expand/collapse. Fast but
 safe.
 
-**Status:** Multi-phase north-star. **Revision 4.** (Numbering note: prior commits lagged
-the review rounds — this is the doc after the *third* review.) Evolution: R1 split the
+**Status:** Multi-phase north-star. **Revision 5** — Rev 4 frozen as the north-star; R5 adds the
+**Constrained LOD Cut Solver** (Appendix A) and implementation-contract refinements: user intent
+*constrains* the cut (not composed after); hard/soft budgets; delta-error/cost scoring; atomic
+refine/coarsen; columnar representation runtime + DFS intervals; reserved proxy bounds + overflow
+ladder; ordinal-based index API; no low-information facets; `directGroupByNode`/`NO_GROUP`;
+transfer ownership; proxy cache keys; observability. (Numbering note: prior commits lagged the
+review rounds — this is the doc after the *fourth* review.) Evolution: R1 split the
 serializable catalog from the runtime index, made bootstrap-collapse not user intent, added
 mode-namespaced ids, the grouping snapshot, None's internal hierarchy, bounded LOD, merge
 rules, two-stage config validation, group-by eligibility. R2 (rev "3" commit) added
@@ -137,13 +142,15 @@ export interface DimensionDescriptor {
   missing: MissingPolicy;
 }
 
-// RUNTIME-only — reconstructed deterministically; holds typed arrays; never serialized.
+// RUNTIME-only — ordinal/columnar; never serialized. Hot path is interned-id based (review §index).
 export interface DimensionIndex {
   descriptor(key: FacetKey): DimensionDescriptor | undefined;
-  present(key: FacetKey): ReadonlyArray<PresentDimensionValue>;   // §6
-  valuesOf(node: GraphNode, key: FacetKey): readonly string[];    // structural via adapter
-  nodesWith(key: FacetKey, value: string): Uint32Array;           // columnar posting
+  present(key: FacetKey): readonly PresentDimensionValue[];                 // §6
+  valuesOfOrdinal(nodeOrdinal: number, key: FacetKey): readonly number[];   // interned value ids
+  nodesWithValueId(key: FacetKey, valueId: number): Uint32Array;            // columnar posting
+  valueString(key: FacetKey, valueId: number): string;
   readonly warnings: ReadonlyArray<CatalogWarning>;
+  // valuesOfNode(node,key): string[] exists for CLI/debug only — scene/group/filter/query use ordinals.
 }
 
 export interface PresentDimensionValue { value: string; declared: boolean; }   // §6
@@ -158,6 +165,10 @@ the **same** `DimensionIndex` from `(graph, catalog)`.
   column (profiling-gated). A memory benchmark guards the baseline.
 - Across the **Worker** boundary, ship the interned `FacetWireData` + typed arrays as
   Transferables — no per-node dictionaries, no 50k re-allocated strings on the worker.
+- **No low-information facets** *(review)*: a descriptor may declare a `defaultValue`; a node
+  **omits** the facet when its value equals it, and the index returns the default on absence —
+  so `category:"feature"` (ubiquitous) is never materialized per node. The dual-write parity
+  invariant compares legacy fields against *facets-or-default*.
 
 ### Descriptor merge *(review §6, §10)*
 Core/built-in wins metadata; provider values unioned; cardinality conflict upgrades to
@@ -216,10 +227,13 @@ export interface CompactGroupingSnapshot {
   groupLabels: string[];
   parentByGroup: Int32Array;     // -1 = root
   depthByGroup: Uint16Array;
-  boxKeyByGroup: string[];       // group → layout ClusterBox id (LOD/layout agreement)
-  leafGroupByNode: Uint32Array;  // node ordinal → its leaf group ordinal
+  boxKeyByGroup: string[];        // group → layout ClusterBox id (LOD/layout agreement)
+  directGroupByNode: Uint32Array; // node ordinal → group ordinal; NO_GROUP (0xffffffff) if none
   roots: Uint32Array;
 }
+// NO_GROUP = 0xffff_ffff for nodes excluded by missing.group==="exclude", eligibility, filtering,
+// or malformed provider data. (Renamed from leafGroupByNode — a node may belong directly to a
+// group that also has children, so "leaf" over-constrains future hierarchy types.)
 ```
 Transferred to the worker as typed arrays (durable workspace copies may be plain JSON).
 
@@ -232,7 +246,7 @@ export type FacetGrouping =
   | { mode: "combination" }                             // value-set → one synthetic group
   | { mode: "disabled" };                               // filter/query only (default for multi)
 ```
-`leafGroupByNode` always yields exactly one group, so the layout never duplicates a node.
+`directGroupByNode` yields exactly one group (or `NO_GROUP`), so the layout never duplicates a node.
 
 ### `Group by: None` keeps an internal hierarchy *(review §7)*
 No visible containers, but Smart still builds a synthetic reduction hierarchy (connected
@@ -242,9 +256,13 @@ components → communities) so a 100k-node repo can't bypass the render budget. 
 ```ts
 export type CollapseIntent = Map<GroupId, "open" | "closed">;   // ONLY real user actions
 ```
-Authoritative camera result is a **`LodCut`** (below), not a `lodOpen` set. Precedence
-(highest first): explicit user closed → explicit user open → LOD cut → bootstrap closed →
-default. `compose()` is pure and unit-tested.
+Authoritative camera result is a **`LodCut`** (a valid antichain — Appendix A), not a `lodOpen`
+set. **User intent *constrains* the solve; it is not composed after it** *(review)*:
+`forceClosed`/`forceOpen` are inputs to `solveLodCut`, so closing a parent excludes its
+descendants and opening one forces a descent — the cut stays valid and budget-correct.
+Precedence still reads *explicit closed → explicit open → LOD → bootstrap → default*, now
+enforced **inside** the solver. `effectiveCollapsed` remains a derived compatibility view that
+never alters the solved cut.
 
 **Transitions:** opening a child makes ancestors traversable; closing a parent preserves
 descendant intent; **Reset** clears `intent` only. **"Expand all" is renamed** *(review §9)* —
@@ -314,9 +332,13 @@ The LRU uses a pre-allocated **ring buffer / intrusive doubly-linked list** (not
 Node LOD without edge LOD is still a hairball. Map each original endpoint to its active
 representative and aggregate:
 ```ts
-representativeOf(originalNodeId, cut) → number
-type AggregatedEdgeKey = `${srcRep}:${dstRep}:${edgeKind}`;
-export interface LodEdge { source: number; target: number; kind: EdgeKind; count: number; exactCount: number; inferredCount: number; originalEdgeIds?: string[]; }
+representativeOf(originalNodeId, cut) → number   // walk ancestors from leafRepresentationByNode
+// Aggregation key bit-packs (srcRep,dstRep,edgeKind) into a 64-bit int — NO string keys in the
+// hot path (review): allocating ~500k template literals per generation would thrash GC.
+export interface LodEdge { source: number; target: number; kind: EdgeKind; count: number; exactCount: number; inferredCount: number; evidenceIndex?: number; }
+// evidenceIndex → a lazily queried aggregation table; originalEdgeIds are NOT in the hot scene
+// (would defeat aggregation), resolved only when the details panel opens. Edges whose endpoints
+// map to the SAME proxy become ProxyEdgeStats (internal density), not discarded.
 ```
 Independent budgets; under edge pressure: aggregate parallels → suppress proxy-internal edges
 → bundle cross-group → show only selected/path → density summaries.
@@ -342,7 +364,7 @@ Grouping builder own the CompactGroupingSnapshot
 Representation   builder owns the RepresentationHierarchy (proxies, costs, error)
 User actions     own intent
 Camera           owns only the pending/committed LodCut (+ eviction bookkeeping)
-Collapse composer produces effectiveCollapsed (intent ⊕ bootstrap ⊕ cut)
+Cut solver       produces the LodCut (intent constrains; bootstrap seeds; budgets cap)
 Layout worker    consumes a snapshot + produces cached local layouts
 Renderer         consumes the committed cut's proxies/edges/labels + geometry
 ```
@@ -357,20 +379,24 @@ No component writes another's source-of-truth state.
   (closed stays closed + `declared`); **dual-write** the four facets (detection unchanged);
   runtime `DimensionIndex` (ordinals, columnar, lazy). No UI change. *Unblocked once the
   model/runtime/transport split (above) is settled — it is.*
-- **C0 — Collapse ownership, Directory only.** `CollapseIntent` + `bootstrapClosed` + a Directory
-  `LodCut`; pure `compose()`; committed-generation notification; split `MissingPolicy` honored.
-  Remove camera writes to intent. Preserve current Directory behavior.
+- **C0 — Collapse ownership, Directory only.** `CollapseIntent` + `bootstrapClosed` + a transitional
+  **`DirectoryLodSelection`** (open/closed directory state — *not yet* the antichain `LodCut`, which
+  arrives in C1b; keeps C0 about ownership, not representation); pure `compose()`;
+  committed-generation notification; split `MissingPolicy`. Remove camera writes to intent.
+  Preserve current Directory behavior.
 - **B — Registry-driven filters.** Sparse `FacetSelection`; `visible()` from the index;
   `MissingPolicy.filter`; dynamic Sidebar + counts + eligibility; delete the hardcoded
   constants; workspace migration.
 - **C1a — Generic semantic grouping.** `CompactGroupingSnapshot` (transferable); Directory /
   Package / Community / facet / synthetic-None; mode-keyed intent; mode-agnostic cut **on the
   existing collapse-shaped LOD** (no representation runtime yet).
-- **C1b — Representation hierarchy + budgeted cut.** `RepresentationHierarchy`; antichain
-  `LodCut`; projected-error scoring; **edge + label budgets**; prefetch ring; ring-buffer LRU;
-  committed-cut generations.
-- **C1c — Stable hierarchical layout orchestration.** Stable parent boxes; cached local
-  layouts; local refinement; minimal global movement.
+- **C1b — Representation hierarchy + budgeted cut.** Implements **Appendix A** (constrained cut
+  solver): `RepresentationHierarchy` (columnar + DFS intervals); antichain `LodCut`;
+  delta-error/cost scoring; hard/soft budgets; **edge + label budgets**; prefetch ring;
+  ring-buffer LRU; committed-cut generations; observability overlay from day one.
+- **C1c — Stable hierarchical layout orchestration.** `RepresentationBounds` (current/reserved/
+  minScale) reserved from full-detail extent; the overflow ladder (Appendix A §C); cached local
+  layouts; local refinement; scoped (never global) relayout as the last resort.
 - **D — Query & rules on the registry.** Registry field lookup; `NodeSelector.facets`;
   two-stage config validation (`validation.unknownFacet` severity); legacy aliases; remove
   legacy named fields.
@@ -402,6 +428,16 @@ Pure units for catalog merge, index, `compose`, hierarchies, `valuesOf`. Plus, p
 - Workspace migration preserves old `collapsedClusters` + named filter sets.
 - Connection-highlight anchors prune/remap after hierarchy/LOD changes.
 - Layout cache signatures canonical regardless of `Map` insertion order.
+- **Solver (Appendix A):** explicit open/closed constraints still yield a valid antichain;
+  closing a parent overrides a previously-opened descendant; user-open may exceed *soft* but
+  never *hard* budgets; parent→children replacement is **atomic**; a rejected refinement leaves
+  the prior cut **byte-identical**; `selectedRepresentations` is canonically ordered (equal cuts
+  compare equal); internal-edge aggregation is conserved; a selected hidden node maps to and
+  highlights its active proxy.
+- **Boundary:** worker transfer does not detach buffers the sender still reads; proxy cache keys
+  differ when direction, card metrics, or edge filters change.
+- `NO_GROUP` nodes follow `MissingPolicy.group`; a ubiquitous low-information facet is not
+  materialized.
 - Memory benchmark within an agreed factor; golden: Phase A preserves exact facet values. The
   547 stay green.
 
@@ -424,3 +460,111 @@ community-detection algorithm.
 - Representation `proxyKey` cache invalidation across filter changes — key proxies by the
   filtered-graph signature.
 - Rust↔TS descriptor parity — keep `DimensionDescriptor` JSON-flat for Phase E.
+
+---
+
+## Appendix A — Constrained LOD Cut Solver
+
+*Satisfies the C1b prerequisite. Precise enough that two engineers implement the same behavior.*
+
+### A. Intent as constraints (not post-composition)
+```ts
+interface CutConstraints {
+  forceClosed: ReadonlySet<number>;  // select this rep (or nearest legal ancestor); exclude descendants
+  forceOpen: ReadonlySet<number>;    // this rep may NOT stand in for descendants; solver descends ≥1 level
+}
+function solveLodCut(h: RepresentationHierarchy, bootstrap: LodCut,
+                     c: CutConstraints, cam: CameraState, b: LodBudget): LodCut;
+```
+User-closed → proxy selected, descendants excluded. User-open → proxy not selectable, descend
+≥1 level. Parent-closed + descendant-open → **parent-closed wins** (matches precedence).
+`effectiveCollapsed` is a derived view only and never alters the solved cut.
+
+### B. Hard vs soft budgets
+```ts
+interface LodBudget {
+  maxGpuBytes: number; maxLayoutWork: number;                       // HARD — never exceeded
+  hardNodes: number; hardEdges: number;                            // HARD
+  targetNodes: number; targetEdges: number; targetLabels: number;  // SOFT
+}
+```
+Automatic refinement never exceeds *target*; an explicit user-open may exceed targets up to the
+*hard* ceiling; nothing exceeds hard. When an explicit open can't be honored safely → retain the
+nearest legal proxy + a **"Detail limited"** notice ("This group has 84,213 visible nodes —
+showing the deepest safe representation."). Without this rule "intent wins" would defeat the
+large-graph safety system.
+
+### C. Proxy bounds & overflow (the Space Paradox)
+```ts
+interface RepresentationBounds { current: Rect; reserved: Rect; minScale: number; }
+```
+`reserved` is computed at hierarchy-build from the proxy's **full-detail descendant extent**
+(`structuralError` + hidden node/edge volume × packing factor) and occupies the parent's layout,
+so siblings are placed around the envelope from the start. Refinement is **gated by `reserved`**
+(over-reserve = over-budget = retain proxy). Overflow ladder, in order:
+1. compact/scale the local layout down to `minScale`;
+2. clip + local pan (the box becomes a viewport into its own larger local layout);
+3. borrow slack from under-filled sibling reserves;
+4. grow within the grandparent-reserved envelope;
+5. scoped subtree relayout (**never** global) as the final fallback.
+
+### D. Delta-error / delta-cost scoring
+```ts
+deltaError = parent.error - Σ child.visibleError;
+deltaCost  = { nodes, edges, labels, gpu, layout } = Σ children − parent (+ childLayoutWork);
+normalizedCost(delta, remaining) = max over dims of  delta[d] / max(1, remaining[d]);
+priority = deltaError / max(EPSILON, normalizedCost(delta, remaining));
+```
+Scoring compares the *change* from replacing a parent with its children, normalized by current
+budget pressure — so edge-heavy refinement is deprioritized when the edge budget is nearly spent
+even if node capacity remains.
+
+### E. Atomicity
+Refine (parent→children) and coarsen (descendants→proxy) are single transactions: remove + add +
+recompute aggregated edges + validate budgets + validate antichain → **commit or reject the whole
+transition**. Never leave a subtree unrepresented or doubly-represented mid-step. A rejected
+transition leaves the previous cut byte-identical.
+
+### F. Representation runtime form (columnar + DFS intervals)
+```ts
+interface RepresentationColumns {
+  parentByRep: Int32Array; firstChildByRep: Int32Array; nextSiblingByRep: Int32Array;  // tree
+  groupByRep: Uint32Array;
+  // bounds + reserved + minScale as parallel Float32Arrays
+  nodeCost: Uint32Array; edgeCost: Uint32Array; labelCost: Uint32Array; gpuByteCost: Uint32Array;
+  geometricError: Float32Array; structuralError: Float32Array;
+  entryByRep: Uint32Array; exitByRep: Uint32Array;          // DFS in/out — O(1) ancestor test
+  proxyKeys: string[];
+  leafRepresentationByNode: Uint32Array;                    // original node ordinal → its leaf rep
+}
+// ancestor(A,B): entry[A] <= entry[B] && exit[B] <= exit[A]
+// representativeOf(node, cut): from leafRepresentationByNode[node], walk parentByRep until selected.
+```
+The object `RepresentationNode[]` form stays the explanatory model; the columnar form is the runtime.
+
+### G. Transfer ownership
+Worker IPC uses **single-owner transfer** (transferring an `ArrayBuffer` detaches it from the
+sender). Since both the camera/cut logic and the layout worker need data, **split ownership**: the
+main-thread representation index owns its buffers; the worker grouping snapshot owns its own — both
+built from the same source, neither transferring buffers the other still reads. Use
+`SharedArrayBuffer` only where COOP/COEP allows; copy-on-send for small snapshots. A test asserts
+retained buffers aren't detached.
+
+### H. Proxy cache key
+```ts
+interface ProxyCacheKeyParts {
+  graphVersion; filterSignature; groupingMode; groupingVersion;
+  layoutEngine; layoutDirection; layoutOptionsHash;
+  nodeStyleMetricsVersion; edgeKindsSignature;
+  representationId; representationBuilderVersion;
+}
+```
+A cached local layout/proxy is reusable only when **all** parts match — so changing direction,
+card metrics, edge filters, or grouping semantics invalidates it.
+
+### I. Observability (from day one of C1b)
+A dev overlay: LOD generation; pending/committed reps; nodes/edges/labels vs budget; GPU MB;
+layout-work %; refinements & evictions this commit; proxy cache hit rate; cut-solve ms; scene-
+rebuild ms. Plus per-rep **why-not-refined**: edge-budget / layout-work-budget / hard-GPU /
+forced-closed / children-unavailable / cache-pending. (Tuning `projectedError` blindly is otherwise
+hopeless.)
