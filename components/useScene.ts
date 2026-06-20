@@ -15,6 +15,7 @@ import {
   layoutCacheSet,
   type LayoutAlgorithm,
   type LayoutDirection,
+  layoutFallbackSummary,
   type XYPosition,
 } from "@/lib/layout";
 import { layoutInWorker } from "@/lib/layout-client";
@@ -128,6 +129,10 @@ export function useScene(
         telemetry.metric("layout.ms", layoutMs);
         telemetry.metric("layout.nodes", structure.layoutInput.nodes.length);
         telemetry.count("layout.runs");
+        // Surface Smart's budget-driven engine downgrades (#71) in the session log, so a grid
+        // fallback isn't mistaken for the chosen engine producing a poor result.
+        const simplified = layoutFallbackSummary(cl);
+        if (simplified) telemetry.event("layout", "simplified", { summary: simplified }, "warn");
         layoutCacheSet(structure.signature, { positions: pos, clusters: cl });
         setPositions(pos);
         setClusters(cl);

@@ -5,6 +5,7 @@ import {
   runLayout,
   type XYPosition,
 } from "./layout";
+import { telemetry } from "./telemetry";
 
 export interface WorkerLayout {
   positions: Map<string, XYPosition>;
@@ -52,11 +53,21 @@ function ensureWorker(): Worker | null {
   try {
     worker = new Worker(new URL("./layout.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = (
-      e: MessageEvent<{ id: number; positions: FlatPositions; clusters: ClusterBox[] }>,
+      e: MessageEvent<{
+        id: number;
+        positions: FlatPositions;
+        clusters: ClusterBox[];
+        error?: string;
+      }>,
     ) => {
       const resolve = pending.get(e.data.id);
       if (!resolve) return;
       pending.delete(e.data.id);
+      // The worker caught an engine error and fell back to grid — surface it in the session log
+      // (otherwise a failing engine is invisible until you notice the wrong layout).
+      if (e.data.error) {
+        telemetry.event("layout", "worker-error", { error: e.data.error }, "warn");
+      }
       const positions = new Map<string, XYPosition>();
       for (const [id, x, y] of e.data.positions) positions.set(id, { x, y });
       resolve({ positions, clusters: e.data.clusters });
@@ -100,6 +111,14 @@ export function layoutInWorker(input: LayoutInput, options: LayoutOptions): Prom
     // block every future layout — a wedged worker would make the next request queue behind it
     // and time out too) and fall back to a synchronous grid. The next call spins up a fresh worker.
     timer = setTimeout(() => {
+      // A wedged worker is the single most useful thing to see in the log — it points straight
+      // at the engine + input size that hung.
+      telemetry.event(
+        "layout",
+        "worker-timeout",
+        { algorithm: opts.algorithm ?? "smart", nodes: input.nodes.length, ms: LAYOUT_TIMEOUT_MS },
+        "error",
+      );
       try {
         worker?.terminate();
       } catch {

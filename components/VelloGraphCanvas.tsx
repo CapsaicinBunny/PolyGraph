@@ -274,16 +274,42 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     () => connectionStatus(liveAnchors, conn, (id) => labelById.get(id) ?? id),
     [liveAnchors, conn, labelById],
   );
+  // A stable key for the current selection: changes only when the anchors change (not on
+  // scene-only churn). Drives both the connection log and the focus-fade ramp.
+  const highlightKey = conn ? `c:${liveAnchors.join("")}` : highlightIds ? "q" : "";
+
+  // Session-log connection selections (once per distinct selection — the ref dedups the extra
+  // fires from scene-only changes). Covers the #72 feature in the downloadable log.
+  const lastLoggedConn = useRef("");
+  useEffect(() => {
+    if (highlightKey.startsWith("c:") && conn && highlightKey !== lastLoggedConn.current) {
+      lastLoggedConn.current = highlightKey;
+      telemetry.event("interaction", "connection", {
+        anchors: liveAnchors.length,
+        connected: conn.connected,
+        steps: conn.path ? conn.path.length - 1 : null,
+        ids: liveAnchors,
+      });
+    }
+  }, [highlightKey, conn, liveAnchors]);
 
   // Focus animation: when the selection changes, fade the de-emphasis IN (dimmed cards/edges
   // ramp from full colour → grey over ~180ms) so the highlight resolves smoothly instead of
   // snapping. dimT 0 = no dim, 1 = full dim. Skipped on large scenes, where re-encoding the
   // payload each frame would be costly (it just snaps to 1).
   const [dimT, setDimT] = useState(1);
-  const highlightKey = conn ? `c:${liveAnchors.join("")}` : highlightIds ? "q" : "";
   // animatable is a boolean (flips only at the size threshold), so it's safe in the deps — the
   // ramp re-runs on a selection change or when the scene crosses the threshold, not every frame.
-  const animatable = scene.nodes.length <= 1200;
+  const prefersReducedMotion = useMemo(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true,
+    [],
+  );
+  // Bound the fade by total payload work (nodes + edges), not just node count — each frame
+  // re-serializes the whole node+edge payload, so an edge-heavy graph (e.g. 700 nodes / 40k
+  // edges) would jank. Honor reduced-motion too (the fade is decorative). Boolean → safe in deps.
+  const animatable = scene.nodes.length + scene.edges.length <= 10_000 && !prefersReducedMotion;
   useEffect(() => {
     if (!highlightKey || !animatable) {
       setDimT(1);
