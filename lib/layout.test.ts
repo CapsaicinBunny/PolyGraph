@@ -594,17 +594,18 @@ describe("heavy-engine safety caps (no engine pins a core)", () => {
     })),
   });
 
-  test("stress scales to large components via PivotMDS (no longer grids at ~1000)", () => {
-    // 1500 nodes used to grid (old ~O(n²) cap); PivotMDS lays them out for real now.
-    const pos = layoutView(chain(1500), { algorithm: "stress" });
-    expect(pos.size).toBe(1500);
+  test("stress scales to thousands of nodes via PivotMDS (well within the work budget)", () => {
+    // 6000 nodes used to grid (old ~O(n²) cap); PivotMDS now lays them out for real (~1.8s).
+    const pos = layoutView(chain(6000), { algorithm: "stress" });
+    expect(pos.size).toBe(6000);
     expect(distinctColumns(pos)).toBeGreaterThan(200); // continuous positions → it ran
   });
 
-  test("stress still grids a component past the (much higher) cap", () => {
-    const pos = layoutView(chain(6001), { algorithm: "stress" }); // > HEAVY_COMPONENT_CAP.stress
-    expect(pos.size).toBe(6001);
-    expect(distinctColumns(pos)).toBeLessThan(150); // gridded past the cap
+  test("stress grids a component over the PivotMDS work budget", () => {
+    // ~20k nodes exceeds MAX_STRESS_WORK → the work guard falls back to grid (no >8s run).
+    const pos = layoutView(chain(20_000), { algorithm: "stress" });
+    expect(pos.size).toBe(20_000);
+    expect(distinctColumns(pos)).toBeLessThan(200); // gridded, not run through stress
   });
 
   test("force falls back to grid for an oversized view", () => {

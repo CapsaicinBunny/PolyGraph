@@ -926,9 +926,18 @@ function forceLayout(view: LayoutInput, options: LayoutOptions = {}): Positions 
  * a fixed number of synchronous iterations (keepRunning = false). The best
  * general-purpose engine for irregular, mixed directed/cyclic graphs.
  */
-// Up to this many nodes, a component uses true stress majorization (webcola); larger
-// components switch to PivotMDS, which is near-linear so it stays within the time budget.
+// A component uses true stress majorization (webcola) only when small AND not too dense —
+// cola is ~O(V·E), so cap both node and edge count; everything else switches to PivotMDS.
 const DENSE_STRESS_MAX = 600;
+const DENSE_STRESS_EDGE_CAP = 4_000;
+// PivotMDS work budget. Cost ≈ k·(V+E) [BFS from k pivots] + n·k² [Gram build/eigen] + the
+// bounded overlap-relax passes. Calibrated from a measured n=6000 run (~26M units → ~1.8s,
+// ~15M units/s); ~80M units keeps the worst permitted component near ~5s, well under the 8s
+// worker timeout. Above this → cheap grid. Pivots scale with √n (capped at 50).
+const MAX_STRESS_WORK = 80_000_000;
+const stressPivots = (n: number): number => Math.min(50, Math.max(8, Math.ceil(Math.sqrt(n))));
+const stressWork = (n: number, m: number, pivots: number): number =>
+  pivots * (n + m) + n * pivots * pivots + n * 200 * 9;
 
 /**
  * Push overlapping cards apart with a few bounded spatial-hash passes. PivotMDS places by
@@ -946,9 +955,15 @@ function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): voi
   // other outward, so the layout expands until it fits. Breaks as soon as a pass is clean,
   // so the high cap only costs more on genuinely-tangled cases.
   const PASSES = 200;
+  // Hard ceiling on total pair-checks. Dense graphs cluster many cards into the same grid
+  // cells, making a pass O(Σ cell²) → potentially O(n²); without this, a dense stress/backbone
+  // component could spend tens of seconds here. Capped, it always returns quickly (leaving
+  // some residual overlap on pathologically dense inputs — an acceptable trade for bounded time).
+  const MAX_CHECKS = 20_000_000;
+  let checks = 0;
   const dispX = new Map<string, number>();
   const dispY = new Map<string, number>();
-  for (let pass = 0; pass < PASSES; pass++) {
+  relax: for (let pass = 0; pass < PASSES; pass++) {
     const grid = new Map<string, string[]>();
     for (const id of ids) {
       const c = centers.get(id)!;
@@ -969,6 +984,7 @@ function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): voi
           if (!others) continue;
           for (const oid of others) {
             if (oid <= id) continue; // each pair once, in id order
+            if (++checks > MAX_CHECKS) break relax; // bounded work; prior passes already applied
             const o = centers.get(oid)!;
             const os = sizeOf.get(oid)!;
             const ox = (s.width + os.width) / 2 + PAD - Math.abs(o.x - c.x);
@@ -1031,10 +1047,10 @@ function denseStressLayout(view: LayoutInput, options: LayoutOptions): Positions
 }
 
 /** PivotMDS (landmark) stress for large components — near-linear, then scaled + de-overlapped. */
-function sparseStressLayout(view: LayoutInput): Positions {
+function sparseStressLayout(view: LayoutInput, pivots: number): Positions {
   const positions: Positions = new Map();
   const ids = view.nodes.map((nd) => nd.id).sort();
-  const centers = pivotMds(ids, view.edges, Math.min(ids.length, 50));
+  const centers = pivotMds(ids, view.edges, Math.min(pivots, ids.length));
   // Scale graph-distance units to pixels so connected cards sit ~a card-and-a-half apart.
   let sum = 0;
   let cnt = 0;
@@ -1061,9 +1077,10 @@ function sparseStressLayout(view: LayoutInput): Positions {
 }
 
 /**
- * Stress layout. Small components use true stress majorization (SMACOF + overlap avoidance);
- * large ones use PivotMDS (landmark MDS), which is near-linear — so stress now scales to
- * thousands of nodes within the worker budget instead of falling back to grid.
+ * Stress layout. Small, not-too-dense components use true stress majorization (SMACOF +
+ * overlap avoidance, ~O(V·E) — node + edge capped); larger ones use PivotMDS (landmark MDS,
+ * near-linear), gated by an explicit work-budget estimate so even a dense PivotMDS run stays
+ * under the worker timeout. Over budget → cheap grid. Self-guarding for any caller.
  */
 function stressLayout(view: LayoutInput, options: LayoutOptions = {}): Positions {
   const n = view.nodes.length;
@@ -1073,7 +1090,11 @@ function stressLayout(view: LayoutInput, options: LayoutOptions = {}): Positions
     positions.set(...topLeft(view.nodes[0], 0, 0));
     return positions;
   }
-  return n <= DENSE_STRESS_MAX ? denseStressLayout(view, options) : sparseStressLayout(view);
+  const m = view.edges.length;
+  if (n <= DENSE_STRESS_MAX && m <= DENSE_STRESS_EDGE_CAP) return denseStressLayout(view, options);
+  const pivots = stressPivots(n);
+  if (stressWork(n, m, pivots) > MAX_STRESS_WORK) return gridLayout(view);
+  return sparseStressLayout(view, pivots);
 }
 
 // Small LRU of computed layouts, so toggling filters/algorithms back to a prior
@@ -1227,13 +1248,9 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
     case "backbone":
       return cappedComponents(view, HEAVY_COMPONENT_CAP.backbone, (sub) => backboneLayout(sub));
     case "stress":
-      // Node-cap only (no dense edge backstop) — stressLayout is near-linear in edges for
-      // large components (PivotMDS), so a high edge count no longer forces a grid fallback.
-      return layoutByComponents(view, (sub) =>
-        sub.nodes.length > HEAVY_COMPONENT_CAP.stress
-          ? gridLayout(sub)
-          : stressLayout(sub, options),
-      );
+      // stressLayout self-guards per component (dense node+edge cap → cola; else a PivotMDS
+      // work-budget estimate → grid if too heavy), so no separate node cap is needed here.
+      return layoutByComponents(view, (sub) => stressLayout(sub, options));
     case "force":
       // Force runs as one whole-view simulation (charge spreads the components), so cap
       // on the total size rather than per component.
