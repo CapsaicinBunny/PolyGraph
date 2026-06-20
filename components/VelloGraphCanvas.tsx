@@ -25,6 +25,8 @@ import {
 } from "@/lib/layout";
 import { frameBoxes } from "@/lib/graph/frame";
 import { buildDirTree, type DirNode } from "@/lib/graph/hierarchy";
+import type { GroupId } from "@/lib/graph/collapse-model";
+import { directoryLodSelection } from "@/lib/graph/lod-selection";
 import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
 import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
 import {
@@ -90,8 +92,13 @@ export interface GraphViewProps {
   minimap?: boolean;
   /** Adaptive level-of-detail: recompute the collapsed cut as the camera zooms. */
   adaptiveLod?: boolean;
-  /** Called with a new collapsed-directory set when the adaptive cut changes. */
-  onCut?: (collapsed: Set<string>) => void;
+  /**
+   * Called when the adaptive cut changes with the transitional DirectoryLodSelection —
+   * the set of OPEN directory group ids (namespaced). It updates only the selection layer
+   * of the three-layer collapse model (spec "Three-layer collapse"); the camera owns this
+   * layer alone and never writes user intent or the bootstrap.
+   */
+  onCut?: (selection: Set<GroupId>) => void;
   /**
    * Signature of everything that warrants re-framing the camera (graph, level,
    * filters) but NOT the cut. When it's unchanged across a scene update, the
@@ -403,8 +410,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const dirTree = useMemo(() => buildDirTree(graph), [graph]);
   const lod = useRef<{
     adaptiveLod?: boolean;
-    onCut?: (c: Set<string>) => void;
+    onCut?: (selection: Set<GroupId>) => void;
     dirTree: DirNode;
+    graph: GraphModel;
     scene: Scene;
     collapsed: Set<string>;
     expanded: Set<string>;
@@ -414,6 +422,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     adaptiveLod,
     onCut,
     dirTree,
+    graph,
     scene,
     collapsed: collapsedClusters,
     expanded,
@@ -423,6 +432,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.adaptiveLod = adaptiveLod;
   lod.current.onCut = onCut;
   lod.current.dirTree = dirTree;
+  lod.current.graph = graph;
   lod.current.scene = scene;
   lod.current.collapsed = collapsedClusters;
   lod.current.expanded = expanded;
@@ -720,7 +730,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       } else {
         next = computeCut(l.dirTree, boxes, c, vp, cutOpts);
       }
-      if (!cutEquals(next, l.collapsed)) l.onCut(next);
+      // The cut is still measured/decided exactly as before (a bare-path collapsed set);
+      // we only change what we HAND UP. Skip when the cut wouldn't change the effective
+      // collapsed set, then translate to the transitional DirectoryLodSelection (open
+      // directory group ids) so it updates only the selection layer — never intent.
+      if (!cutEquals(next, l.collapsed)) l.onCut(directoryLodSelection(next, l.graph));
     };
 
     const onWheel = (e: WheelEvent) => {

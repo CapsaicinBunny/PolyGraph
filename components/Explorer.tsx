@@ -15,6 +15,7 @@ import type { QueryMode } from "./QueryBar";
 import type {
   AnalyzeResult,
   Environment,
+  GraphModel,
   NodeCategory,
   NodeKind,
   Runtime,
@@ -26,8 +27,16 @@ import {
   availableLanguages,
   DEFAULT_HIDDEN_LANGUAGES,
 } from "@/lib/graph/filters";
-import { autoCollapseDirs } from "@/lib/graph/auto-collapse";
+import { autoCollapseDirs, type AutoCollapse } from "@/lib/graph/auto-collapse";
 import { buildDirTree, type DirNode, dirIndex } from "@/lib/graph/hierarchy";
+import { type CollapseIntent, compose, type GroupId } from "@/lib/graph/collapse-model";
+import {
+  allDirectoryGroupIds,
+  ancestorDirectoryGroupIds,
+  directoryGroupId,
+  toDirectoryBoxKeys,
+  toDirectoryGroupIds,
+} from "@/lib/graph/grouping";
 import { FiltersPanel } from "./FiltersPanel";
 import { graphKeyFor, type SceneEdge } from "@/lib/graph/scene";
 import { EdgeDetailPanel } from "./EdgeDetailPanel";
@@ -62,6 +71,12 @@ const AUTO_COLLAPSE_MAX_CARDS = 2000;
 // in VelloGraphCanvas. See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
 const LOD_NODE_BUDGET = 2500;
 
+// The grouping mode whose collapse intent C0 wires. Directory only here; Package /
+// Community / facet become peer modes (each with its own intent map) in later phases.
+const DIRECTORY_MODE = "directory";
+// Stable empty intent so the derived collapse memo doesn't churn before any user action.
+const EMPTY_INTENT: CollapseIntent = new Map();
+
 interface Stats {
   fileCount: number;
   skipped: number;
@@ -73,7 +88,18 @@ export function Explorer() {
   const [level, setLevel] = useState<Level>("file");
   const [stats, setStats] = useState<Stats | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
+  // Three-layer directory collapse (Phase C0; spec "Three-layer collapse"). The old
+  // single `collapsedClusters` set had FIVE writers and the camera clobbered user intent.
+  //   • intentByMode  — ONLY user actions (manual drill, collapse-all), per grouping mode.
+  //   • bootstrapClosed — derived SAFETY: the adaptive-LOD seed closes the whole directory
+  //     universe so the camera's selection can OPEN regions; ∅ when LOD is off.
+  //   • lodSelection  — the camera's transitional open-directory set (owns nothing else).
+  // The effective collapsed set is composed from these (below); user intent can never be
+  // clobbered by the camera. Namespaced GroupIds ("directory:<path>"); translated to the
+  // bare layout/LOD path at the boundary.
+  const [intentByMode, setIntentByMode] = useState<Map<string, CollapseIntent>>(() => new Map());
+  const [bootstrapClosed, setBootstrapClosed] = useState<Set<GroupId>>(() => new Set());
+  const [lodSelection, setLodSelection] = useState<Set<GroupId>>(() => new Set());
   const [enabledEdgeKinds, setEnabledEdgeKinds] = useState<Set<ViewEdgeKind>>(
     () => new Set(FILTERABLE_EDGE_KINDS),
   );
@@ -123,6 +149,56 @@ export function Explorer() {
   }, []);
 
   const baseGraph = result?.graph ?? null;
+
+  // The effective collapsed directory set (bare layout/LOD paths), composed from the
+  // three layers. This is the single value the scene pipeline consumes — it drops in
+  // exactly where the old `collapsedClusters` state did. Precedence (inside compose):
+  // user-closed > user-open > camera selection-open > bootstrap > default-open.
+  const directoryIntent = intentByMode.get(DIRECTORY_MODE) ?? EMPTY_INTENT;
+  const collapsedClusters = useMemo(
+    () =>
+      toDirectoryBoxKeys(
+        compose({ intent: directoryIntent, bootstrapClosed, selection: lodSelection }),
+      ),
+    [directoryIntent, bootstrapClosed, lodSelection],
+  );
+
+  // Mutate the directory-mode collapse intent (the ONLY writer of user intent). Copies
+  // the per-mode map so a stale closure can't mutate live state.
+  const editDirectoryIntent = useCallback((mutate: (intent: CollapseIntent) => void) => {
+    setIntentByMode((prev) => {
+      const next = new Map(prev);
+      const dir = new Map(next.get(DIRECTORY_MODE) ?? EMPTY_INTENT);
+      mutate(dir);
+      next.set(DIRECTORY_MODE, dir);
+      return next;
+    });
+  }, []);
+
+  // Seed the two AUTO layers (bootstrap + camera selection) from an auto-collapse result,
+  // and clear directory intent. When the graph fits (`seed` null) LOD is off: both layers
+  // are empty → nothing collapses. Otherwise the bootstrap closes the whole directory
+  // universe (the LOD safety net) and the selection opens everything ABOVE the seed
+  // frontier, so the initial render matches the seed exactly while the camera can refine
+  // by opening more. This NEVER writes intent — a seed is derived safety, not a user act.
+  const seedDirectoryLod = useCallback((g: GraphModel, seed: AutoCollapse | null) => {
+    setIntentByMode((prev) => {
+      if (!prev.has(DIRECTORY_MODE)) return prev;
+      const next = new Map(prev);
+      next.delete(DIRECTORY_MODE);
+      return next;
+    });
+    if (!seed) {
+      setBootstrapClosed(new Set());
+      setLodSelection(new Set());
+      return;
+    }
+    setBootstrapClosed(allDirectoryGroupIds(g));
+    const open = new Set<GroupId>();
+    for (const path of seed.collapsed)
+      for (const anc of ancestorDirectoryGroupIds(path)) open.add(anc);
+    setLodSelection(open);
+  }, []);
 
   // The active graph reflects the chosen abstraction level. Symbol/File/Directory use the
   // base graph (file/symbol granularity is driven by expand/collapse); Package and
@@ -317,25 +393,34 @@ export function Explorer() {
 
   const handleToggleExpandAll = useCallback(() => {
     if (allExpanded) {
-      // Collapse all → the coarsest overview: every top-level directory as one
-      // aggregate. A manual override, so turn the camera-driven cut OFF — otherwise a
-      // zoom would re-open directories and undo the collapse the user just asked for.
+      // Collapse all → the coarsest overview: every top-level directory as one aggregate.
+      // This IS a user action, so it writes 'closed' INTENT on the top-level directories
+      // (replacing any prior directory intent) and turns the camera cut OFF — intent now
+      // wins over the camera, but clearing the auto layers keeps the result exactly the
+      // top dirs. A later zoom can no longer undo the collapse the user just asked for.
       setExpanded(new Set());
-      setCollapsedClusters(new Set(topDirs));
+      setIntentByMode((prev) => {
+        const next = new Map(prev);
+        next.set(DIRECTORY_MODE, new Map(topDirs.map((p) => [directoryGroupId(p), "closed"])));
+        return next;
+      });
+      setBootstrapClosed(new Set());
+      setLodSelection(new Set());
       setAdaptiveLod(false);
     } else {
-      // Expand all → every file's symbols. If the expanded graph fits the layout budget,
-      // show it flat with the cut OFF — else the camera cut re-collapses on-screen dirs as
-      // "too-small" on the next zoom and the expand appears to do nothing. Only when the
-      // expanded graph is genuinely too big do we seed the dir-collapse AND keep the cut
-      // on, so the rendered card count stays bounded (else Smart overruns → grid fallback).
+      // "Reveal detail" (was "Expand all") → expand every file's symbols and CLEAR any
+      // 'closed' intent, re-seeding the auto LOD layers so detail opens within budget
+      // (spec §9). It writes no blanket 'open': if the expanded graph fits the layout
+      // budget it shows flat with the cut OFF; only when it's genuinely too big do we seed
+      // the dir-collapse AND keep the cut on, bounding the rendered card count (else Smart
+      // overruns → grid fallback). seedDirectoryLod clears directory intent for us.
       setExpanded(new Set(fileIds));
       const cost = (id: string) => 1 + (symbolCount.get(id) ?? 0);
       const seed = baseGraph ? autoCollapseDirs(baseGraph, LOD_NODE_BUDGET, cost) : null;
-      setCollapsedClusters(seed?.collapsed ?? new Set());
+      if (baseGraph) seedDirectoryLod(baseGraph, seed);
       setAdaptiveLod(seed !== null);
     }
-  }, [allExpanded, fileIds, baseGraph, symbolCount, topDirs]);
+  }, [allExpanded, fileIds, baseGraph, symbolCount, topDirs, seedDirectoryLod]);
 
   const handleResult = useCallback(
     (res: AnalyzeResult, s: Stats, m: PackageManifest[], scannedPath = "") => {
@@ -350,7 +435,9 @@ export function Explorer() {
       // initial scene to ~AUTO_COLLAPSE_MAX_CARDS aggregate cards. The user can expand
       // any aggregate from here. See docs/SCALE-100K.md.
       const seed = autoCollapseDirs(res.graph, AUTO_COLLAPSE_MAX_CARDS);
-      setCollapsedClusters(seed?.collapsed ?? new Set());
+      // Seed the AUTO collapse layers (bootstrap + camera selection), NOT intent — a load
+      // seed is derived safety, not a user action, so the camera may later open it.
+      seedDirectoryLod(res.graph, seed);
       // Adaptive LOD only earns its keep when the graph is too big to draw whole
       // (seed !== null). When it already fits, turn the camera-driven cut OFF — otherwise
       // zooming into a small/medium project collapses on-screen directories as "too-small"
@@ -365,7 +452,7 @@ export function Explorer() {
       setFocusedIds(null);
       resetFileFilters(res.graph);
     },
-    [resetFileFilters],
+    [resetFileFilters, seedDirectoryLod],
   );
 
   // Switching levels clears any focus/selection (ids differ across projections) and,
@@ -385,7 +472,18 @@ export function Explorer() {
   const applyWorkspace = useCallback((s: ExplorerWorkspaceState) => {
     setSelectedId(s.selectedId);
     setExpanded(s.expanded);
-    setCollapsedClusters(s.collapsedClusters);
+    // The workspace persists the effective collapsed set (bare paths). Restore it into
+    // the BOOTSTRAP layer (derived/auto, camera-overridable) — not intent — preserving the
+    // pre-refactor restore semantics where the camera could still refine the restored cut.
+    // C0 keeps the workspace format unchanged; intent persistence arrives with C1a.
+    setIntentByMode((prev) => {
+      if (!prev.has(DIRECTORY_MODE)) return prev;
+      const next = new Map(prev);
+      next.delete(DIRECTORY_MODE);
+      return next;
+    });
+    setBootstrapClosed(toDirectoryGroupIds(s.collapsedClusters));
+    setLodSelection(new Set());
     setFocusedIds(s.focusedIds);
     setShowExternal(s.showExternal);
     setSearch(s.search);
@@ -431,27 +529,38 @@ export function Explorer() {
     });
   }, []);
 
+  // Manual collapse/drill — the ONLY writer of user collapse INTENT. `clusterId` is a bare
+  // directory path (from the renderer's cluster/aggregate hit). Whether we drill or collapse
+  // is decided against the EFFECTIVE collapsed set, but we only ever write namespaced intent
+  // — so the camera can no longer clobber this choice (the C0 fix).
   const handleToggleCollapse = useCallback(
     (clusterId: string) => {
-      setCollapsedClusters((prev) => {
-        const next = new Set(prev);
-        if (next.has(clusterId)) {
-          // Drill in ONE level: un-collapse this aggregate but fold its immediate child
+      const isCollapsed = collapsedClusters.has(clusterId);
+      editDirectoryIntent((intent) => {
+        if (isCollapsed) {
+          // Drill in ONE level: open this aggregate but fold its immediate child
           // directories, so the layout grows by a handful of child aggregates instead of
           // the dir's entire subtree (which on a big dir would dump thousands of
-          // files+symbols in, time Smart out, and lock the view to grid). Direct files
-          // of this dir still render; deeper dirs stay aggregated and can be drilled too.
-          next.delete(clusterId);
+          // files+symbols in, time Smart out, and lock the view to grid). Direct files of
+          // this dir still render; deeper dirs stay aggregated and can be drilled too.
+          // Writing 'closed' intent on the children (not just relying on bootstrap) keeps
+          // them folded even if the camera selection would open them — intent wins.
+          intent.set(directoryGroupId(clusterId), "open");
           const node = dirNodes.get(clusterId);
-          if (node) for (const child of node.children) next.add(child.path);
+          if (node)
+            for (const child of node.children) intent.set(directoryGroupId(child.path), "closed");
         } else {
-          next.add(clusterId);
+          intent.set(directoryGroupId(clusterId), "closed");
         }
-        return next;
       });
     },
-    [dirNodes],
+    [collapsedClusters, dirNodes, editDirectoryIntent],
   );
+
+  // The camera's adaptive cut hands up a transitional DirectoryLodSelection — the set of
+  // OPEN directory group ids. It updates ONLY the selection layer; it never touches intent
+  // or bootstrap, so a zoom can refine detail but can't clobber what the user chose.
+  const handleCut = useCallback((selection: Set<GroupId>) => setLodSelection(selection), []);
 
   const handleToggleEdgeKind = useCallback((kind: ViewEdgeKind) => {
     setEnabledEdgeKinds((prev) => {
@@ -602,7 +711,7 @@ export function Explorer() {
           colorPalette={allExpanded ? "blue" : "gray"}
           onClick={handleToggleExpandAll}
         >
-          {allExpanded ? "Collapse all" : "Expand all"}
+          {allExpanded ? "Collapse all" : "Reveal detail"}
         </Button>
         <Button
           size="sm"
@@ -719,7 +828,7 @@ export function Explorer() {
             onSelectEdge={handleSelectEdge}
             minimap={minimap}
             adaptiveLod={adaptiveLod}
-            onCut={setCollapsedClusters}
+            onCut={handleCut}
             fitSignature={fitSignature}
           />
         </Box>
