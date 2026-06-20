@@ -65,11 +65,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # Per-OS bundle targets. Windows: a portable zip (assembled below), so skip
-          # bundling and just build the exe. Linux + macOS: their full default set
-          # (deb/rpm/AppImage and dmg/.app) — AppImage works now that ldd is wrapped
-          # above. --verbose on Linux so any bundler issue surfaces in the log.
-          args: ${{ matrix.os == 'windows-latest' && '--no-bundle' || startsWith(matrix.os, 'ubuntu') && '--verbose' || '' }}
+          # Windows ships a portable zip (assembled below), so skip bundling there and
+          # just build the exe. Linux (deb/rpm/AppImage) and macOS (dmg/.app) build their
+          # full default bundle set — the AppImage works now that ldd is wrapped above.
+          args: ${{ matrix.os == 'windows-latest' && '--no-bundle' || '' }}
           # On a version tag, publish a draft GitHub Release with the unsigned bundles
           # (Linux/macOS) + the Windows portable zip (attached below); otherwise just
           # build, with everything uploaded as artifacts. Unsigned — no auto-update.
