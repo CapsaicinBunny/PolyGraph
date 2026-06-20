@@ -272,6 +272,33 @@ describe("grid layout is ordered (not input order)", () => {
     // Directory-grouped: a/* before b/*, path order within.
     expect(rowMajor).toEqual(["a/1", "a/2", "b/1", "b/2"]);
   });
+
+  test("graph-locality mode keeps connected nodes in adjacent cells (RCM + serpentine)", () => {
+    // A path a–b–c–d: RCM keeps it in sequence, serpentine fill keeps each consecutive
+    // pair in a grid-adjacent cell (incl. across the row wrap), not diagonally apart.
+    const g: LayoutInput = {
+      nodes: ["a", "b", "c", "d"].map((id) => ({ id, kind: "file" })),
+      edges: [
+        { source: "a", target: "b", kind: "import", count: 1, weight: edgeWeight("import", 1) },
+        { source: "b", target: "c", kind: "import", count: 1, weight: edgeWeight("import", 1) },
+        { source: "c", target: "d", kind: "import", count: 1, weight: edgeWeight("import", 1) },
+      ],
+    };
+    const pos = layoutView(g, { algorithm: "grid" });
+    const cell = (id: string) => ({
+      c: Math.round(pos.get(id)!.x / 250),
+      r: Math.round(pos.get(id)!.y / 110),
+    });
+    for (const [s, t] of [
+      ["a", "b"],
+      ["b", "c"],
+      ["c", "d"],
+    ]) {
+      const A = cell(s);
+      const B = cell(t);
+      expect(Math.abs(A.c - B.c) + Math.abs(A.r - B.r)).toBe(1); // grid-adjacent
+    }
+  });
 });
 
 describe("radial layout is graph-aware (directed rings + stable)", () => {

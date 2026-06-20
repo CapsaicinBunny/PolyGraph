@@ -12,7 +12,7 @@ import { Layout as ColaLayout } from "webcola";
 import type { ViewEdgeKind } from "./aggregate";
 import { coreness } from "./layout/backbone";
 import { detectCommunities } from "./layout/community";
-import { fiedlerOrder, orderByCircularBarycenter, stableOrder } from "./layout/ordering";
+import { fiedlerOrder, orderByCircularBarycenter, rcmOrder, stableOrder } from "./layout/ordering";
 import { chooseEngine } from "./layout/planner";
 import { graphShape } from "./layout/shape";
 import { smartLayout } from "./layout/smart";
@@ -564,14 +564,20 @@ function circularLayout(view: LayoutInput): Positions {
   return positions;
 }
 
-/** Row-major grid, filled in directory-grouped (stable) order rather than input order. */
+/**
+ * Grid layout. With edges present, orders nodes by Reverse Cuthill–McKee (keeps connected
+ * nodes close in the 1-D sequence) and fills the grid in a serpentine (boustrophedon)
+ * path, so that 1-D locality carries into 2-D — a row's end sits directly above the next
+ * row's start, keeping consecutive nodes in adjacent cells. With no edges it falls back to
+ * a tidy directory→path order in plain row-major (a clean table). Deterministic.
+ */
 function gridLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   const n = view.nodes.length;
   if (n === 0) return positions;
-  // Group same-directory nodes together (and order isolates by dir→path) so the grid
-  // reads as a tidy, locality-preserving table instead of arbitrary input order.
-  const order = stableOrder(view.nodes.map((nd) => nd.id));
+  const ids = view.nodes.map((nd) => nd.id);
+  const localityMode = view.edges.length > 0;
+  const order = localityMode ? rcmOrder(ids, view.edges) : stableOrder(ids);
   const nodeById = new Map(view.nodes.map((nd) => [nd.id, nd]));
   const cols = Math.ceil(Math.sqrt(n));
   const cellW = 250;
@@ -579,8 +585,10 @@ function gridLayout(view: LayoutInput): Positions {
   order.forEach((id, i) => {
     const node = nodeById.get(id);
     if (!node) return;
-    const col = i % cols;
     const row = Math.floor(i / cols);
+    const colInRow = i % cols;
+    // Serpentine only in locality mode; edgeless stays plain row-major (tidy table).
+    const col = localityMode && row % 2 === 1 ? cols - 1 - colInRow : colInRow;
     positions.set(...topLeft(node, col * cellW, row * cellH));
   });
   return positions;
