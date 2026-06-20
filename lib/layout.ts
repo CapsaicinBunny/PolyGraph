@@ -11,6 +11,7 @@ import { stratify, tree as d3tree } from "d3-hierarchy";
 import { Layout as ColaLayout } from "webcola";
 import type { ViewEdgeKind } from "./aggregate";
 import { coreness } from "./layout/backbone";
+import { detectCommunities } from "./layout/community";
 import { fiedlerOrder, orderByCircularBarycenter, stableOrder } from "./layout/ordering";
 import { chooseEngine } from "./layout/planner";
 import { graphShape } from "./layout/shape";
@@ -437,7 +438,77 @@ function radialLayout(view: LayoutInput): Positions {
   return positions;
 }
 
-/** A component's nodes on a single circle, ordered by the Fiedler vector. */
+/**
+ * Light crossing-reduction on a ring: repeated passes of adjacent transpositions that
+ * lower the total circular index distance of incident edges. Swaps are restricted to
+ * same-block (same-community) neighbors so community contiguity — including the wrap seam
+ * — is preserved. Bounded passes + strict-improvement-only → deterministic.
+ */
+function refineRing(
+  order: string[],
+  edges: LayoutInput["edges"],
+  sameBlock: (a: string, b: string) => boolean,
+): string[] {
+  const n = order.length;
+  if (n < 4) return order;
+  const adj = new Map<string, Set<string>>();
+  for (const id of order) adj.set(id, new Set());
+  for (const e of edges) {
+    if (e.source === e.target) continue;
+    const s = adj.get(e.source);
+    const t = adj.get(e.target);
+    if (s && t) {
+      s.add(e.target);
+      t.add(e.source);
+    }
+  }
+  const arr = [...order];
+  const indexOf = new Map(arr.map((id, i) => [id, i]));
+  const cdist = (i: number, j: number): number => {
+    const d = Math.abs(i - j);
+    return Math.min(d, n - d);
+  };
+  const nodeCost = (id: string, at: number): number => {
+    let c = 0;
+    for (const nb of adj.get(id) ?? []) {
+      const j = indexOf.get(nb);
+      if (j !== undefined) c += cdist(at, j);
+    }
+    return c;
+  };
+  const PASSES = 4;
+  for (let p = 0; p < PASSES; p++) {
+    let improved = false;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const a = arr[i];
+      const b = arr[j];
+      if (!sameBlock(a, b)) continue;
+      const before = nodeCost(a, i) + nodeCost(b, j);
+      arr[i] = b;
+      arr[j] = a;
+      indexOf.set(a, j);
+      indexOf.set(b, i);
+      if (nodeCost(b, i) + nodeCost(a, j) < before) {
+        improved = true;
+      } else {
+        arr[i] = a;
+        arr[j] = b;
+        indexOf.set(a, i);
+        indexOf.set(b, j);
+      }
+    }
+    if (!improved) break;
+  }
+  return arr;
+}
+
+/**
+ * A component's nodes on a single circle. Communities are kept contiguous (ordered as a
+ * coarse spectral graph), nodes within each are spectrally (Fiedler) ordered, then a light
+ * same-community adjacent-swap pass trims residual crossings — so graph-adjacent nodes land
+ * at adjacent angles instead of in arbitrary input order. Deterministic.
+ */
 function circularLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   const n = view.nodes.length;
@@ -446,12 +517,41 @@ function circularLayout(view: LayoutInput): Positions {
     positions.set(...topLeft(view.nodes[0], 0, 0));
     return positions;
   }
-  // Order the ring spectrally so graph-adjacent nodes land at adjacent angles (few
-  // chord crossings), rather than placing nodes in arbitrary input order.
-  const order = fiedlerOrder(
-    view.nodes.map((nd) => nd.id),
-    view.edges,
-  );
+  const ids = view.nodes.map((nd) => nd.id);
+  const idSet = new Set(ids);
+  const community = detectCommunities(ids, view.edges);
+  const commOf = (id: string): string => community.get(id) ?? id;
+
+  const byComm = new Map<string, string[]>();
+  for (const id of ids)
+    (byComm.get(commOf(id)) ?? byComm.set(commOf(id), []).get(commOf(id)))!.push(id);
+
+  let order: string[];
+  if (byComm.size <= 1) {
+    // One community → spectral-order the whole ring (the common small-cycle case).
+    order = fiedlerOrder(ids, view.edges);
+  } else {
+    // Order communities as a coarse graph, then concat each community's internal order.
+    const coarse = new Map<string, { source: string; target: string }>();
+    const internal = new Map<string, LayoutInput["edges"]>();
+    for (const c of byComm.keys()) internal.set(c, []);
+    for (const e of view.edges) {
+      if (e.source === e.target || !idSet.has(e.source) || !idSet.has(e.target)) continue;
+      const cs = commOf(e.source);
+      const ct = commOf(e.target);
+      if (cs === ct) internal.get(cs)!.push(e);
+      else {
+        const key = cs < ct ? `${cs} ${ct}` : `${ct} ${cs}`;
+        if (!coarse.has(key)) coarse.set(key, { source: cs, target: ct });
+      }
+    }
+    order = [];
+    for (const c of fiedlerOrder([...byComm.keys()], [...coarse.values()])) {
+      order.push(...fiedlerOrder(byComm.get(c)!, internal.get(c)!));
+    }
+  }
+  order = refineRing(order, view.edges, (a, b) => commOf(a) === commOf(b));
+
   const nodeById = new Map(view.nodes.map((nd) => [nd.id, nd]));
   // Radius from a fixed per-node arc length so nodes never crowd on the ring.
   const radius = Math.max(160, (n * 80) / (2 * Math.PI));

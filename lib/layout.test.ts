@@ -199,6 +199,56 @@ describe("circular layout is graph-aware (not input order)", () => {
       expect(adjacent.has(`${a}-${b}`)).toBe(true);
     }
   });
+
+  test("keeps communities contiguous on the ring", () => {
+    const mkn = (id: string): GraphView["nodes"][number] => ({
+      id,
+      kind: "file",
+      label: id,
+      filePath: id,
+      line: 0,
+      parentFile: id,
+    });
+    const e = (s: string, t: string) => ({
+      id: `${s}->${t}`,
+      source: s,
+      target: t,
+      kind: "import" as const,
+      occurrences: [],
+      count: 1,
+      originalEdgeIds: [],
+    });
+    // Two triangles {a,b,c} and {d,e,f} joined by a single bridge c–d → two communities.
+    const g: GraphView = {
+      nodes: ["a", "b", "c", "d", "e", "f"].map(mkn),
+      edges: [
+        e("a", "b"),
+        e("b", "c"),
+        e("c", "a"),
+        e("d", "e"),
+        e("e", "f"),
+        e("f", "d"),
+        e("c", "d"),
+      ],
+    };
+    const pos = layoutView(g, { algorithm: "circular" });
+    const all = ["a", "b", "c", "d", "e", "f"];
+    // The ring is offset by component packing, so measure angles from its centroid.
+    const cx = all.reduce((s, id) => s + pos.get(id)!.x + 100, 0) / all.length;
+    const cy = all.reduce((s, id) => s + pos.get(id)!.y + 28, 0) / all.length;
+    const order = all
+      .map((id) => {
+        const p = pos.get(id)!;
+        return { id, ang: Math.atan2(p.y + 28 - cy, p.x + 100 - cx) };
+      })
+      .sort((u, v) => u.ang - v.ang)
+      .map((u) => u.id);
+    // The three {a,b,c} nodes must form exactly one contiguous arc (one cyclic run).
+    const A = new Set(["a", "b", "c"]);
+    let runStarts = 0;
+    for (let i = 0; i < 6; i++) if (A.has(order[i]) && !A.has(order[(i + 5) % 6])) runStarts++;
+    expect(runStarts).toBe(1);
+  });
 });
 
 describe("grid layout is ordered (not input order)", () => {
@@ -276,9 +326,10 @@ describe("radial layout is graph-aware (directed rings + stable)", () => {
       edges: [ed("R", "a"), ed("R", "b"), ed("a", "c"), ed("b", "d")],
     };
     const pos = layoutView(g, { algorithm: "radial" });
+    const o = centerOf(pos.get("R")!); // R is the ring center (depth 0)
     const ang = (id: string) => {
       const c = centerOf(pos.get(id)!);
-      return Math.atan2(c.y, c.x);
+      return Math.atan2(c.y - o.y, c.x - o.x);
     };
     const adist = (p: string, q: string) => {
       const d = Math.abs(ang(p) - ang(q));
