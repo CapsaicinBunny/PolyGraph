@@ -1,10 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box } from "@chakra-ui/react";
 import { useTheme } from "next-themes";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import { clusterIdOfAggregate, isAggregateId } from "@/lib/graph/collapse";
+import {
+  buildAdjacency,
+  connectionHighlight,
+  connectionStatus,
+  nextAnchors,
+  pruneAnchors,
+} from "@/lib/graph/connections";
 import type { Scene, SceneEdge, SceneFilters } from "@/lib/graph/scene";
 import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
 import {
@@ -225,6 +232,35 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // for the chosen engine producing a poor result. Null when nothing was downgraded.
   const fallbackNote = useMemo(() => layoutFallbackSummary(scene.clusters), [scene.clusters]);
 
+  // Connection highlighting: a single click lights a card + its direct neighbors; shift-click a
+  // second card lights the shortest (undirected) path between them. Anchors are scene ids, so it
+  // works at any collapse/expand level. It takes precedence over the query highlight for dimming,
+  // but never reframes the camera (framing stays tied to the query-highlight prop).
+  const [anchors, setAnchors] = useState<string[]>([]);
+  const onAnchor = useCallback((id: string, shift: boolean) => {
+    setAnchors((prev) => nextAnchors(prev, id, shift));
+  }, []);
+  // No-op when already empty so an empty-space click or stray Esc doesn't force a re-render.
+  const clearAnchors = useCallback(() => setAnchors((prev) => (prev.length ? [] : prev)), []);
+  // Tracks the previous plain click so a quick second click on the same card = double-click.
+  const lastClick = useRef<{ id: string; time: number }>({ id: "", time: 0 });
+  const sceneIds = useMemo(() => new Set(scene.nodes.map((n) => n.id)), [scene.nodes]);
+  // containment edges are dropped inside buildAdjacency, so paths run through code relationships.
+  const connAdj = useMemo(() => buildAdjacency(scene.edges), [scene.edges]);
+  // Actively prune anchors whose card left the scene on an LOD/collapse transition, so a stale
+  // (now-invisible) endpoint can't linger in state behind a still-visible one.
+  useEffect(() => {
+    setAnchors((prev) => pruneAnchors(prev, sceneIds));
+  }, [sceneIds]);
+  const liveAnchors = useMemo(() => anchors.filter((a) => sceneIds.has(a)), [anchors, sceneIds]);
+  const conn = useMemo(() => connectionHighlight(liveAnchors, connAdj), [liveAnchors, connAdj]);
+  const effectiveHighlight = conn ? conn.ids : highlightIds;
+  const labelById = useMemo(() => new Map(scene.nodes.map((n) => [n.id, n.label])), [scene.nodes]);
+  const connStatus = useMemo(
+    () => connectionStatus(liveAnchors, conn, (id) => labelById.get(id) ?? id),
+    [liveAnchors, conn, labelById],
+  );
+
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const vcRef = useRef<VelloHandle | null>(null);
@@ -244,8 +280,22 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const isFile = useRef(new Map<string, boolean>());
   const edgesById = useRef(new Map<string, SceneEdge>());
   edgesById.current = new Map(scene.edges.map((e) => [e.id, e]));
-  const handlers = useRef({ onSelect, onToggleExpand, onToggleCollapse, onSelectEdge });
-  handlers.current = { onSelect, onToggleExpand, onToggleCollapse, onSelectEdge };
+  const handlers = useRef({
+    onSelect,
+    onToggleExpand,
+    onToggleCollapse,
+    onSelectEdge,
+    onAnchor,
+    clearAnchors,
+  });
+  handlers.current = {
+    onSelect,
+    onToggleExpand,
+    onToggleCollapse,
+    onSelectEdge,
+    onAnchor,
+    clearAnchors,
+  };
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -283,7 +333,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // The JSON payload Vello consumes. Built from the positioned scene.
   const payload = useMemo(() => {
     // In highlight mode, mute everything outside the match set so the matches pop.
-    const dim = (id: string) => highlightIds != null && !highlightIds.has(id);
+    const dim = (id: string) => effectiveHighlight != null && !effectiveHighlight.has(id);
     const center = new Map<string, [number, number]>();
     const map = new Map<string, boolean>();
     for (const n of scene.nodes) {
@@ -333,7 +383,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       color: clusterColor(c.id),
     }));
     return JSON.stringify({ nodes, edges, clusters, routing: edgeRouting });
-  }, [scene, edgeRouting, highlightIds]);
+  }, [scene, edgeRouting, effectiveHighlight]);
 
   // One-time Vello/WebGPU setup + camera interaction.
   useEffect(() => {
@@ -611,13 +661,34 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         } else if (id.startsWith("edge:")) {
           const edge = edgesById.current.get(id.slice("edge:".length));
           if (edge) handlers.current.onSelectEdge(edge);
-        } else if (isAggregateId(id)) {
-          handlers.current.onToggleCollapse(clusterIdOfAggregate(id)); // expand an aggregate card
+        } else if (e.shiftKey) {
+          // Shift-click = path anchoring (state machine: first endpoint → second → fresh path).
+          // Never expands/collapses — the universal "show connections" gesture for any card.
+          handlers.current.onAnchor(id, true);
         } else {
-          if (isFile.current.get(id)) handlers.current.onToggleExpand(id);
-          handlers.current.onSelect(id);
+          // Plain click: a SINGLE click selects + lights the card and its direct neighbors; a
+          // DOUBLE click (two quick clicks on the same card) expands/collapses a file or
+          // aggregate. Keeping expand off the single click means one click never swaps the card
+          // out from under its own highlight.
+          const now = performance.now();
+          const isDouble = id === lastClick.current.id && now - lastClick.current.time < 300;
+          lastClick.current = { id, time: now };
+          if (isDouble && isAggregateId(id)) {
+            handlers.current.onToggleCollapse(clusterIdOfAggregate(id)); // expand an aggregate
+          } else if (isDouble && isFile.current.get(id)) {
+            handlers.current.onToggleExpand(id); // expand/collapse a file
+          } else {
+            if (!isAggregateId(id)) handlers.current.onSelect(id);
+            handlers.current.onAnchor(id, false); // light this card + its direct neighbors
+          }
         }
+      } else {
+        handlers.current.clearAnchors(); // empty space clears the connection highlight
       }
+    };
+    // Esc clears the connection highlight (parallels clicking empty space).
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") handlers.current.clearAnchors();
     };
 
     // Minimap navigation: click or drag to recenter the camera on that part of the
@@ -673,6 +744,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         el.addEventListener("pointerdown", onDown);
         el.addEventListener("pointermove", onMove);
         el.addEventListener("pointerup", onUp);
+        window.addEventListener("keydown", onKeyDown);
         ro.observe(el);
         setReady(true);
         animate();
@@ -691,6 +763,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       el.removeEventListener("pointerdown", onDown);
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
+      window.removeEventListener("keydown", onKeyDown);
       mm?.removeEventListener("pointerdown", onMmDown);
       mm?.removeEventListener("pointermove", onMmMove);
       mm?.removeEventListener("pointerup", onMmUp);
@@ -831,6 +904,26 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         }}
       />
       {layingOut && <LayoutOverlay />}
+      {connStatus && (
+        <Box
+          position="absolute"
+          top="3"
+          left="50%"
+          transform="translateX(-50%)"
+          maxW="90%"
+          truncate
+          fontSize="xs"
+          px="3"
+          py="1.5"
+          rounded="md"
+          borderWidth="1px"
+          borderColor="border"
+          bg={connStatus.ok ? "bg.panel" : "orange.subtle"}
+          color={connStatus.ok ? "fg" : "orange.fg"}
+        >
+          {connStatus.text}
+        </Box>
+      )}
       {fallbackNote && (
         <Box
           position="absolute"

@@ -1,0 +1,130 @@
+import { describe, expect, test } from "bun:test";
+import {
+  buildAdjacency,
+  connectionHighlight,
+  connectionPath,
+  connectionStatus,
+  nextAnchors,
+  pruneAnchors,
+} from "./connections";
+
+const E = (source: string, target: string) => ({ source, target });
+// a - b - c - d  (a chain), plus an isolated card "x"
+const adj = buildAdjacency([E("a", "b"), E("b", "c"), E("c", "d")]);
+
+describe("buildAdjacency", () => {
+  test("is undirected and drops self-loops", () => {
+    const a = buildAdjacency([E("a", "b"), E("z", "z")]);
+    expect([...(a.get("a") ?? [])]).toEqual(["b"]);
+    expect([...(a.get("b") ?? [])]).toEqual(["a"]);
+    expect(a.has("z")).toBe(false);
+  });
+
+  test("drops containment edges so paths run through code, not the folder tree", () => {
+    // dir -contains-> a, dir -contains-> b: a and b share a folder but have no code relation,
+    // so they must NOT be connected through the containment hub.
+    const a = buildAdjacency([
+      { source: "dir", target: "a", kind: "contains" },
+      { source: "dir", target: "b", kind: "contains" },
+      { source: "a", target: "c", kind: "import" },
+    ]);
+    expect(a.has("dir")).toBe(false);
+    expect(connectionPath("a", "b", a)).toBeNull();
+    expect(connectionPath("a", "c", a)).toEqual(["a", "c"]);
+  });
+});
+
+describe("nextAnchors (click state machine)", () => {
+  test("plain click → only that card", () => {
+    expect(nextAnchors([], "a", false)).toEqual(["a"]);
+    expect(nextAnchors(["a", "b"], "c", false)).toEqual(["c"]);
+  });
+  test("plain click on the sole anchor keeps the same reference (no churn)", () => {
+    const prev = ["a"];
+    expect(nextAnchors(prev, "a", false)).toBe(prev);
+  });
+  test("shift with no anchor establishes the first endpoint", () => {
+    expect(nextAnchors([], "a", true)).toEqual(["a"]);
+  });
+  test("shift with one anchor (different card) sets the second endpoint", () => {
+    expect(nextAnchors(["a"], "b", true)).toEqual(["a", "b"]);
+  });
+  test("shift on the same single anchor is a no-op (no zero-step path)", () => {
+    const prev = ["a"];
+    expect(nextAnchors(prev, "a", true)).toBe(prev);
+  });
+  test("shift after a full path starts a fresh path from the clicked card", () => {
+    expect(nextAnchors(["a", "b"], "c", true)).toEqual(["c"]);
+  });
+});
+
+describe("pruneAnchors (stale anchors after LOD/collapse)", () => {
+  test("removes anchors whose card left the scene", () => {
+    expect(pruneAnchors(["a", "b"], new Set(["b"]))).toEqual(["b"]);
+    expect(pruneAnchors(["a", "b"], new Set(["x"]))).toEqual([]);
+  });
+  test("returns the same reference when nothing changed", () => {
+    const prev = ["a", "b"];
+    expect(pruneAnchors(prev, new Set(["a", "b"]))).toBe(prev);
+  });
+});
+
+describe("connectionStatus (non-directional label)", () => {
+  const id = (s: string) => s;
+  test("two connected anchors → an undirected label with step count (no arrow)", () => {
+    const h = connectionHighlight(["a", "d"], adj);
+    const s = connectionStatus(["a", "d"], h, id);
+    expect(s?.ok).toBe(true);
+    expect(s?.text).toBe("a ⇄ d · 3 steps");
+    expect(s?.text).not.toContain("→"); // must not imply dependency direction
+  });
+  test("one step is singular", () => {
+    const h = connectionHighlight(["a", "b"], adj);
+    expect(connectionStatus(["a", "b"], h, id)?.text).toBe("a ⇄ b · 1 step");
+  });
+  test("unconnected anchors → a 'no connection' notice, not an arrow", () => {
+    const h = connectionHighlight(["a", "x"], adj);
+    const s = connectionStatus(["a", "x"], h, id);
+    expect(s?.ok).toBe(false);
+    expect(s?.text).toBe("No connection between a and x");
+  });
+  test("null for fewer than two anchors", () => {
+    expect(connectionStatus(["a"], connectionHighlight(["a"], adj), id)).toBeNull();
+  });
+});
+
+describe("connectionPath (undirected shortest path)", () => {
+  test("finds the shortest path inclusive of endpoints", () => {
+    expect(connectionPath("a", "d", adj)).toEqual(["a", "b", "c", "d"]);
+  });
+  test("returns [node] for the same endpoint", () => {
+    expect(connectionPath("b", "b", adj)).toEqual(["b"]);
+  });
+  test("returns null when there is no path", () => {
+    expect(connectionPath("a", "x", adj)).toBeNull();
+  });
+});
+
+describe("connectionHighlight", () => {
+  test("returns null for no anchors", () => {
+    expect(connectionHighlight([], adj)).toBeNull();
+  });
+
+  test("one anchor → the card plus its direct neighbors", () => {
+    const h = connectionHighlight(["b"], adj);
+    expect(h?.connected).toBe(true);
+    expect([...(h?.ids ?? [])].sort()).toEqual(["a", "b", "c"]);
+  });
+
+  test("two connected anchors → the full path between them", () => {
+    const h = connectionHighlight(["a", "d"], adj);
+    expect(h?.connected).toBe(true);
+    expect([...(h?.ids ?? [])].sort()).toEqual(["a", "b", "c", "d"]);
+  });
+
+  test("two unconnected anchors → not connected, just the two cards lit", () => {
+    const h = connectionHighlight(["a", "x"], adj);
+    expect(h?.connected).toBe(false);
+    expect([...(h?.ids ?? [])].sort()).toEqual(["a", "x"]);
+  });
+});
