@@ -754,3 +754,41 @@ describe("layoutFallbackSummary", () => {
     expect(msg).toContain("Stress → Grid");
   });
 });
+
+describe("circular layout sizes the ring to the cards", () => {
+  const mk = (id: string): GraphView["nodes"][number] => ({
+    id,
+    kind: "file",
+    label: id,
+    filePath: id,
+    line: 0,
+    parentFile: id,
+  });
+
+  test("file cards do not overlap on the ring", () => {
+    const n = 12;
+    const nodes = Array.from({ length: n }, (_, i) => mk(`f${i}`));
+    const edges = nodes.map((nd, i) => ({
+      id: `e${i}`,
+      source: nd.id,
+      target: nodes[(i + 1) % n].id,
+      kind: "import" as const,
+      occurrences: [],
+      count: 1,
+      originalEdgeIds: [],
+    }));
+    const pos = layoutView({ nodes, edges }, { algorithm: "circular" });
+    const W = 200; // FILE_SIZE.width
+    const H = 56; // FILE_SIZE.height
+    const ids = nodes.map((nd) => nd.id);
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = pos.get(ids[i])!;
+        const b = pos.get(ids[j])!;
+        // Top-left coords, equal card sizes → overlap iff boxes intersect on both axes.
+        const overlap = Math.abs(a.x - b.x) < W && Math.abs(a.y - b.y) < H;
+        expect(overlap).toBe(false);
+      }
+    }
+  });
+});

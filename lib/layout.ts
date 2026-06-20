@@ -560,8 +560,17 @@ function circularLayout(view: LayoutInput): Positions {
   order = refineRing(order, view.edges, (a, b) => commOf(a) === commOf(b));
 
   const nodeById = new Map(view.nodes.map((nd) => [nd.id, nd]));
-  // Radius from a fixed per-node arc length so nodes never crowd on the ring.
-  const radius = Math.max(160, (n * 80) / (2 * Math.PI));
+  // Per-node arc length must clear the ACTUAL card size, or wide cards (files are 200px) crowd
+  // and overlap on the ring (radial sizes its rings the same way). Use the widest/tallest card
+  // present + breathing room, so a ring of small symbols still packs tightly.
+  let maxExtent = 0;
+  for (const nd of view.nodes) {
+    const s = nodeSize(nd.kind);
+    if (s.width > maxExtent) maxExtent = s.width;
+    if (s.height > maxExtent) maxExtent = s.height;
+  }
+  const arc = maxExtent + 40;
+  const radius = Math.max(160, (n * arc) / (2 * Math.PI));
   order.forEach((id, i) => {
     const node = nodeById.get(id);
     if (!node) return;
