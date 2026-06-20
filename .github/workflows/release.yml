@@ -57,13 +57,48 @@ jobs:
           # build fine; this is only the AppImage target.
           APPIMAGE_EXTRACT_AND_RUN: 1
         with:
-          # On a version tag, publish a draft GitHub Release with the unsigned
-          # installers; otherwise just build the bundles (uploaded as artifacts
-          # below). Bundles are unsigned — auto-update is not enabled.
+          # Windows ships as a portable zip (assembled in the next step), not an
+          # installer — so skip bundling there and just build the exe. Linux/macOS
+          # still build their installers/bundles.
+          args: ${{ matrix.os == 'windows-latest' && '--no-bundle' || '' }}
+          # On a version tag, publish a draft GitHub Release with the unsigned bundles
+          # (Linux/macOS) + the Windows portable zip (attached below); otherwise just
+          # build, with everything uploaded as artifacts. Unsigned — no auto-update.
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('PolyGraph {0}', github.ref_name) || '' }}
           releaseDraft: true
           prerelease: false
+
+      # Windows portable distribution: a plain zip of the app exe + the sidecar +
+      # the native addon + language packs — exactly what lib.rs resolves from the
+      # resource dir at runtime (the exe's own folder on Windows). Assembled from the
+      # source artifacts the earlier steps built, so it doesn't depend on Tauri's
+      # bundle staging. Needs the system WebView2 runtime (present on Win10 1803+/11).
+      - name: Package Windows portable zip
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $stage = "PolyGraph"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item "src-tauri/target/release/polygraph.exe" "$stage/"
+          $sidecar = Get-ChildItem "src-tauri/binaries/polygraph-sidecar-*.exe" | Select-Object -First 1
+          Copy-Item $sidecar.FullName "$stage/polygraph-sidecar.exe"
+          Copy-Item "analyzer-core/analyzer-core.node" "$stage/"
+          Copy-Item "language-packs" "$stage/" -Recurse
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $zip = "PolyGraph_${version}_windows-x64-portable.zip"
+          Compress-Archive -Path $stage -DestinationPath $zip -Force
+          Write-Host "Built portable zip:"
+          Get-ChildItem $zip | Format-List Name, Length
+
+      - name: Attach Windows portable zip to the release
+        if: ${{ matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/') }}
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $zip = Get-ChildItem PolyGraph_*_windows-x64-portable.zip | Select-Object -First 1
+          gh release upload "${{ github.ref_name }}" $zip.FullName --clobber --repo "${{ github.repository }}"
 
       - name: Upload bundles as workflow artifacts
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -72,6 +107,7 @@ jobs:
           name: polygraph-${{ matrix.os }}
           path: |
             src-tauri/target/release/bundle/**/*
+            PolyGraph_*_windows-x64-portable.zip
           if-no-files-found: ignore
 
       # Best-effort SHA-256 checksums for the built bundles, attached to the draft
