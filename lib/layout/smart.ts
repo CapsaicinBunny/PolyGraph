@@ -261,39 +261,65 @@ function selectEngineAndLayout(
 ): EngineChoice {
   const requestedEngine = chooseEngine(shape);
   const clusterNodes = nodeIds.map((id) => ({ id, kind: kindOf.get(id) ?? "" }));
-  const run = (cand: LayoutAlgorithm) => {
-    const r = resolveEngineForBudget(cand, shape.nodeCount, shape.edgeCount);
-    const laid = layoutView(
+  const run = (engine: LayoutAlgorithm, fallbackReason: FallbackReason) => ({
+    engine,
+    fallbackReason,
+    laid: layoutView(
       { nodes: clusterNodes, edges: clusterEdges },
-      { algorithm: r.engine, direction, density: spacing },
-    );
-    return { engine: r.engine, fallbackReason: r.fallbackReason, laid };
-  };
+      { algorithm: engine, direction, density: spacing },
+    ),
+  });
 
-  const candidates = candidateEngines(shape);
+  // Resolve each candidate against the budget, then dedupe — two requested engines that both
+  // fall back to the same engine (e.g. grid) must not be laid out and scored twice.
+  const resolved: { engine: LayoutAlgorithm; fallbackReason: FallbackReason }[] = [];
+  const seen = new Set<LayoutAlgorithm>();
+  for (const cand of candidateEngines(shape)) {
+    const r = resolveEngineForBudget(cand, shape.nodeCount, shape.edgeCount);
+    if (!seen.has(r.engine)) {
+      seen.add(r.engine);
+      resolved.push(r);
+    }
+  }
+
   if (
-    candidates.length <= 1 ||
+    resolved.length <= 1 ||
     nodeIds.length < SCORE_MIN_NODES ||
     nodeIds.length > SCORE_MAX_NODES
   ) {
-    return { ...run(candidates[0]), requestedEngine };
+    return { ...run(resolved[0].engine, resolved[0].fallbackReason), requestedEngine };
   }
 
-  let best: (ReturnType<typeof run> & { score: number }) | null = null;
-  for (const cand of candidates) {
-    const r = run(cand);
+  const scoreOf = (laid: Map<string, XYPosition>): number => {
     const centers = new Map<string, { x: number; y: number }>();
     const sizes = new Map<string, { w: number; h: number }>();
     for (const id of nodeIds) {
-      const p = r.laid.get(id) ?? { x: 0, y: 0 };
+      const p = laid.get(id) ?? { x: 0, y: 0 };
       const s = nodeSize(kindOf.get(id) ?? "");
       centers.set(id, { x: p.x + s.width / 2, y: p.y + s.height / 2 });
       sizes.set(id, { w: s.width, h: s.height });
     }
-    const score = layoutScore(centers, sizes, clusterEdges);
-    if (!best || score < best.score) best = { ...r, score };
+    return layoutScore(centers, sizes, clusterEdges);
+  };
+
+  // The planner's pick (resolved[0]) is the default; an alternative replaces it only if it
+  // scores meaningfully better (hysteresis), so a marginal win doesn't override the shape
+  // heuristic on noise.
+  const scored = resolved.map((r) => ({ ...r, ...run(r.engine, r.fallbackReason) }));
+  const withScores = scored.map((s) => ({ ...s, score: scoreOf(s.laid) }));
+  const primary = withScores[0];
+  let best = primary;
+  for (let i = 1; i < withScores.length; i++) {
+    if (withScores[i].score < primary.score * 0.85 && withScores[i].score < best.score) {
+      best = withScores[i];
+    }
   }
-  return { ...best!, requestedEngine };
+  return {
+    engine: best.engine,
+    requestedEngine,
+    fallbackReason: best.fallbackReason,
+    laid: best.laid,
+  };
 }
 
 /**

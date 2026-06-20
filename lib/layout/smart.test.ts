@@ -287,6 +287,24 @@ describe("grouped Smart runs the shape planner per leaf cluster", () => {
     )!;
     expect(again.engine).toBe(box.engine); // deterministic
   });
+
+  test("scoring keeps Layered for a clean DAG (flow term + hysteresis, no Force takeover)", () => {
+    // A 4-level DAG (16 nodes, in the scoring band). Force/Stress might cut a crossing, but
+    // they scramble the dependency flow — the backward-edge term + the hysteresis margin keep
+    // the planner's Layered pick.
+    const lv = [0, 1, 2, 3].map((l) => [0, 1, 2, 3].map((i) => `flow/l${l}n${i}`));
+    const edges: { source: string; target: string }[] = [];
+    for (let l = 0; l < 3; l++)
+      for (let i = 0; i < 4; i++) {
+        edges.push(E(lv[l][i], lv[l + 1][i]));
+        edges.push(E(lv[l][i], lv[l + 1][(i + 1) % 4]));
+      }
+    const box = dir({ nodes: lv.flat().map((id) => N(id)), edges }).clusters.find(
+      (c) => c.id === "flow",
+    )!;
+    expect(box.requestedEngine).toBe("layered");
+    expect(box.engine).toBe("layered"); // scoring did NOT override the DAG's flow
+  });
 });
 
 describe("resolveEngineForBudget (budget guard, separate from chooseEngine)", () => {

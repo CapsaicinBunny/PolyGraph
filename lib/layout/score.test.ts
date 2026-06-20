@@ -30,8 +30,8 @@ describe("layoutScore", () => {
       { source: "A", target: "B" },
       { source: "C", target: "D" },
     ]);
-    expect(clean).toBe(0); // no crossings, cards far apart → no overlap
-    expect(crossing).toBeGreaterThan(clean);
+    // The crossing layout costs ≥ a full crossing more (crossings dominate the small flow term).
+    expect(crossing).toBeGreaterThan(clean + 5);
   });
 
   test("penalizes node overlap", () => {

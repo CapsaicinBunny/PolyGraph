@@ -27,8 +27,11 @@ export function segmentsCross(a: Pt, b: Pt, c: Pt, d: Pt): boolean {
 }
 
 /**
- * Score a candidate layout: number of edge crossings plus half the number of overlapping
- * node pairs. `centers` are node center points; `sizes` are card width/height for overlap.
+ * Score a candidate layout (lower = better). Weighted so the dimensions don't trade off
+ * wrongly: node overlap is worst, then crossings, then flow violations, then a gentle
+ * penalty for an extreme aspect ratio. The flow term (directed edges that run backward along
+ * the layout's dominant axis) stops a clean-looking-but-flow-destroying engine — e.g. Force
+ * on a DAG — from beating Layered on a one-crossing technicality. `edges` are directed.
  */
 export function layoutScore(
   centers: Map<string, Pt>,
@@ -51,6 +54,16 @@ export function layoutScore(
 
   const ids = [...centers.keys()];
   let overlaps = 0;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const c of centers.values()) {
+    if (c.x < minX) minX = c.x;
+    if (c.y < minY) minY = c.y;
+    if (c.x > maxX) maxX = c.x;
+    if (c.y > maxY) maxY = c.y;
+  }
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
       const ca = centers.get(ids[i])!;
@@ -61,5 +74,18 @@ export function layoutScore(
         overlaps += 1;
     }
   }
-  return crossings + 0.5 * overlaps;
+
+  // Flow violations: directed edges running backward along the dominant (more-spread) axis.
+  const horizontal = maxX - minX >= maxY - minY;
+  let backward = 0;
+  for (const seg of segs) {
+    if (horizontal ? seg.b.x < seg.a.x : seg.b.y < seg.a.y) backward += 1;
+  }
+
+  const w = Math.max(1, maxX - minX);
+  const h = Math.max(1, maxY - minY);
+  const aspect = Math.max(w / h, h / w);
+  const aspectPenalty = Math.max(0, aspect - 4) * 3; // only bite past ~4:1
+
+  return overlaps * 100 + crossings * 10 + backward * 4 + aspectPenalty;
 }
