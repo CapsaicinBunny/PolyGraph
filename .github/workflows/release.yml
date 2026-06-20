@@ -43,11 +43,15 @@ jobs:
         run: |
           # The AppImage bundler (linuxdeploy) aborts (SIGABRT) when `ldd` exits non-zero,
           # which it does on the self-contained bun sidecar (ldd: "not a dynamic
-          # executable"). Wrap ldd so it always exits 0; its output passes through, so
-          # real binaries' libraries are still discovered, and a self-contained binary
-          # simply contributes no deps to bundle.
+          # executable"). Wrap ldd to pass its output through (so libraries are still
+          # discovered) but swallow the non-zero exit ONLY for the sidecar — a real
+          # missing-library failure on any other binary must still abort the bundle.
           sudo mv /usr/bin/ldd /usr/bin/ldd.real
-          printf '%s\n' '#!/usr/bin/env bash' '/usr/bin/ldd.real "$@" || true' 'exit 0' | sudo tee /usr/bin/ldd >/dev/null
+          printf '%s\n' '#!/usr/bin/env bash' \
+            'out=$(/usr/bin/ldd.real "$@" 2>&1); rc=$?' \
+            'printf "%s\n" "$out"' \
+            'case "$*" in *polygraph-sidecar*) exit 0;; esac' \
+            'exit $rc' | sudo tee /usr/bin/ldd >/dev/null
           sudo chmod +x /usr/bin/ldd
 
       - name: Install dependencies
@@ -77,19 +81,25 @@ jobs:
           releaseDraft: true
           prerelease: false
 
-      # Windows portable distribution: a plain zip of the app exe + the sidecar +
-      # the native addon + language packs — exactly what lib.rs resolves from the
-      # resource dir at runtime (the exe's own folder on Windows). Assembled from the
-      # source artifacts the earlier steps built, so it doesn't depend on Tauri's
-      # bundle staging. Needs the system WebView2 runtime (present on Win10 1803+/11).
+      # Windows portable distribution: a plain zip of the app exe + the sidecar + the
+      # native addon + language packs, laid out flat beside the exe — which is where
+      # resource_dir() points on Windows, so it matches what lib.rs reads at runtime.
+      # Assembled from the source artifacts the earlier steps built, so it doesn't depend
+      # on Tauri's bundle staging. Needs the system WebView2 runtime (preinstalled on
+      # Win11; normally present on Win10, with a download-link fallback in lib.rs).
       - name: Package Windows portable zip
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
+          # An explicit `shell: pwsh` step does NOT get $ErrorActionPreference=Stop (only
+          # the auto-default shell does), so a missing source file would be non-terminating
+          # and we'd ship an incomplete zip with green CI. Make every failure fatal.
+          $ErrorActionPreference = 'Stop'
           $stage = "PolyGraph"
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item "src-tauri/target/release/polygraph.exe" "$stage/"
           $sidecar = Get-ChildItem "src-tauri/binaries/polygraph-sidecar-*.exe" | Select-Object -First 1
+          if (-not $sidecar) { throw "No sidecar matched src-tauri/binaries/polygraph-sidecar-*.exe" }
           Copy-Item $sidecar.FullName "$stage/polygraph-sidecar.exe"
           Copy-Item "analyzer-core/analyzer-core.node" "$stage/"
           Copy-Item "language-packs" "$stage/" -Recurse
@@ -111,7 +121,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $ErrorActionPreference = 'Stop'
           $zip = Get-ChildItem PolyGraph_*_windows-x64-portable.zip | Select-Object -First 1
+          if (-not $zip) { throw "Portable zip not found — the packaging step must have failed." }
           gh release upload "${{ github.ref_name }}" $zip.FullName --clobber --repo "${{ github.repository }}"
 
       - name: Upload bundles as workflow artifacts
