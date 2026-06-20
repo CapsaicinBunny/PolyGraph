@@ -171,7 +171,16 @@ function Section({
           >
             {title}
           </Text>
-          {modified && <Box w="6px" h="6px" rounded="full" bg="blue.solid" flexShrink={0} />}
+          {modified && (
+            <Box
+              data-testid={`section-modified-${title.toLowerCase()}`}
+              w="6px"
+              h="6px"
+              rounded="full"
+              bg="blue.solid"
+              flexShrink={0}
+            />
+          )}
         </HStack>
         {action}
       </Flex>
@@ -348,10 +357,13 @@ export function Sidebar({
   const environments = ENVIRONMENTS.filter((e) => presentEnvironments.has(e.value));
   const runtimes = RUNTIMES.filter((r) => presentRuntimes.has(r.value));
   const hasScope = categories.length > 0 || environments.length > 0 || runtimes.length > 0;
+  // "Modified" iff a scope chip the user can actually SEE is turned off. Iterate the same
+  // filtered lists the chips render from (not the raw present* sets), so a present value with no
+  // rendered chip can never light the dot when every visible chip is on.
   const scopeModified =
-    [...presentCategories].some((c) => !enabledCategories.has(c)) ||
-    [...presentEnvironments].some((e) => !enabledEnvironments.has(e)) ||
-    [...presentRuntimes].some((r) => !enabledRuntimes.has(r));
+    categories.some((c) => !enabledCategories.has(c.value)) ||
+    environments.some((e) => !enabledEnvironments.has(e.value)) ||
+    runtimes.some((r) => !enabledRuntimes.has(r.value));
 
   return (
     <Stack
