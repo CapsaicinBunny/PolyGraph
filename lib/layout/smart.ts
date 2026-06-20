@@ -254,8 +254,13 @@ interface EngineChoice {
 
 // Score-multiple candidates only for clusters in this band: big enough that the engine
 // choice matters, small enough that running 2-3 layouts + O(E²+N²) scoring stays cheap.
+// Bounded on EDGES too — crossing counting is O(E²), so a small-but-dense cluster (many
+// edges among ≤120 nodes) would otherwise slip past the node cap and cost millions of
+// segment-pair checks per candidate.
 const SCORE_MIN_NODES = 8;
 const SCORE_MAX_NODES = 120;
+const SCORE_MAX_EDGES = 1_200;
+const SCORE_MAX_PAIR_CHECKS = 1_000_000;
 
 /**
  * Pick a leaf cluster's engine and lay it out. For ambiguous medium clusters this generates
@@ -297,11 +302,16 @@ function selectEngineAndLayout(
     }
   }
 
-  if (
-    resolved.length <= 1 ||
-    nodeIds.length < SCORE_MIN_NODES ||
-    nodeIds.length > SCORE_MAX_NODES
-  ) {
+  // Gate scoring on nodes AND edges: crossing counting is O(E²), so cap edge count and the
+  // total pair-check work so a dense cluster can't blow past the node safeguards.
+  const m = clusterEdges.length;
+  const canScore =
+    resolved.length > 1 &&
+    nodeIds.length >= SCORE_MIN_NODES &&
+    nodeIds.length <= SCORE_MAX_NODES &&
+    m <= SCORE_MAX_EDGES &&
+    (m * (m - 1)) / 2 <= SCORE_MAX_PAIR_CHECKS;
+  if (!canScore) {
     return { ...run(resolved[0].engine, resolved[0].fallbackReason), requestedEngine };
   }
 

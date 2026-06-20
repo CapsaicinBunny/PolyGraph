@@ -324,6 +324,21 @@ describe("grouped Smart runs the shape planner per leaf cluster", () => {
     expect([...a.nodes.entries()]).toEqual([...b.nodes.entries()]);
   });
 
+  test("dense leaf cluster skips O(E²) candidate scoring (lays out fast + deterministically)", () => {
+    // 70 nodes, ~2100 edges (> SCORE_MAX_EDGES), cyclic → stress primary. The edge gate keeps
+    // it on the single planner pick; without it, scoring would also run the layered candidate
+    // (dagre blows up on dense graphs). Completes quickly because scoring is skipped.
+    const n = 70;
+    const ids = Array.from({ length: n }, (_, i) => `d/n${i}.ts`);
+    const edges: { source: string; target: string }[] = [];
+    for (let i = 0; i < n; i++)
+      for (let k = 1; k <= 30; k++) edges.push(E(ids[i], ids[(i + k) % n])); // dense + cyclic
+    const a = dir({ nodes: ids.map((id) => N(id)), edges });
+    expect(a.nodes.size).toBe(n);
+    const b = dir({ nodes: ids.map((id) => N(id)), edges });
+    expect([...a.nodes.entries()]).toEqual([...b.nodes.entries()]); // deterministic
+  });
+
   test("container placement ranks subsystem boxes by their dependency flow", () => {
     // dirA → dirB → dirC at the file level → the top-level boxes form a DAG, so the container
     // planner arranges them with dagre (ranked), not the old size heuristic. LR → A left of C.
