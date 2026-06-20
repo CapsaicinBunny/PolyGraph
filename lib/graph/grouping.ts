@@ -17,6 +17,10 @@ import { buildDirTree, type DirNode, dirIndex } from "./hierarchy";
 import type { GroupId } from "./collapse-model";
 import type { GraphModel } from "./types";
 
+// Re-exported so a consumer wiring directory grouping needs only this module for both
+// the namespaced-id helpers and the GroupId type.
+export type { GroupId };
+
 /** Namespace prefix for directory group ids. */
 export const DIRECTORY_NS = "directory:";
 
@@ -79,4 +83,51 @@ export function directoryGrouping(graph: GraphModel): GroupingHierarchy {
 /** Strip the directory namespace: "directory:a/b" → "a/b". The LOD/layout box key. */
 function boxKeyOf(id: GroupId): string {
   return id.startsWith(DIRECTORY_NS) ? id.slice(DIRECTORY_NS.length) : id;
+}
+
+/** Strip the directory namespace from a group id back to its bare layout/LOD path. */
+export const directoryBoxKey = boxKeyOf;
+
+/**
+ * Every directory in the graph as a namespaced group id — the **safety universe** the
+ * adaptive-LOD bootstrap layer closes (spec: LOD is "a budgeted cut through a hierarchy
+ * of cached proxies", so everything starts closed and the cut/selection OPENS regions).
+ * Excludes the synthetic root "" (not a group). Bare-path order from `dirIndex`.
+ */
+export function allDirectoryGroupIds(graph: GraphModel): Set<GroupId> {
+  const out = new Set<GroupId>();
+  for (const path of dirIndex(buildDirTree(graph)).keys()) out.add(directoryGroupId(path));
+  return out;
+}
+
+/**
+ * The strict ancestor directory group ids of a bare directory path, outermost-first:
+ * "a/b/c" → ["directory:a", "directory:a/b"]. Used to seed the LOD selection so the
+ * directories *above* the auto-collapse frontier render open (the frontier itself stays
+ * the collapse boundary) — reproducing the seed exactly under the all-dirs bootstrap.
+ */
+export function ancestorDirectoryGroupIds(barePath: string): GroupId[] {
+  const out: GroupId[] = [];
+  let cur = "";
+  for (const seg of barePath.split("/")) {
+    if (!seg) continue;
+    cur = cur ? `${cur}/${seg}` : seg;
+    out.push(directoryGroupId(cur));
+  }
+  out.pop(); // drop the path itself — we want only its ancestors
+  return out;
+}
+
+/** Map a set of bare directory paths to namespaced directory group ids. */
+export function toDirectoryGroupIds(barePaths: Iterable<string>): Set<GroupId> {
+  const out = new Set<GroupId>();
+  for (const p of barePaths) out.add(directoryGroupId(p));
+  return out;
+}
+
+/** Map a set of namespaced directory group ids back to bare layout/LOD paths. */
+export function toDirectoryBoxKeys(groupIds: Iterable<GroupId>): Set<string> {
+  const out = new Set<string>();
+  for (const id of groupIds) out.add(boxKeyOf(id));
+  return out;
 }
