@@ -1,487 +1,426 @@
-# Polymorphic Dimension Spine — Filters, Groups & Facets across all languages — Design
+# Polymorphic Dimension Spine — Filters, Groups, Facets & Representation LOD — Design
 
-**Goal:** Re-architect the **filters** and **group** systems around a single,
-language-agnostic **Dimension** model so they are *intelligent* (every control means
-something for every language), *honest* (a control that's shown actually works),
-*polymorphic* (each language provider contributes its own dimensions), and *fast but
-safe*. Today the structural axes (`kind`, edge-kind, language, folder) work for all 26
-languages, but the "intelligent" facets (`role`, `category`, `environment`, `runtime`)
-are JS/TS-only and silently empty elsewhere — and the group/LOD/camera state machine is
-structurally fragile (one `collapsedClusters` set with five writers; camera LOD wired to
-Directory only).
+**Goal:** Re-architect the **filters** and **group/LOD** systems around (a) a single
+language-agnostic **Dimension** model so controls are *intelligent* (mean something for
+every language), *honest*, and *polymorphic* (each provider contributes its own
+dimensions); and (b) a **representation-LOD** model so large graphs render as a *budgeted
+cut through a hierarchy of cached proxies* — not a sophisticated expand/collapse. Fast but
+safe.
 
-**Status:** Multi-phase north-star. **Revision 3** — incorporates two architectural reviews.
-Rev 3 adds columnar/interned facet storage, the catalog label/color handshake, a single
-dual-write helper with a parity invariant, and LOD hysteresis. Rev 2 wove in the first review
-(serializable catalog vs runtime index; bootstrap-collapse is not user intent;
-single intent map; mode-namespaced group ids; multi-valued facet grouping; serializable
-grouping snapshot for the worker; None-mode internal hierarchy; bounded LOD eviction;
-missing-facet semantics; descriptor merge rules; dual-write migration; two-stage config
-validation; ordinal indexes; group-by eligibility). Detailed design here covers the
-contracts shared by all phases; each phase gets its own implementation plan.
+**Status:** Multi-phase north-star. **Revision 4.** (Numbering note: prior commits lagged
+the review rounds — this is the doc after the *third* review.) Evolution: R1 split the
+serializable catalog from the runtime index, made bootstrap-collapse not user intent, added
+mode-namespaced ids, the grouping snapshot, None's internal hierarchy, bounded LOD, merge
+rules, two-stage config validation, group-by eligibility. R2 (rev "3" commit) added
+columnar/interned storage, the catalog label/color handshake, the dual-write parity
+invariant, LOD hysteresis. **R4 adds:** the model/runtime/transport split for facet storage;
+`CompactGroupingSnapshot` over transferable typed arrays; split `MissingPolicy`; sparse
+`FacetSelection`; a core-owned canonical registry; closed-domain `declared:false` (no domain
+drift); the **Representation Hierarchy + budgeted antichain cut** (proxies, error-per-cost,
+edge/label LOD, committed-cut generations, stable local layout); and the C1→C1a/b/c split.
 
-**Non-negotiables (carried from brainstorming, corrected by review):**
+**Non-negotiables:**
 - Deep spine: generalize `role`/`category`/`environment`/`runtime` into a generic
-  provider-contributed facet model; wire every consumer through it.
-- Group modes (Directory / Package / Community / facet / None) are **peers**; LOD works
-  for all (None via a synthetic internal hierarchy — §Grouping).
-- Adaptive LOD defaults **on**, **perceptually monotonic around the viewport** but
-  **budget-bounded** (offscreen auto-opens are evictable — §LOD).
+  provider-contributed facet model; every consumer projects from it.
+- Group modes (Directory / Package / Community / facet / None) are **peers**; LOD works for
+  all (None via a synthetic internal hierarchy).
+- LOD is a **valid antichain cut** through a representation hierarchy — every underlying node
+  represented exactly once (never a proxy *and* its expanded children; never an unrepresented
+  subtree) — chosen by **error-per-cost** under **independent node/edge/label/GPU/layout
+  budgets**, defaults **on**, perceptually monotonic around the viewport, budget-bounded.
 - Collapse is **three-layered**: user `intent` (only), `bootstrapClosed` (derived safety),
-  `lodOpen` (camera-derived). User intent wins; **bootstrap is not intent**.
-- Data that crosses a serialization boundary is **plain JSON**; method-bearing objects are
-  runtime-only and reconstructed deterministically.
-- Fast but safe: ordinal indexes built lazily; phased delivery; the 547 existing tests
-  stay green at every phase boundary.
+  and the camera's `LodCut`. User intent wins; **bootstrap is not intent**.
+- **Boundary discipline:** durable/persisted data (workspace, `AnalyzeResult` catalog) is
+  **plain JSON**; high-volume **worker IPC** uses structured-cloneable / **transferable typed
+  arrays** via a codec (so the columnar-memory goal isn't undone by JSON).
+- A global relayout happens only on a *material* change (filters/grouping-mode/direction/
+  explicit request/overflow) — **never** for an ordinary camera-driven refinement.
+- Fast but safe: ordinal/columnar indexes built lazily; phased delivery; the 547 existing
+  tests stay green at every phase boundary.
 
 ---
 
 ## Background — current state
 
-### The graph model
-`GraphNode` ([lib/graph/types.ts:84](../../../lib/graph/types.ts)) carries a
-language-neutral `kind` plus four **optional** facet fields that are JS/TS-only in
-practice:
+`GraphNode` ([lib/graph/types.ts:84](../../../lib/graph/types.ts)) has a language-neutral
+`kind` plus four optional facet fields that are JS/TS-only: `role`
+([lib/analyzer/roles.ts](../../../lib/analyzer/roles.ts)), `category`
+([nodes.ts:64,72](../../../lib/analyzer/nodes.ts); Rust core hardcodes `"feature"` at
+[analyzer-core/src/lib.rs:459,471](../../../analyzer-core/src/lib.rs)), `environment` and
+`runtimes` ([facets.ts:54,98](../../../lib/analyzer/facets.ts)). Production is two sites (TS
+analyzer; Rust `build_graph()` [src/lib.rs:439-476](../../../analyzer-core/src/lib.rs), the
+single pack→node site, no facet mechanism). Consumption is ~10 sites each re-hardcoding the
+enums (query [evaluate.ts:148](../../../lib/graph/query-language/evaluate.ts); rules
+[selector.ts:10](../../../lib/rules/selector.ts) + config
+[load.ts:22-63](../../../lib/config/load.ts); scene gate
+[scene.ts:162](../../../lib/graph/scene.ts); Sidebar/Explorer constants; visual
+[visual.ts:12-117](../../../lib/graph/visual.ts)).
 
-| Field | Produced where | All languages? |
-| --- | --- | --- |
-| `kind` | every provider | **yes** (universal spine) |
-| `role` | [lib/analyzer/roles.ts](../../../lib/analyzer/roles.ts) | no — JS/TS only |
-| `category` | [lib/analyzer/nodes.ts:64,72](../../../lib/analyzer/nodes.ts) | no — Rust core hardcodes `"feature"` ([analyzer-core/src/lib.rs:459,471](../../../analyzer-core/src/lib.rs)) |
-| `environment` | [lib/analyzer/facets.ts:54](../../../lib/analyzer/facets.ts) | no — JS/TS only |
-| `runtimes` | [lib/analyzer/facets.ts:98](../../../lib/analyzer/facets.ts) | no — JS/TS only |
-
-### Production — two sites
-1. **TS analyzer** (`roles.ts`, `facets.ts`, `nodes.ts`) — only place the four facets are detected.
-2. **Rust core `build_graph()`** ([analyzer-core/src/lib.rs:439-476](../../../analyzer-core/src/lib.rs))
-   — the single site where every pack's captures become `GraphNode`s; hardcodes
-   `category:"feature"`, sets no other facet. The pack format has **no** facet mechanism.
-   **This is the per-language extension point.**
-
-Provider contract: [`LanguageProvider`](../../../lib/kernel/provider.ts) `{ id, extensions,
-analyze() }` → `ProviderResult { nodes, edges, errors, unresolved? }`.
-
-### Consumption — ~10 sites, each hardcoding the enums
-Query language [evaluate.ts:148](../../../lib/graph/query-language/evaluate.ts) (switch on
-field) · rules [selector.ts:10](../../../lib/rules/selector.ts) + config
-[load.ts:22-63](../../../lib/config/load.ts) (hardcoded validation sets) · scene gate
-[scene.ts:162](../../../lib/graph/scene.ts) (`SceneFilters` :36) · Sidebar
-[Sidebar.tsx:60,356,500](../../../components/Sidebar.tsx) and Explorer
-[Explorer.tsx:53,151](../../../components/Explorer.tsx) (`CATEGORIES`/`ENVIRONMENTS`/
-`RUNTIMES`/`presentScope`) · visual [visual.ts:12-117](../../../lib/graph/visual.ts) ·
-insights [insights.ts:142](../../../lib/graph/insights.ts). Pattern: each re-hardcodes the
-value enums. **Polymorphism = one catalog both sides talk to.**
-
-### The group / LOD / camera fragility (from the root-cause investigation)
-- `collapsedClusters` — one `Set`, **five writers** (load-seed [Explorer.tsx:353](../../../components/Explorer.tsx);
-  expand/collapse-all `:324,335`; manual drill `:436`; camera `onCut` `:722`; workspace
-  restore `:388`); the camera writer overwrites the whole set.
-- `adaptiveLod` — dual-owner; `useState(true)` dead; effective default `seed!==null`, so
-  off under 2000 cards.
-- Camera cut wired to Directory only ([VelloGraphCanvas.tsx:655,661](../../../components/VelloGraphCanvas.tsx)).
-- Smart layout derives the directory cluster tree **internally** from node ids and branches
-  on Directory/Community/None ([lib/layout/smart.ts](../../../lib/layout/smart.ts)). The
-  layout **algorithms** are correct and stay; but the grouping **input contract** must
-  change to admit arbitrary grouping (see §Grouping snapshot).
-- Layout math + Vello renderer are **provably correct** for direction
-  ([vello-renderer/src/lib.rs:269](../../../vello-renderer/src/lib.rs) — affine, no
-  transpose); the perceived flip is out of scope here.
+Group/LOD fragility: `collapsedClusters` is one set with five writers
+([Explorer.tsx:353,324/335,436,722,388](../../../components/Explorer.tsx)); `adaptiveLod` is
+dual-owner (off under 2000 cards); the camera cut is Directory-only
+([VelloGraphCanvas.tsx:655,661](../../../components/VelloGraphCanvas.tsx)); Smart derives the
+cluster tree internally and branches on Directory/Community/None
+([lib/layout/smart.ts](../../../lib/layout/smart.ts)). The layout **algorithms** and the
+Vello renderer affine ([vello-renderer/src/lib.rs:269](../../../vello-renderer/src/lib.rs))
+are correct; the perceived direction flip is out of scope.
 
 ---
 
-## North-star architecture
+## North-star: the Dimension model
 
-### The Dimension model
-A **Dimension** is any axis you can filter, group, query, or style by — unified under one
-catalog:
-- **Structural dimensions** — universal, derived, never copied: `kind`, `language`,
-  `folder`, `package`.
-- **Facet dimensions** — provider-contributed, stored on the node: `role`, `category`,
-  `env`, `runtime` now; per-language later.
+A **Dimension** is any axis you can filter, group, query, or style by. **Structural** ones
+(`kind`, `language`, `folder`, `package`) are universal and derived; **facet** ones
+(`role`, `category`, `env`, `runtime` now; per-language later) are provider-contributed.
 
-### `GraphNode.facets` + **dual-write** migration *(review §11)*
-Add a generic field; keep `kind` first-class (load-bearing for layout/size/glyph, truly
-universal — **not** demoted):
+### Three representations of facet data *(review §1)*
+The model, the runtime index, and the wire codec are **distinct schemas** — never conflated:
 
 ```ts
+// 1. MODEL — the external graph contract. Plain strings. Human-readable, JSON-durable.
 export interface GraphNode {
   // …id, kind, label, filePath, line, parentFile…
-  facets?: Record<FacetKey, string[]>;   // always arrays (single-valued holds one entry)
+  facets?: Record<FacetKey, string[]>;     // sparse (omit empty); kind stays first-class
+}
+
+// 2. RUNTIME — columnar, interned. Built from (graph + catalog). Never serialized as-is.
+//    Per-dimension Uint32Array postings keyed by node ordinal; values interned to ids.
+
+// 3. TRANSPORT — when facet/grouping data crosses the Worker boundary, a codec produces
+//    structured-cloneable typed arrays + a shared string table (Transferable), NOT JSON.
+export interface FacetWireData {
+  stringTable: string[];          // id → string
+  nodeOffsets: Uint32Array;       // CSR offsets into (keyIds,valueIds) per node ordinal
+  keyIds: Uint32Array;
+  valueIds: Uint32Array;
 }
 ```
+`node.facets` (strings) is the interchange/durable shape; the `DimensionIndex` holds the
+interned columnar form; `FacetWireData` is the transport codec. Index-valued data is **never**
+called `GraphNode.facets`.
 
-Because nodes cross Rust → sidecar → client → worker → workspace as **plain JSON**, the
-migration emits **both** the legacy field and the facet — *not* a derived getter (getters
-don't survive serialization):
+### `GraphNode.facets` + dual-write migration *(review)*
+Because nodes cross Rust → sidecar → client → worker → workspace, the migration **dual-writes**
+the legacy field and the facet — not a derived getter (getters don't survive JSON):
 
 ```ts
-{ environment: "client", facets: { env: ["client"] } }   // dual write during A–C
+{ environment: "client", facets: { env: ["client"] } }   // during A–C
 ```
-
 All facet writes route through **one** `writeFacet(node, key, values)` helper that sets the
-legacy field *and* `facets[key]` together, so no code path can desync them *(2nd review)*. A
-graph-wide **parity invariant** test asserts the legacy field equals its `facets` value for
-every node throughout A–C. Legacy named fields are removed only after every consumer reads
-`facets` (end of Phase D).
+legacy field *and* `facets[key]` together; a graph-wide **parity invariant** test asserts
+`legacy === facets`-derived for every node throughout A–C. Legacy fields are removed only
+after every consumer reads `facets` (end of Phase D).
 
 ### Serializable catalog vs. runtime index *(review §1, §13)*
-The catalog travels with the analysis as JSON; the index is rebuilt at runtime and never
-serialized.
-
 ```ts
-// JSON-safe — travels with AnalyzeResult, sidecar→client, into workspaces.
-export interface DimensionCatalog {
-  descriptors: DimensionDescriptor[];
+export interface DimensionCatalog { descriptors: DimensionDescriptor[]; }   // JSON, travels with AnalyzeResult
+
+export interface DimensionValue { value: string; label: string; color?: string; glyph?: string; }
+
+export interface MissingPolicy {            // §3 — filtering and grouping differ
+  filter: "include" | "exclude" | "unclassified";
+  group: "unclassified" | "exclude";
 }
 
 export interface DimensionDescriptor {
-  key: FacetKey;                       // "role", "env", "rust.visibility", "directory"
-  label: string;
+  key: FacetKey;                            // "role","env","rust.visibility","directory"
+  label: string;                            // REQUIRED (handshake): missing label = analysis error
   dimension: "structural" | "facet";
   cardinality: "single" | "multi";
-  domain: "closed" | "open";           // closed = known value set; open = derive from data
-  values: DimensionValue[];            // {value,label,color?,glyph?} — may be [] for open
-  providerIds: string[];               // merged contributors (NOT one)
-  canonicalKey?: string;               // e.g. rust.visibility → "visibility"
+  domain: "closed" | "open";
+  values: DimensionValue[];                 // [] for open
+  providerIds: string[];                    // merged contributors
+  canonicalKey?: CanonicalFacetKey;         // §5 — validated against the core registry
   filterable: boolean;
   groupable: boolean;
-  missing: "include" | "exclude" | "unclassified";   // §9
-  grouping: FacetGrouping;             // §5
+  grouping: FacetGrouping;                  // §multi-valued
+  missing: MissingPolicy;
 }
 
-// Runtime-only — reconstructed deterministically from (graph + catalog). Holds Maps/typed
-// arrays; never crosses a serialization boundary.
+// RUNTIME-only — reconstructed deterministically; holds typed arrays; never serialized.
 export interface DimensionIndex {
   descriptor(key: FacetKey): DimensionDescriptor | undefined;
-  present(key: FacetKey): ReadonlySet<string>;          // replaces presentScope
-  valuesOf(node: GraphNode, key: FacetKey): readonly string[];   // structural via adapter
-  nodesWith(key: FacetKey, value: string): readonly number[];    // node ordinals
+  present(key: FacetKey): ReadonlyArray<PresentDimensionValue>;   // §6
+  valuesOf(node: GraphNode, key: FacetKey): readonly string[];    // structural via adapter
+  nodesWith(key: FacetKey, value: string): Uint32Array;           // columnar posting
+  readonly warnings: ReadonlyArray<CatalogWarning>;
 }
+
+export interface PresentDimensionValue { value: string; declared: boolean; }   // §6
 ```
+`AnalyzeResult` gains `dimensions: DimensionCatalog`. Client, CLI, and rule engine each build
+the **same** `DimensionIndex` from `(graph, catalog)`.
 
-`AnalyzeResult` gains `dimensions: DimensionCatalog`. The client, CLI, and rule engine each
-build the **same** `DimensionIndex` from `(graph, catalog)` — deterministic, no shared
-mutable runtime object.
+### Index & memory *(review §13 + R2/R4)*
+- Stable node **ordinals**; postings are `Uint32Array`; built **lazily** for dimensions that
+  are present AND (`filterable`|`groupable`) AND requested.
+- Values **interned** to ids; closed single-cardinality domains may pack into a bitmask/enum
+  column (profiling-gated). A memory benchmark guards the baseline.
+- Across the **Worker** boundary, ship the interned `FacetWireData` + typed arrays as
+  Transferables — no per-node dictionaries, no 50k re-allocated strings on the worker.
 
-### Index, memory & representation *(review §13 + 2nd review)*
-- Assign each node a stable **ordinal** once; postings are `Uint32Array` of ordinals, not
-  repeated string ids.
-- Build **lazily**, only for dimensions that are `present` AND (`filterable` or `groupable`)
-  AND actually requested.
-- Small **closed** domains → bitsets; **open** high-cardinality domains → sorted ordinal
-  arrays.
+### Descriptor merge *(review §6, §10)*
+Core/built-in wins metadata; provider values unioned; cardinality conflict upgrades to
+`multi`; `providerIds` unioned. A node value **not** in a `closed` descriptor's domain does
+**not** flip the domain to open — it is admitted (data not lost), surfaced as
+`PresentDimensionValue.declared=false`, and an **undeclared-value warning** is raised. Keys
+stay **namespaced** (`rust.visibility`).
 
-**Memory at kernel scale** (~1.3M nodes a per-node `Record` would mean ~1.3M small objects):
-- The per-node `facets` is the **interchange** shape only — sparse (omit empty), with keys
-  and values **interned** through a string table the `DimensionCatalog` carries (the wire
-  format references table indices, not repeated literals).
-- The **runtime** holds facets **columnar inside the `DimensionIndex`** (per-dimension typed
-  arrays keyed by node ordinal); the filter/group/query path reads columns, never 1.3M
-  dictionaries. `node.facets` is a sparse convenience view, not the hot structure.
-- Closed single-cardinality domains may pack into a **bitmask/enum column** — a
-  profiling-gated optimization, not required for Phase A. A memory benchmark guards the
-  baseline (see Testing).
+### Catalog handshake
+The catalog is the **sole** source of label/color/glyph; UI/CLI never hardcode. A
+`filterable`/`groupable` descriptor missing a `label` is an **analysis error**. The Rust core
+emits descriptors through the **same JSON `DimensionDescriptor` schema** as the TS analyzer.
 
-### Provider contract & descriptor merge *(review §10)*
+### Canonical registry *(review §5)*
+`canonicalKey` is **not** free-form. The core owns a registry of known canonical dimensions;
+a provider *requests* an alias which the kernel validates:
 ```ts
-export interface ProviderResult {
-  // …nodes, edges, errors, unresolved?…
-  facetSchema?: DimensionDescriptor[];   // descriptors this provider can emit
-}
+export interface CanonicalDimensionClaim { providerKey: FacetKey; canonicalKey: CanonicalFacetKey; mappingVersion: number; }
 ```
-Kernel merge rules (deterministic):
-- **Core/built-in descriptor wins metadata** (label/color/cardinality default).
-- **Provider values are unioned** into the domain.
-- **Cardinality conflict upgrades to `multi`.**
-- **Unknown value against a `closed` domain → an analysis warning** (surfaced in Problems),
-  value still admitted as `open`-fallback so nothing is silently dropped.
-- Provider-specific keys stay **namespaced** (`rust.visibility`); a provider may set
-  `canonicalKey` to opt a key into a shared concept.
+Unvalidated claims stay namespaced (no accidental merge of semantically different concepts).
 
-**Catalog handshake** *(2nd review)*: the catalog is the **sole** source of a dimension's
-human metadata — UI/CLI never hardcode. A `filterable`/`groupable` descriptor **must** carry
-a `label`; closed-domain `values` must carry labels; `color`/`glyph` are optional with a
-deterministic palette fallback, so a freshly contributed Rust/Python facet renders with zero
-UI changes. The Rust core emits descriptors through the **same JSON `DimensionDescriptor`
-schema** as the TS analyzer — a strict cross-language handshake validated on merge (a
-`filterable` descriptor missing a label is an analysis error, not a silent blank chip).
-
-### Everything derives from the catalog/index
-- **Filters** (Sidebar/Explorer): one section per `filterable` descriptor that is
-  `present()`; chips from `values` (or derived from `present()` for open domains) with
-  counts. Delete `CATEGORIES`/`ENVIRONMENTS`/`RUNTIMES`/`ALL_*`/`presentScope`. State →
-  `enabledFacets: Map<FacetKey, Set<string>>`.
-- **Missing-facet semantics** *(review §9)*: the gate honors the descriptor's `missing`:
-  `include` (today's behavior — a node without the facet passes), `exclude`, or
-  `unclassified` (matches a synthetic "—" bucket the UI can show). Default `include` for
-  optional facets; grouping defaults to `unclassified`.
-- **Scene gate** ([scene.ts:162](../../../lib/graph/scene.ts)): `visible()` iterates enabled
-  dimensions via `index.valuesOf(n,key)` + `missing` policy. `SceneFilters` →
-  `{ enabledFacets, enabledFolders, enabledLanguages, enabledEdgeKinds, showExternal }`
-  (folder/language keep dedicated sets — they drive the separate FiltersPanel; edge-kind is
-  an *edge* dimension; the split is storage-only, `visible()` reads all uniformly).
-- **Group-by eligibility** *(review §14)*: a `groupable` dimension is offered only if its
-  `DimensionStats` pass — `valueCount ≥ 2`, `≤ 200` values shown by default,
-  `coverageRatio > 0.2`, `largestBucketRatio < 0.98`. Higher-cardinality dimensions appear
-  under an **Advanced** selector with automatic `Other` aggregation.
-- **Query language** ([evaluate.ts:148](../../../lib/graph/query-language/evaluate.ts)):
-  `<key>:<value>` resolves from the catalog; numeric/structural fields (`incoming`,
-  `outgoing`, `cycle`, `depends-on`, `path`) stay built-in.
-- **Rules/config**: `NodeSelector.facets?: Record<FacetKey,string[]>`; **two-stage
-  validation** (§Phase D). Legacy keys alias to facets.
-- **Visual** ([visual.ts](../../../lib/graph/visual.ts)): facet value color/glyph from the
-  descriptor, deterministic palette fallback. `kind` styling unchanged.
+### Derivation
+- **Filters** — one section per `filterable` `present()` descriptor; **sparse** selection
+  *(review §4)*:
+  ```ts
+  export interface FacetSelection { mode: "all" | "include" | "exclude"; values: Set<string>; }
+  // no map entry ⇒ all enabled; "all enabled except one" stores one value, not thousands.
+  ```
+  The scene gate honors `MissingPolicy.filter` (default `include`).
+- **Group-by eligibility** *(review §14)*: a `groupable` dim is offered only if `DimensionStats`
+  pass (`≥2` values, `≤200` shown, coverage `>20%`, largest bucket `<98%`); else under
+  **Advanced** with `Other` aggregation. Grouping honors `MissingPolicy.group` (default
+  `unclassified`).
+- **Query** ([evaluate.ts](../../../lib/graph/query-language/evaluate.ts)) — `<key>:<value>`
+  from the catalog; numeric/structural fields stay built-in.
+- **Rules/config** — `NodeSelector.facets`; two-stage validation (§Phase D).
+- **Visual** — facet value color/glyph from the descriptor; deterministic palette fallback.
 
 ---
 
-## Grouping & collapse model
+## Grouping & collapse
 
-### Namespaced group ids *(review §4)*
-Group ids are prefixed by mode so directory paths, facet values, packages, and community
-ids can't collide:
-```
-directory:src/server      package:@polygraph/core
-facet:env:client          facet:rust.visibility:pub
-community:8f92c6
-```
-Collapse intent is stored **per grouping mode**: `Map<GroupingModeKey, CollapseIntent>` —
-so collapsing `drivers/` in Directory mode, switching to Community, and returning preserves
-the directory state.
+### Namespaced group ids *(review §4-ids)*
+`directory:src/server` · `package:@scope/x` · `facet:env:client` · `facet:rust.visibility:pub`
+· `community:8f92c6`. Intent stored **per mode**: `Map<GroupingModeKey, CollapseIntent>`.
+Community ids are **ephemeral** by default (reset on graph/filter-signature change); stable
+membership ids are a later option.
 
-**Community id stability:** community numbering is unstable across filter/node changes. We
-either (a) detect communities **once on the base graph** and key intent by stable
-membership ids, or (b) treat community intent as **ephemeral** and reset it when the
-graph/filter signature changes. Default: **(b) ephemeral**, with (a) as a later refinement.
-Never persist `community:4` based on detection order alone.
-
-### Serializable grouping snapshot for the worker *(review §6)*
-Today Smart derives the cluster tree from node ids internally. To support arbitrary
-grouping while keeping the layout **algorithms** untouched, the grouping **input** becomes a
-JSON-safe snapshot the worker consumes — it no longer knows about directories, communities,
-or facets:
-
+### Compact grouping snapshot *(review §2)*
+Worker-bound; **typed-array columnar**, not `Record<NodeOrdinal, GroupId[]>` (which is ~1.3M
+arrays). Path is derived by walking `parentByGroup`:
 ```ts
-type GroupId = string;        // mode-namespaced
-type NodeOrdinal = number;
-
-interface GroupRecord {
-  id: GroupId;
-  parentId: GroupId | null;
-  label: string;
-  depth: number;
-  directNodeIds: NodeOrdinal[];   // DIRECT membership only (transitive derived via tree)
-}
-
-interface GroupingSnapshot {
+export interface CompactGroupingSnapshot {
   modeKey: string;
-  roots: GroupId[];
-  groups: GroupRecord[];
-  pathByNode: Record<NodeOrdinal, GroupId[]>;   // one canonical containment path per node
-  boxKeyByGroup: Record<GroupId, string>;       // group → the ClusterBox id layout emits
+  groupIds: string[];            // ordinal → id        (small: #groups, not #nodes)
+  groupLabels: string[];
+  parentByGroup: Int32Array;     // -1 = root
+  depthByGroup: Uint16Array;
+  boxKeyByGroup: string[];       // group → layout ClusterBox id (LOD/layout agreement)
+  leafGroupByNode: Uint32Array;  // node ordinal → its leaf group ordinal
+  roots: Uint32Array;
 }
 ```
-Direct membership + tree derivation avoids the quadratic blow-up of storing every
-descendant under every ancestor. The LOD cut and the layout agree via `boxKeyByGroup`.
+Transferred to the worker as typed arrays (durable workspace copies may be plain JSON).
 
-### Multi-valued facet grouping *(review §5)*
-`facets` is multi-valued, but ordinary containment needs **one** group per node. So:
-- `cardinality:"single"` facets are **groupable** automatically.
-- Multi-valued facets are **filterable/queryable** by default but **not groupable** unless
-  they opt into a strategy:
-
+### Multi-valued facet grouping *(review §5/4)*
+`facets` is multi-valued but containment needs one group per node:
 ```ts
-type FacetGrouping =
-  | { mode: "single" }                                  // single-cardinality
+export type FacetGrouping =
+  | { mode: "single" }                                  // single-cardinality → groupable
   | { mode: "primary"; choose: "first" | "priority" }   // pick one canonical value
-  | { mode: "combination" }                             // value-set groups: "node+bun"
-  | { mode: "disabled" };                               // filter/query only
+  | { mode: "combination" }                             // value-set → one synthetic group
+  | { mode: "disabled" };                               // filter/query only (default for multi)
 ```
-`pathByNode` always yields one path; `combination` maps a node's value-set to a single
-synthetic group id.
+`leafGroupByNode` always yields exactly one group, so the layout never duplicates a node.
 
 ### `Group by: None` keeps an internal hierarchy *(review §7)*
-None means **no visible containers**, not "no safety hierarchy." The renderer draws no
-boxes, but Smart still builds a **synthetic** reduction hierarchy (connected components →
-communities) so a 100k-node repo can't bypass the render budget by selecting None. LOD
-operates on the synthetic hierarchy; the UI shows containers: off.
+No visible containers, but Smart still builds a synthetic reduction hierarchy (connected
+components → communities) so a 100k-node repo can't bypass the render budget. LOD runs on it.
 
 ### Three-layer collapse *(review §2, §3)*
-The bootstrap safety seed is **derived state, not user intent** — otherwise zoom could never
-auto-open it. One intent map (can't self-contradict) + two derived sets:
+```ts
+export type CollapseIntent = Map<GroupId, "open" | "closed">;   // ONLY real user actions
+```
+Authoritative camera result is a **`LodCut`** (below), not a `lodOpen` set. Precedence
+(highest first): explicit user closed → explicit user open → LOD cut → bootstrap closed →
+default. `compose()` is pure and unit-tested.
+
+**Transitions:** opening a child makes ancestors traversable; closing a parent preserves
+descendant intent; **Reset** clears `intent` only. **"Expand all" is renamed** *(review §9)* —
+the default toolbar action becomes **"Reveal detail"** (clears `closed` intent + enables LOD
+to open within budget; writes no blanket `open`). A true exhaustive expand is a separate,
+explicitly-labeled, warned command. Switching mode never reuses another mode's ids.
+
+---
+
+## Representation hierarchy & budgeted LOD *(review — the Nanite/Horizon core)*
+
+`GroupingHierarchy` answers *"which nodes belong together?"*; a **`RepresentationHierarchy`**
+answers *"at which levels can that group be rendered, and what does each level cost/hide?"*
+They are **different abstractions**.
 
 ```ts
-type CollapseIntent = Map<GroupId, "open" | "closed">;   // ONLY real user actions
-
-interface ViewState {                 // serializable (workspace)
-  groupingMode: string;
-  intentByMode: Record<string, [GroupId, "open" | "closed"][]>;  // JSON form of the Map
-  lodEnabled: boolean;
+export interface RepresentationNode {
+  id: number; groupId: GroupId;
+  parent: number | null; children: number[];
+  bounds: Rect;                                   // stable world-space region it owns
+  nodeCost: number; edgeCost: number; labelCost: number; gpuByteCost: number;
+  geometricError: number; structuralError: number;   // info hidden if this proxy is shown
+  proxyKey: string;                               // cached aggregate scene for this level
 }
-
-interface DerivedViewState {          // runtime-only
-  bootstrapClosed: Set<GroupId>;      // initial safety reduction (size-based)
-  lodOpen: Set<GroupId>;              // camera-derived refinement
-  effectiveCollapsed: Set<GroupId>;   // composed
-}
+export interface RepresentationHierarchy { roots: number[]; nodes: RepresentationNode[]; }
 ```
 
-**Precedence (highest first):**
-```
-1. explicit user "closed"
-2. explicit user "open"
-3. LOD open
-4. bootstrap closed
-5. default hierarchy state
-```
-`compose()` is pure and unit-tested. Removing an intent entry returns the group to
-automatic behavior (`intent.delete(id)`).
-
-**Hierarchy transitions (defined now):**
-- Opening a child makes all ancestors traversable (path to it is open).
-- Closing a parent preserves descendant intent for later reopening.
-- **Reset** clears `intent` only — not bootstrap/LOD automatic state.
-- **Expand-all** enables LOD and clears `closed` intent so detail opens within budget; it
-  does **not** write blanket `open` intent (which would pin every group and exhaust the
-  card budget on huge repos). **Collapse-all** writes `closed` intent on the top-level
-  groups. So both are expressible as ordinary intent edits — no special collapse channel.
-- Switching grouping mode never reuses another mode's ids (namespacing guarantees this).
-
-### Camera LOD: mode-agnostic + budget-bounded eviction *(review §8)*
-`computeLodOpen(hierarchy, boxes, camera, viewport, budget)` is **perceptually monotonic
-around the active viewport** but **bounded**:
-- User-`open` groups never auto-close.
-- Visible auto-open groups stay open while relevant.
-- **Offscreen** auto-open groups are **evictable** when the global card budget is exceeded
-  (LRU by `lastVisibleAt`); zooming out alone does not close the current region.
-
+### The LOD result is a valid antichain cut
+Every underlying node is represented **exactly once** — by an ancestor proxy or by descendants
+— never both, never neither:
 ```ts
-interface AutoOpenEntry { groupId: GroupId; lastVisibleAt: number; lastOpenedAt: number; }
+export interface LodCut {
+  selectedRepresentations: Uint32Array;
+  nodeCost: number; edgeCost: number; labelCost: number; gpuByteCost: number;
+  generation: number;
+}
 ```
-**Hysteresis** *(2nd review)*: open/close use a **deadband** — a group opens above
-`openPx + margin` and is eligible to close only below `openPx − margin` — and the recompute
-stays debounced (`LOD_RECUT_DEBOUNCE_MS`). So panning a boundary back and forth, or small
-zoom jitter, can't oscillate the cut and cascade worker re-layouts. Eviction fires only when
-**over budget** (LRU on `lastVisibleAt`), not on every pan.
+An `open`-set view is derivable for back-compat, but the cut is authoritative.
 
-The camera writes **only** `lodOpen`/eviction bookkeeping (a ref) — never `intent` or the
-layout-driving collapse — so it can never clobber user intent.
+### Error-per-cost refinement
+From the bootstrap cut: cull outside viewport+prefetch; score visible reps; refine the
+highest-value while budgets allow; evict offscreen refinements over budget.
+```ts
+priority = projectedError * visibilityWeight * interactionWeight * structuralImportance / refinementCost;
+// projectedError ≈ projectedPixelArea * log2(1 + hiddenNodeCount) * (1 + relationshipEntropy) * (1 + boundaryEdgeRatio)  [starting heuristic]
+```
+Boost: selected / highlighted-path / search / problem-finding / viewport-center / recently
+interacted. Suppress: generated / external / low-information leaves / mostly-offscreen.
 
-### Camera/fit decoupling & toggle independence
-`fitSignature` keys on *intent* (graph/level/filters/mode/`intent`/expand) but **not**
-`lodOpen`, so LOD refinement never re-fits. Changing `groupBy` recomputes the hierarchy and
-re-derives `lodOpen` for the new mode and touches **nothing else** (never `showExternal`,
-`expanded`, `lodEnabled`) — asserted by a regression test.
+### State machine + committed generations *(review §7, §8)*
+```
+auto closed              → opens when projected size > openThreshold
+auto open & visible      → stays open through small zoom-out (deadband)
+auto open & offscreen    → eviction-eligible below retainThreshold
+over budget              → evict lowest-priority eligible reps (LRU)
+```
+Camera motion updates a **pending** cut; after debounce/hysteresis a *materially different*
+cut is **committed**, incrementing `generation`. Only a committed `generation` triggers scene
+rebuild / edge aggregation / local-layout load / renderer payload:
+```ts
+export interface LodRuntimeState { pendingCut: LodCut; committedCut: LodCut; generation: number; }
+```
+The LRU uses a pre-allocated **ring buffer / intrusive doubly-linked list** (not array
+`shift()` or churning `Set`s) to avoid GC pauses on volatile pans.
+
+### Edge LOD is mandatory
+Node LOD without edge LOD is still a hairball. Map each original endpoint to its active
+representative and aggregate:
+```ts
+representativeOf(originalNodeId, cut) → number
+type AggregatedEdgeKey = `${srcRep}:${dstRep}:${edgeKind}`;
+export interface LodEdge { source: number; target: number; kind: EdgeKind; count: number; exactCount: number; inferredCount: number; originalEdgeIds?: string[]; }
+```
+Independent budgets; under edge pressure: aggregate parallels → suppress proxy-internal edges
+→ bundle cross-group → show only selected/path → density summaries.
+```ts
+export interface LodBudget { maxNodes: number; maxEdges: number; maxLabels: number; maxGpuBytes: number; maxLayoutWork: number; }
+```
+**Label LOD:** proxy label far → important child labels mid → full card labels near → selected
+always.
+
+### Global layout stability *(review — amends "layout untouched")*
+Opening one directory must **not** move every other directory. Nested **stable local
+coordinate spaces**: repository layout owns stable boxes for major groups; each group owns a
+**cached local layout** in parent-space; child refinement changes only that box's contents.
+A full global relayout happens **only** on a material change (filters / grouping mode /
+direction / explicit request / contents overflow their region). The layout **algorithms**
+stay unchanged; layout **orchestration** gains hierarchical local coordinate spaces + cached
+per-group layouts.
 
 ### Ownership rule
 ```
-Analyzer/providers  own dimensions (catalog)
-Grouping builder    owns the hierarchy/snapshot
-User actions        own intent
-Camera              owns only derived LOD observations (+ eviction)
-Collapse composer   produces effectiveCollapsed
-Layout worker       consumes a GroupingSnapshot
-Renderer            consumes boxes + geometry
+Providers        own dimensions (catalog)
+Grouping builder own the CompactGroupingSnapshot
+Representation   builder owns the RepresentationHierarchy (proxies, costs, error)
+User actions     own intent
+Camera           owns only the pending/committed LodCut (+ eviction bookkeeping)
+Collapse composer produces effectiveCollapsed (intent ⊕ bootstrap ⊕ cut)
+Layout worker    consumes a snapshot + produces cached local layouts
+Renderer         consumes the committed cut's proxies/edges/labels + geometry
 ```
-No component writes another component's source-of-truth state.
+No component writes another's source-of-truth state.
 
 ---
 
-## Phase plan *(reordered per review)*
+## Phase plan *(C1 split per review)*
 
-The riskiest piece — collapse-state ownership — is isolated to Directory mode **before**
-dynamic grouping multiplies its complexity.
-
-### Phase A — Serializable dimension foundation
-`GraphNode.facets`; `DimensionCatalog` + `DimensionDescriptor`; provider `facetSchema` +
-merge rules; **dual-write** the four facets (detection unchanged); runtime `DimensionIndex`
-(ordinals, lazy). No UI change. Tests: catalog/index round-trip + merge; golden facet
-parity; 547 green.
-
-### Phase C0 — Collapse ownership, **Directory only**
-Replace `collapsedClusters` with `CollapseIntent` + `bootstrapClosed` + `lodOpen`; remove
-camera writes to intent; pure `compose()`; preserve current Directory behavior. Isolates the
-state-machine rewrite. Tests: precedence; bootstrap is auto-openable by zoom; camera never
-mutates intent; can't be open+closed at once.
-
-### Phase B — Registry-driven filters
-Generic `enabledFacets`; `visible()` from the index; missing-value semantics; dynamic
-Sidebar with counts + eligibility; delete the hardcoded constants; workspace migration.
-Tests: present-only filters; non-JS project shows non-empty filters; missing policy.
-
-### Phase C1 — Generic grouping + mode-agnostic LOD
-`GroupingSnapshot` into the worker; Directory/Package/Community/facet/**synthetic-None**
-hierarchies; mode-keyed intent; mode-agnostic cut; **budgeted auto-open eviction**;
-multi-valued facet grouping policy. Tests: snapshot JSON round-trip; mode-switch preserves
-state; None can't bypass budget; bounded auto-open; Smart still selects per-cluster engines
-from an injected snapshot.
-
-### Phase D — Query & rules on the registry
-Registry-backed field lookup in `evaluate.ts`; `NodeSelector.facets`; **two-stage config
-validation** (pre-analysis: syntax/types/known built-in keys; post-analysis: dynamic
-dimension existence/domains/provider availability) with configurable severity
-(`validation.unknownFacet: warning`); legacy aliases. Remove legacy named fields. Tests:
-dynamic facet queries; legacy `.polygraph.yml` still validates/matches.
-
-### Phase E — Per-language facets *(incremental)*
-Extend `pack.yaml` + `tags.scm` captures + Rust `OutNode`/`build_graph()`; pack contributes
-a `facetSchema`. Start with stable, non-name-inferred semantics:
-```
-Rust    visibility, module kind, unsafe, async
-Go      package, exported, receiver kind
-Python  module, async, decorator category, dunder
-Java    visibility, static, abstract, annotation category
-```
+- **A — Serializable dimension foundation.** `GraphNode.facets` (model strings); `DimensionCatalog`
+  + descriptors (`MissingPolicy`, canonical-claim validation); provider `facetSchema` + merge
+  (closed stays closed + `declared`); **dual-write** the four facets (detection unchanged);
+  runtime `DimensionIndex` (ordinals, columnar, lazy). No UI change. *Unblocked once the
+  model/runtime/transport split (above) is settled — it is.*
+- **C0 — Collapse ownership, Directory only.** `CollapseIntent` + `bootstrapClosed` + a Directory
+  `LodCut`; pure `compose()`; committed-generation notification; split `MissingPolicy` honored.
+  Remove camera writes to intent. Preserve current Directory behavior.
+- **B — Registry-driven filters.** Sparse `FacetSelection`; `visible()` from the index;
+  `MissingPolicy.filter`; dynamic Sidebar + counts + eligibility; delete the hardcoded
+  constants; workspace migration.
+- **C1a — Generic semantic grouping.** `CompactGroupingSnapshot` (transferable); Directory /
+  Package / Community / facet / synthetic-None; mode-keyed intent; mode-agnostic cut **on the
+  existing collapse-shaped LOD** (no representation runtime yet).
+- **C1b — Representation hierarchy + budgeted cut.** `RepresentationHierarchy`; antichain
+  `LodCut`; projected-error scoring; **edge + label budgets**; prefetch ring; ring-buffer LRU;
+  committed-cut generations.
+- **C1c — Stable hierarchical layout orchestration.** Stable parent boxes; cached local
+  layouts; local refinement; minimal global movement.
+- **D — Query & rules on the registry.** Registry field lookup; `NodeSelector.facets`;
+  two-stage config validation (`validation.unknownFacet` severity); legacy aliases; remove
+  legacy named fields.
+- **E — Per-language facets.** Extend `pack.yaml` + `tags.scm` + Rust `OutNode`/`build_graph`;
+  start with stable semantics (Rust visibility/unsafe/async; Go package/exported; Python
+  module/async/dunder; Java visibility/static/annotation).
 
 ---
 
 ## Testing strategy
-Pure units for every new module (catalog merge, index, `compose`, `computeLodOpen`,
-hierarchies, `valuesOf`), plus — per review:
-- Bootstrap-collapsed groups **can** be opened by zoom.
-- Camera updates **never** mutate user intent.
-- A group can't be explicitly open and closed simultaneously.
-- Group state **survives** switching away and back to a mode.
-- Directory and facet ids **cannot collide**.
-- Community intent **resets/remaps** when membership changes.
-- Multi-valued facet grouping follows its declared policy.
-- Missing-facet nodes follow descriptor policy.
-- `DimensionCatalog` and `GroupingSnapshot` survive **JSON round-trips**.
-- **None** mode cannot bypass the large-graph render budget.
-- Auto-open detail stays **bounded** after exploring several regions.
+Pure units for catalog merge, index, `compose`, hierarchies, `valuesOf`. Plus, per reviews:
+- Dual-write **parity** (legacy ≡ facets) for every node (A–C).
+- Catalog **handshake**: every filterable/groupable descriptor has a label; undeclared closed
+  values get `declared:false` + a warning and the domain **stays closed**.
+- Bootstrap-collapsed groups **can** be opened by the cut; camera never mutates intent; a group
+  can't be open+closed at once; group state survives mode switch-and-return.
+- Directory/facet ids can't collide; community intent resets on membership change.
+- Multi-valued facet grouping yields exactly one group per node; missing nodes follow
+  `MissingPolicy`.
+- `LodCut` is a **valid antichain** (every node represented once; never proxy+children).
+- **Edge LOD**: endpoints map to representatives; aggregated counts equal originals.
+- Only a **committed generation** triggers a rebuild; pending churn does not.
+- **Local refinement** changes only the refined box; sibling positions are byte-identical.
+- `CompactGroupingSnapshot` / `FacetWireData` survive **structured-clone** round-trips;
+  durable catalog survives **JSON** round-trip.
+- **None** can't bypass the render budget; auto-open stays **bounded** after exploring many
+  regions; panning a boundary doesn't thrash (hysteresis).
+- Sparse `FacetSelection` ("all except one") stores one value.
 - Workspace migration preserves old `collapsedClusters` + named filter sets.
-- Connection-highlight anchors are **pruned/remapped** after hierarchy/LOD changes.
-- Smart still selects per-cluster engines after receiving an external snapshot.
-- Layout cache signatures are **canonical regardless of `Map` insertion order**.
-- **Dual-write parity:** for every node, the legacy field equals its `facets` value (A–C).
-- **Catalog handshake:** every `filterable`/`groupable` descriptor (incl. Rust-emitted) has a
-  label; unknown values get a deterministic color, never a blank chip.
-- **LOD no-thrash:** panning/jittering across a group boundary doesn't oscillate the cut or
-  re-trigger worker layout.
-- **Memory benchmark:** a faceted `GraphModel` stays within an agreed factor of today's at
-  kernel scale (columnar index + interned interchange).
-- Golden: Phase A preserves exact facet values (no detection drift). The 547 stay green.
+- Connection-highlight anchors prune/remap after hierarchy/LOD changes.
+- Layout cache signatures canonical regardless of `Map` insertion order.
+- Memory benchmark within an agreed factor; golden: Phase A preserves exact facet values. The
+  547 stay green.
 
 ## Migration & back-compat
-- **GraphNode:** dual-write legacy fields + `facets` through Phases A–C; remove named fields
-  end of Phase D.
-- **Workspace** ([lib/workspace/schema.ts](../../../lib/workspace/schema.ts)): read old
-  `enabled*`/`collapsedClusters`, map to `enabledFacets`/`intentByMode` (Directory).
-- **Config:** `kinds`/`roles`/`environments`/`categories` keys map onto `facets`.
-- **Query strings/presets:** `role:`/`env:`/`category:` alias to catalog keys.
+Dual-write legacy fields + `facets` (A–C; remove end of D). Workspace
+([schema.ts](../../../lib/workspace/schema.ts)): read old `enabled*`/`collapsedClusters`, map
+to `FacetSelection`/`intentByMode`. Config keys + query strings alias to catalog keys. Worker
+payloads use the transport codec; workspace stays JSON.
 
 ## Out of scope
-- **Layout algorithms** (`lib/layout/smart.ts` dagre/engine selection) and the **Vello
-  renderer** — untouched. (The grouping **input contract** changes to a `GroupingSnapshot`;
-  the algorithms that consume it do not.)
-- **Direction flip** — engine + renderer proven correct; tracked separately (needs live
-  repro).
-- New community-detection algorithms; edge routing/bundling.
+Layout **algorithms** (`smart.ts` dagre/engine selection) and the Vello renderer math are
+unchanged. Layout **orchestration** is in scope (local coordinate spaces, cached per-group
+layouts). The **direction flip** is tracked separately (engine proven correct). No new
+community-detection algorithm.
 
 ## Risks & open questions
-- **Canonical vs. namespaced facet keys:** default namespaced + opt-in `canonicalKey`.
-  *(Confirm concrete canonical set in Phase E.)*
-- **Open high-cardinality dimensions:** `values:[]` + derive chips from `present()`;
-  group-by gated by eligibility + `Other` aggregation.
-- **Rust↔TS descriptor parity:** keep `DimensionDescriptor` JSON-flat so the Rust core can
-  emit it in Phase E.
-- **Community stability:** ephemeral by default; stable-membership ids are a later option.
+- Canonical registry contents — defined incrementally; providers request, kernel validates.
+- `projectedError` weighting — the formula is a starting heuristic; tune against real repos in
+  C1b behind telemetry.
+- Representation `proxyKey` cache invalidation across filter changes — key proxies by the
+  filtered-graph signature.
+- Rust↔TS descriptor parity — keep `DimensionDescriptor` JSON-flat for Phase E.
