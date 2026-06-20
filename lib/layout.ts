@@ -311,6 +311,26 @@ function layoutByComponents(
 }
 
 /**
+ * Weighted undirected adjacency keyed by node id: summed edge weight per neighbor pair
+ * (self-loops dropped, endpoints outside `ids` ignored, missing/non-positive weight → 1).
+ * Map insertion order follows `ids`, so iteration over it stays deterministic.
+ */
+function weightedUndirectedAdjacency(
+  ids: string[],
+  edges: LayoutInput["edges"],
+): Map<string, Map<string, number>> {
+  const wadj = new Map<string, Map<string, number>>();
+  for (const id of ids) wadj.set(id, new Map());
+  for (const e of edges) {
+    if (e.source === e.target || !wadj.has(e.source) || !wadj.has(e.target)) continue;
+    const w = e.weight && e.weight > 0 ? e.weight : 1;
+    wadj.get(e.source)!.set(e.target, (wadj.get(e.source)!.get(e.target) ?? 0) + w);
+    wadj.get(e.target)!.set(e.source, (wadj.get(e.target)!.get(e.source) ?? 0) + w);
+  }
+  return wadj;
+}
+
+/**
  * Concentric rings by directed dependency depth from source (in-degree-0) roots.
  * Rings are ordered inner→outer; each ring's angular order is the barycenter of its
  * nodes' inner-ring neighbors (crossing reduction), seeded by the stable tie-break —
@@ -378,14 +398,7 @@ function radialLayout(view: LayoutInput): Positions {
 
   // Weighted undirected adjacency — barycenters rank by relationship strength, so an
   // `extends` neighbor pulls a node toward it harder than an incidental `call`.
-  const wadj = new Map<string, Map<string, number>>();
-  for (const nd of view.nodes) wadj.set(nd.id, new Map());
-  for (const e of view.edges) {
-    if (e.source === e.target || !wadj.has(e.source) || !wadj.has(e.target)) continue;
-    const w = e.weight && e.weight > 0 ? e.weight : 1;
-    wadj.get(e.source)!.set(e.target, (wadj.get(e.source)!.get(e.target) ?? 0) + w);
-    wadj.get(e.target)!.set(e.source, (wadj.get(e.target)!.get(e.source) ?? 0) + w);
-  }
+  const wadj = weightedUndirectedAdjacency(ids, view.edges);
 
   // Each ring's nodes sit at evenly spaced angles; this maps node → its current angle.
   const angleMapOf = (ring: string[]): Map<string, number> => {
@@ -796,14 +809,7 @@ function backboneLayout(view: LayoutInput): Positions {
   });
 
   // Weighted undirected adjacency → anchor each satellite to its STRONGEST placed neighbor.
-  const wadj = new Map<string, Map<string, number>>();
-  for (const id of ids) wadj.set(id, new Map());
-  for (const e of view.edges) {
-    if (e.source === e.target || !wadj.has(e.source) || !wadj.has(e.target)) continue;
-    const w = e.weight && e.weight > 0 ? e.weight : 1;
-    wadj.get(e.source)!.set(e.target, (wadj.get(e.source)!.get(e.target) ?? 0) + w);
-    wadj.get(e.target)!.set(e.source, (wadj.get(e.target)!.get(e.source) ?? 0) + w);
-  }
+  const wadj = weightedUndirectedAdjacency(ids, view.edges);
 
   const centerOf = (id: string): XYPosition => {
     const p = positions.get(id) ?? { x: 0, y: 0 };

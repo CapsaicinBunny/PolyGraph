@@ -92,12 +92,15 @@ export function layoutScore(
     if (c.x > maxX) maxX = c.x;
     if (c.y > maxY) maxY = c.y;
   }
+  // Hoist the per-node center/size out of the O(N²) pair scan so each is fetched once.
+  const cs = ids.map((id) => centers.get(id)!);
+  const ss = ids.map((id) => sizes.get(id)!);
   for (let i = 0; i < ids.length; i++) {
+    const ca = cs[i];
+    const sa = ss[i];
     for (let j = i + 1; j < ids.length; j++) {
-      const ca = centers.get(ids[i])!;
-      const cb = centers.get(ids[j])!;
-      const sa = sizes.get(ids[i])!;
-      const sb = sizes.get(ids[j])!;
+      const cb = cs[j];
+      const sb = ss[j];
       if (Math.abs(ca.x - cb.x) < (sa.w + sb.w) / 2 && Math.abs(ca.y - cb.y) < (sa.h + sb.h) / 2)
         overlaps += 1;
     }
