@@ -13,9 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Linux on 22.04, not ubuntu-latest (24.04): 24.04's AppImage tooling can't run
-        # (linuxdeploy fails even with APPIMAGE_EXTRACT_AND_RUN), and building on the older
-        # glibc (2.35) makes the bundles run on a far wider range of distros.
+        # Linux on 22.04, not ubuntu-latest (24.04): the older glibc (2.35) makes the
+        # deb/rpm bundles run on a far wider range of distros.
         os: [windows-latest, macos-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
@@ -35,10 +34,8 @@ jobs:
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          # libfuse2: the AppImage bundlers (linuxdeploy/appimagetool) are AppImages and
-          # need FUSE to run; the runner doesn't ship it by default.
           sudo apt-get install -y \
-            build-essential libssl-dev patchelf librsvg2-dev libfuse2 \
+            build-essential libssl-dev patchelf librsvg2-dev \
             libwebkit2gtk-4.1-dev libappindicator3-dev
 
       - name: Install dependencies
@@ -55,15 +52,13 @@ jobs:
         uses: tauri-apps/tauri-action@action-v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Belt-and-suspenders for AppImage bundling: with libfuse2 installed the
-          # bundler AppImages mount normally, and this lets them extract-and-run even if
-          # FUSE is unavailable. No-op on Windows/macOS.
-          APPIMAGE_EXTRACT_AND_RUN: 1
         with:
-          # Windows ships as a portable zip (assembled in the next step), not an
-          # installer — so skip bundling there and just build the exe. Linux/macOS
-          # still build their installers/bundles.
-          args: ${{ matrix.os == 'windows-latest' && '--no-bundle' || '' }}
+          # Per-OS bundle targets. Windows: a portable zip (assembled below), so skip
+          # bundling and just build the exe. Linux: deb + rpm only — the AppImage target's
+          # linuxdeploy bundler cannot run in CI (fails on both 22.04 and 24.04, with or
+          # without libfuse2 / extract-and-run, emitting no diagnostics). macOS: defaults
+          # (dmg + .app).
+          args: ${{ matrix.os == 'windows-latest' && '--no-bundle' || startsWith(matrix.os, 'ubuntu') && '--bundles deb,rpm' || '' }}
           # On a version tag, publish a draft GitHub Release with the unsigned bundles
           # (Linux/macOS) + the Windows portable zip (attached below); otherwise just
           # build, with everything uploaded as artifacts. Unsigned — no auto-update.
