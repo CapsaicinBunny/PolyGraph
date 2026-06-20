@@ -156,6 +156,31 @@ describe("compose — purity & inputs are not mutated", () => {
   });
 });
 
+describe("compose — single-id maximal overlap (the full precedence ladder on ONE group)", () => {
+  // The combined-scenario test below spreads the signals across DIFFERENT ids. These pin
+  // the ladder when intent + bootstrap + selection all land on the SAME group, so a future
+  // reorder of the layers can't silently change a per-group resolution.
+  test("intent 'open' + bootstrap-closed + selected → open (user-open is top, others moot)", () => {
+    expect(
+      compose({
+        intent: intent({ "directory:a": "open" }),
+        bootstrapClosed: set("directory:a"),
+        selection: set("directory:a"),
+      }).has("directory:a"),
+    ).toBe(false);
+  });
+
+  test("intent 'closed' + bootstrap-closed + selected → collapsed (user-closed is top, selection cannot release)", () => {
+    expect(
+      collapsed({
+        intent: intent({ "directory:a": "closed" }),
+        bootstrapClosed: set("directory:a"),
+        selection: set("directory:a"),
+      }),
+    ).toEqual(["directory:a"]);
+  });
+});
+
 describe("compose — combined scenarios", () => {
   test("mix of all five layers resolves each group by its highest-precedence signal", () => {
     const out = collapsed({

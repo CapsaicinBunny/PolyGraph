@@ -16,23 +16,26 @@
 // Pure; no React.
 
 import { directoryGroupId, type GroupId } from "./grouping";
-import { buildDirTree, dirIndex } from "./hierarchy";
-import type { GraphModel } from "./types";
+import { type DirNode, dirIndex } from "./hierarchy";
 
 /**
  * The set of directories (namespaced group ids) a collapsed cut leaves OPEN: a directory
  * is open iff neither it nor any of its ancestors appears in `collapsed`. `collapsed` is
  * the bare-path output of `computeCut` (outermost-collapsed frontier); a node under a
  * collapsed ancestor is absorbed, so its directory is *not* open. Directories named in
- * `collapsed` that don't exist in this graph close nothing real and are ignored.
+ * `collapsed` that don't exist in this tree close nothing real and are ignored.
+ *
+ * Takes the prebuilt directory tree (`dirTree`), not the raw graph: this runs on the
+ * adaptive-cut hot path (once per zoom). The caller threads in the `DirNode` it already
+ * memoized once per graph (the canvas's `buildDirTree(graph)`) so the whole O(N) tree is
+ * not rebuilt on every cut — only the directory *paths* (`dirIndex` keys) are read here.
  */
 export function directoryLodSelection(
   collapsed: ReadonlySet<string>,
-  graph: GraphModel,
+  dirTree: DirNode,
 ): Set<GroupId> {
-  const dirs = dirIndex(buildDirTree(graph));
   const open = new Set<GroupId>();
-  for (const path of dirs.keys()) {
+  for (const path of dirIndex(dirTree).keys()) {
     if (!isUnderCut(path, collapsed)) open.add(directoryGroupId(path));
   }
   return open;

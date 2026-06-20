@@ -53,7 +53,7 @@ const vp = { w: 800, h: 600 };
 /** The camera step: measure a cut and hand up the open-dir selection (as onCut does). */
 const cameraSelection = (cam: { x: number; y: number; scale: number }): Set<GroupId> => {
   const cut = computeCut(tree, boxes, cam, vp, { openPx: 220, maxCards: 1000 });
-  return directoryLodSelection(cut, graph);
+  return directoryLodSelection(cut, tree);
 };
 
 /** The effective collapsed set (bare paths) the scene pipeline consumes. */
@@ -174,7 +174,7 @@ describe("C0 — the three layers reproduce the pre-refactor camera cut exactly 
       { x: 0, y: 0, scale: 3 },
     ]) {
       const cut = computeCut(tree, boxes, cam, vp, { openPx: 220, maxCards: 1000 });
-      const selection = directoryLodSelection(cut, graph);
+      const selection = directoryLodSelection(cut, tree);
       const eff = effective(new Map(), bootstrapClosed, selection);
       expect(rendered(eff)).toEqual(rendered(cut));
     }

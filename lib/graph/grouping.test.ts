@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { directoryGrouping, type GroupingHierarchy } from "./grouping";
+import {
+  allDirectoryGroupIds,
+  ancestorDirectoryGroupIds,
+  directoryBoxKey,
+  directoryGroupId,
+  directoryGrouping,
+  type GroupingHierarchy,
+  toDirectoryBoxKeys,
+  toDirectoryGroupIds,
+} from "./grouping";
 import type { GraphModel } from "./types";
 
 const file = (path: string) => ({
@@ -117,5 +126,60 @@ describe("directoryGrouping — edge cases", () => {
     expect(gh.roots()).toEqual(["directory:a"]);
     expect(gh.nodesOf("directory:a")).toEqual(["a/f.c"]); // the symbol is not a directory member
     expect(gh.groupOfNode("a/f.c#sym")).toBeNull(); // symbols have no directory group of their own
+  });
+});
+
+// The standalone namespace helpers that the bootstrap/selection wiring depends on
+// (seedDirectoryLod seeds the selection from ancestorDirectoryGroupIds and the bootstrap
+// from allDirectoryGroupIds). Tested directly because a bug here mis-seeds the initial
+// render's open frontier and the round-trip equivalence tests would only catch it
+// indirectly.
+describe("ancestorDirectoryGroupIds — strict ancestors, outermost-first", () => {
+  test("a deep path yields its ancestors and NOT the path itself", () => {
+    expect(ancestorDirectoryGroupIds("a/b/c")).toEqual(["directory:a", "directory:a/b"]);
+  });
+
+  test("a single-segment path has no ancestors", () => {
+    expect(ancestorDirectoryGroupIds("a")).toEqual([]);
+  });
+
+  test("the empty (root) path has no ancestors", () => {
+    expect(ancestorDirectoryGroupIds("")).toEqual([]);
+  });
+
+  test("a trailing slash adds no empty segment (no 'directory:a/b/' or stray pop)", () => {
+    // The split skips empty segs, so "a/b/" behaves like "a/b": ancestors are just [a].
+    expect(ancestorDirectoryGroupIds("a/b/")).toEqual(["directory:a"]);
+  });
+});
+
+describe("allDirectoryGroupIds — the bootstrap safety universe", () => {
+  test("is every directory (namespaced), excluding the synthetic root", () => {
+    expect(allDirectoryGroupIds(graph)).toEqual(
+      new Set([
+        "directory:a",
+        "directory:a/x",
+        "directory:a/y",
+        "directory:b",
+        "directory:b/z",
+      ]),
+    );
+  });
+
+  test("a root-level-only graph (top.c) has an empty universe — no directories", () => {
+    expect(allDirectoryGroupIds({ nodes: [file("top.c")], edges: [] }).size).toBe(0);
+  });
+});
+
+describe("toDirectoryGroupIds / toDirectoryBoxKeys — namespace round-trip", () => {
+  test("bare paths → group ids → bare paths is the identity", () => {
+    const bare = ["a", "a/x", "b/z"];
+    const ids = toDirectoryGroupIds(bare);
+    expect(ids).toEqual(new Set(["directory:a", "directory:a/x", "directory:b/z"]));
+    expect([...toDirectoryBoxKeys(ids)].sort()).toEqual(bare);
+  });
+
+  test("directoryGroupId and directoryBoxKey are inverse on a single path", () => {
+    expect(directoryBoxKey(directoryGroupId("a/b"))).toBe("a/b");
   });
 });

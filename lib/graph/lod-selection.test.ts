@@ -31,26 +31,30 @@ const graph: GraphModel = {
   edges: [],
 };
 
+// directoryLodSelection takes the prebuilt directory tree (the canvas threads in its
+// memoized buildDirTree result on the hot path), so build it once for the suite.
+const tree = buildDirTree(graph);
+
 describe("directoryLodSelection — open-dir set from a collapsed cut", () => {
   test("a directory is open iff neither it nor any ancestor is in the cut", () => {
     const cut = new Set(["drivers/gpu", "fs"]); // drivers + drivers/net open; gpu, fs collapsed
-    const sel = directoryLodSelection(cut, graph);
+    const sel = directoryLodSelection(cut, tree);
     expect([...sel].sort()).toEqual(["directory:drivers", "directory:drivers/net"]);
   });
 
   test("an empty cut opens every directory", () => {
-    const sel = directoryLodSelection(new Set(), graph);
+    const sel = directoryLodSelection(new Set(), tree);
     expect(sel).toEqual(allDirectoryGroupIds(graph));
   });
 
   test("a top-level collapse opens nothing under it", () => {
-    const sel = directoryLodSelection(new Set(["drivers"]), graph);
+    const sel = directoryLodSelection(new Set(["drivers"]), tree);
     // fs and its (none) stay open; everything under drivers is closed.
     expect([...sel].sort()).toEqual(["directory:fs"]);
   });
 
   test("ignores cut entries that aren't directories in this graph", () => {
-    const sel = directoryLodSelection(new Set(["nope/zzz"]), graph);
+    const sel = directoryLodSelection(new Set(["nope/zzz"]), tree);
     expect(sel).toEqual(allDirectoryGroupIds(graph)); // unknown collapse closes nothing real
   });
 });
@@ -60,7 +64,6 @@ describe("directoryLodSelection — round-trips computeCut through compose() ide
   // camera's open selection) yields EXACTLY the camera's computeCut collapsed set, so
   // the rendered scene is byte-identical to feeding computeCut straight to
   // collapseClusters (the pre-refactor path).
-  const tree = buildDirTree(graph);
   const boxes = new Map<string, Box>([
     ["drivers", { x: 0, y: 0, w: 2000, h: 2000 }],
     ["drivers/net", { x: 0, y: 0, w: 1000, h: 1000 }],
@@ -77,7 +80,7 @@ describe("directoryLodSelection — round-trips computeCut through compose() ide
   test("effective collapsed (no intent) equals the raw camera cut", () => {
     const cam = { x: 0, y: 0, scale: 1 }; // drivers fills view, fs off-screen
     const cut = computeCut(tree, boxes, cam, vp, { openPx: 220, maxCards: 1000 });
-    const selection = directoryLodSelection(cut, graph);
+    const selection = directoryLodSelection(cut, tree);
     const bootstrapClosed = allDirectoryGroupIds(graph);
     const effective = toDirectoryBoxKeys(
       compose({ intent: new Map(), bootstrapClosed, selection }),
@@ -95,7 +98,7 @@ describe("directoryLodSelection — round-trips computeCut through compose() ide
       { x: 0, y: 0, scale: 3 }, // zoomed in
     ]) {
       const cut = computeCut(tree, boxes, cam, vp, { openPx: 220, maxCards: 1000 });
-      const selection = directoryLodSelection(cut, graph);
+      const selection = directoryLodSelection(cut, tree);
       const effective = toDirectoryBoxKeys(
         compose({ intent: new Map(), bootstrapClosed, selection }),
       );

@@ -42,15 +42,16 @@ export interface ComposeInput {
  * Precedence, highest-first (spec "Three-layer collapse"):
  *   explicit user 'closed'  →  collapsed
  *   explicit user 'open'    →  open
- *   selection (LOD) open    →  open
+ *   selection (LOD) open    →  open (only *releases* a bootstrap-closed group; see below)
  *   bootstrapClosed         →  collapsed
  *   default                 →  open
  *
  * A group is collapsed iff the user closed it, OR (the user didn't open it AND the
- * camera didn't open it AND the bootstrap closed it). `selection` only ever *opens*
- * a group — it can reveal a bootstrap-closed directory but never collapses one the
- * bootstrap left open (it is a set of OPEN dirs, mirroring the transitional
- * DirectoryLodSelection). Pure: inputs are never mutated; a fresh Set is returned.
+ * camera didn't open it AND the bootstrap closed it). `selection` has NO independent
+ * collapsing authority: it is a set of OPEN dirs (mirroring the transitional
+ * DirectoryLodSelection), so it can only SKIP a bootstrap-closed entry. On a group that
+ * is neither user-closed nor bootstrap-closed it is inert (cannot collapse anything).
+ * Pure: inputs are never mutated; a fresh Set is returned.
  */
 export function compose({ intent, bootstrapClosed, selection }: ComposeInput): Set<GroupId> {
   const out = new Set<GroupId>();

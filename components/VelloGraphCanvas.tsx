@@ -412,9 +412,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     adaptiveLod?: boolean;
     onCut?: (selection: Set<GroupId>) => void;
     dirTree: DirNode;
-    graph: GraphModel;
     scene: Scene;
-    collapsed: Set<string>;
+    // The RAW collapsed cut this canvas last handed up (computeCut's bare-path frontier) —
+    // the cut-domain. Deliberately NOT the effective `collapsedClusters` prop, which is the
+    // COMPOSED set and carries redundant deeper entries under any collapsed non-leaf dir.
+    // Every cut-domain comparison (hysteresis prevCut, the no-op skip-guard, telemetry
+    // deltas) must use this, or it diverges from the pre-C0 raw-cut-vs-raw-cut semantics.
+    // Owned by the canvas: persists across renders, written only when a cut is produced.
+    rawCut: Set<string>;
     expanded: Set<string>;
     symbolCount: Map<string, number>;
     groupBy: GroupBy;
@@ -422,9 +427,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     adaptiveLod,
     onCut,
     dirTree,
-    graph,
     scene,
-    collapsed: collapsedClusters,
+    rawCut: new Set(),
     expanded,
     symbolCount,
     groupBy,
@@ -432,9 +436,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.adaptiveLod = adaptiveLod;
   lod.current.onCut = onCut;
   lod.current.dirTree = dirTree;
-  lod.current.graph = graph;
   lod.current.scene = scene;
-  lod.current.collapsed = collapsedClusters;
   lod.current.expanded = expanded;
   lod.current.symbolCount = symbolCount;
   lod.current.groupBy = groupBy;
@@ -690,7 +692,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       const cutOpts = {
         openPx: LOD_OPEN_PX,
         maxCards: LOD_MAX_CARDS,
-        prevCut: l.collapsed,
+        // Hysteresis is a CUT-domain decision: compare against the raw cut we last
+        // produced, NOT the effective collapsedClusters prop. The effective set's redundant
+        // deeper entries (a dir listed under a collapsed ancestor) would flip wasOpen() to
+        // false and apply the full openPx threshold instead of the relaxed openPx*hysteresis.
+        prevCut: l.rawCut,
         nodeBudget: LOD_NODE_BUDGET,
         nodeCost,
       };
@@ -702,7 +708,10 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         const r = computeCutTraced(l.dirTree, boxes, c, vp, cutOpts);
         const computeMs = performance.now() - t0;
         next = r.cut;
-        const changed = !cutEquals(next, l.collapsed);
+        // Compare cut-domain to cut-domain (raw vs raw). The effective collapsedClusters
+        // prop is a superset and can never equal the raw cut whenever a non-leaf dir is
+        // collapsed, which would mis-report `changed` and the opened/collapsed deltas.
+        const changed = !cutEquals(next, l.rawCut);
         telemetry.event("lod", "cut", {
           trigger: "zoom",
           cam: { x: c.x, y: c.y, scale: c.scale },
@@ -714,12 +723,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
           dirsEvaluated: r.dirsEvaluated,
           dirsOnScreen: r.dirsOnScreen,
           cutSize: next.size,
-          prevCutSize: l.collapsed.size,
+          prevCutSize: l.rawCut.size,
           cards: r.cards,
           computeMs,
           changed,
-          opened: [...l.collapsed].filter((p) => !next.has(p)), // collapsed → open
-          collapsed: [...next].filter((p) => !l.collapsed.has(p)), // open → collapsed
+          opened: [...l.rawCut].filter((p) => !next.has(p)), // collapsed → open
+          collapsed: [...next].filter((p) => !l.rawCut.has(p)), // open → collapsed
           trace: r.trace,
         });
         telemetry.metric("lod.computeMs", computeMs);
@@ -731,10 +740,16 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         next = computeCut(l.dirTree, boxes, c, vp, cutOpts);
       }
       // The cut is still measured/decided exactly as before (a bare-path collapsed set);
-      // we only change what we HAND UP. Skip when the cut wouldn't change the effective
-      // collapsed set, then translate to the transitional DirectoryLodSelection (open
-      // directory group ids) so it updates only the selection layer — never intent.
-      if (!cutEquals(next, l.collapsed)) l.onCut(directoryLodSelection(next, l.graph));
+      // we only change what we HAND UP. Skip when the raw cut is unchanged from the one we
+      // last produced (cut-domain vs cut-domain — NOT against the effective collapsedClusters
+      // prop, which the raw cut would never equal once any non-leaf dir is collapsed). Then
+      // translate to the transitional DirectoryLodSelection (open directory group ids) so it
+      // updates only the selection layer — never intent. Reuse the already-memoized dirTree
+      // rather than rebuilding it from the raw node list on every cut.
+      if (!cutEquals(next, l.rawCut)) {
+        l.rawCut = next;
+        l.onCut(directoryLodSelection(next, l.dirTree));
+      }
     };
 
     const onWheel = (e: WheelEvent) => {
