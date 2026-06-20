@@ -759,10 +759,10 @@ function treeLayout(view: LayoutInput, direction: LayoutDirection): Positions {
 }
 
 /**
- * Backbone (core-periphery): lay out the dense 2+-core with force, then hang the
- * low-coreness periphery (leaves/chains) off it in golden-angle fans via a BFS
- * outward from the core — so thousands of leaves don't blow the core apart. Falls
- * back to a tidy tree when there's no real core (everything is 1-core).
+ * Backbone (core-periphery): pick a dense core via an adaptive k-core threshold, lay it out
+ * with force, then hang the low-coreness periphery off it in BFS waves — each leaf fanned
+ * OUTWARD from the core centroid (away from the dense middle) off its strongest-weight placed
+ * neighbor, with a final overlap relax. Falls back to a tidy tree when there's no real core.
  */
 function backboneLayout(view: LayoutInput): Positions {
   const ids = view.nodes.map((n) => n.id);
@@ -945,60 +945,69 @@ const stressWork = (n: number, m: number, pivots: number): number =>
  * path gets cola's avoidOverlaps instead). Deterministic: ids sorted, each pair handled once.
  */
 function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): void {
+  const n = view.nodes.length;
+  if (n < 2) return;
+  // Index-based (typed arrays) so the O(pairs) inner loop avoids Map lookups. Nodes are
+  // visited in sorted-id order for determinism (index order == id order after this sort).
   const ids = view.nodes.map((nd) => nd.id).sort();
   const sizeOf = new Map(view.nodes.map((nd) => [nd.id, nodeSize(nd.kind)]));
+  const xs = new Float64Array(n);
+  const ys = new Float64Array(n);
+  const ws = new Float64Array(n);
+  const hs = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const c = centers.get(ids[i]) ?? { x: 0, y: 0 };
+    const s = sizeOf.get(ids[i])!;
+    xs[i] = c.x;
+    ys[i] = c.y;
+    ws[i] = s.width;
+    hs[i] = s.height;
+  }
   const CELL = 260;
   const PAD = 16;
-  // Jacobi relaxation: each pass computes every pair's push from ONE snapshot and applies
-  // the accumulated displacement at the end. (Applying pushes immediately makes a card
-  // squeezed between two others oscillate instead of settle.) Overlapping cards push each
-  // other outward, so the layout expands until it fits. Breaks as soon as a pass is clean,
-  // so the high cap only costs more on genuinely-tangled cases.
+  // Jacobi relaxation: each pass computes every pair's push from ONE snapshot and applies the
+  // accumulated displacement at the end. (Applying pushes immediately makes a card squeezed
+  // between two others oscillate instead of settle.) Overlapping cards push each other outward,
+  // so the layout expands until it fits. Breaks as soon as a pass is clean.
   const PASSES = 200;
-  // Hard ceiling on total pair-checks. Dense graphs cluster many cards into the same grid
-  // cells, making a pass O(Σ cell²) → potentially O(n²); without this, a dense stress/backbone
-  // component could spend tens of seconds here. Capped, it always returns quickly (leaving
-  // some residual overlap on pathologically dense inputs — an acceptable trade for bounded time).
+  // Hard ceiling on total pair-checks. Dense graphs cluster many cards into the same grid cells,
+  // making a pass O(Σ cell²) → potentially O(n²); the cap keeps it bounded (residual overlap on
+  // pathologically dense inputs is an accepted trade for bounded time). This was the real 20s.
   const MAX_CHECKS = 20_000_000;
   let checks = 0;
-  const dispX = new Map<string, number>();
-  const dispY = new Map<string, number>();
+  const dispX = new Float64Array(n);
+  const dispY = new Float64Array(n);
   relax: for (let pass = 0; pass < PASSES; pass++) {
-    const grid = new Map<string, string[]>();
-    for (const id of ids) {
-      const c = centers.get(id)!;
-      const key = `${Math.floor(c.x / CELL)},${Math.floor(c.y / CELL)}`;
-      (grid.get(key) ?? grid.set(key, []).get(key))!.push(id);
-      dispX.set(id, 0);
-      dispY.set(id, 0);
+    const grid = new Map<string, number[]>();
+    for (let i = 0; i < n; i++) {
+      const key = `${Math.floor(xs[i] / CELL)},${Math.floor(ys[i] / CELL)}`;
+      (grid.get(key) ?? grid.set(key, []).get(key))!.push(i);
+      dispX[i] = 0;
+      dispY[i] = 0;
     }
     let moved = false;
-    for (const id of ids) {
-      const c = centers.get(id)!;
-      const s = sizeOf.get(id)!;
-      const gx = Math.floor(c.x / CELL);
-      const gy = Math.floor(c.y / CELL);
+    for (let i = 0; i < n; i++) {
+      const gx = Math.floor(xs[i] / CELL);
+      const gy = Math.floor(ys[i] / CELL);
       for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {
           const others = grid.get(`${gx + dx},${gy + dy}`);
           if (!others) continue;
-          for (const oid of others) {
-            if (oid <= id) continue; // each pair once, in id order
+          for (const j of others) {
+            if (j <= i) continue; // each pair once, in (sorted) index order
             if (++checks > MAX_CHECKS) break relax; // bounded work; prior passes already applied
-            const o = centers.get(oid)!;
-            const os = sizeOf.get(oid)!;
-            const ox = (s.width + os.width) / 2 + PAD - Math.abs(o.x - c.x);
-            const oy = (s.height + os.height) / 2 + PAD - Math.abs(o.y - c.y);
+            const ox = (ws[i] + ws[j]) / 2 + PAD - Math.abs(xs[j] - xs[i]);
+            const oy = (hs[i] + hs[j]) / 2 + PAD - Math.abs(ys[j] - ys[i]);
             if (ox <= 0 || oy <= 0) continue;
             // Separate along the axis of least penetration; accumulate (don't apply yet).
             if (ox < oy) {
-              const push = ((o.x - c.x >= 0 ? 1 : -1) * ox) / 2;
-              dispX.set(id, dispX.get(id)! - push);
-              dispX.set(oid, dispX.get(oid)! + push);
+              const push = ((xs[j] - xs[i] >= 0 ? 1 : -1) * ox) / 2;
+              dispX[i] -= push;
+              dispX[j] += push;
             } else {
-              const push = ((o.y - c.y >= 0 ? 1 : -1) * oy) / 2;
-              dispY.set(id, dispY.get(id)! - push);
-              dispY.set(oid, dispY.get(oid)! + push);
+              const push = ((ys[j] - ys[i] >= 0 ? 1 : -1) * oy) / 2;
+              dispY[i] -= push;
+              dispY[j] += push;
             }
             moved = true;
           }
@@ -1006,10 +1015,16 @@ function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): voi
       }
     }
     if (!moved) break;
-    for (const id of ids) {
-      const c = centers.get(id)!;
-      c.x += dispX.get(id)!;
-      c.y += dispY.get(id)!;
+    for (let i = 0; i < n; i++) {
+      xs[i] += dispX[i];
+      ys[i] += dispY[i];
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    const c = centers.get(ids[i]);
+    if (c) {
+      c.x = xs[i];
+      c.y = ys[i];
     }
   }
 }
