@@ -15,6 +15,7 @@ import { detectCommunities } from "./layout/community";
 import { fiedlerOrder, orderByCircularBarycenter, rcmOrder, stableOrder } from "./layout/ordering";
 import { chooseEngine } from "./layout/planner";
 import { graphShape } from "./layout/shape";
+import { pivotMds } from "./layout/stress";
 import { smartLayout } from "./layout/smart";
 import { buildArborescence } from "./layout/tree";
 
@@ -796,14 +797,69 @@ function forceLayout(view: LayoutInput, options: LayoutOptions = {}): Positions 
  * a fixed number of synchronous iterations (keepRunning = false). The best
  * general-purpose engine for irregular, mixed directed/cyclic graphs.
  */
-function stressLayout(view: LayoutInput, options: LayoutOptions = {}): Positions {
+// Up to this many nodes, a component uses true stress majorization (webcola); larger
+// components switch to PivotMDS, which is near-linear so it stays within the time budget.
+const DENSE_STRESS_MAX = 600;
+
+/**
+ * Push overlapping cards apart with a few bounded spatial-hash passes. PivotMDS places by
+ * graph distance and can leave cards overlapping; this is the cheap O(n) cleanup (the dense
+ * path gets cola's avoidOverlaps instead). Deterministic: ids sorted, each pair handled once.
+ */
+function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): void {
+  const ids = view.nodes.map((nd) => nd.id).sort();
+  const sizeOf = new Map(view.nodes.map((nd) => [nd.id, nodeSize(nd.kind)]));
+  const CELL = 260;
+  const PAD = 16;
+  const PASSES = 12;
+  for (let pass = 0; pass < PASSES; pass++) {
+    const grid = new Map<string, string[]>();
+    for (const id of ids) {
+      const c = centers.get(id)!;
+      const key = `${Math.floor(c.x / CELL)},${Math.floor(c.y / CELL)}`;
+      (grid.get(key) ?? grid.set(key, []).get(key))!.push(id);
+    }
+    let moved = false;
+    for (const id of ids) {
+      const c = centers.get(id)!;
+      const s = sizeOf.get(id)!;
+      const gx = Math.floor(c.x / CELL);
+      const gy = Math.floor(c.y / CELL);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const others = grid.get(`${gx + dx},${gy + dy}`);
+          if (!others) continue;
+          for (const oid of others) {
+            if (oid <= id) continue; // each pair once, in id order
+            const o = centers.get(oid)!;
+            const os = sizeOf.get(oid)!;
+            const ox = (s.width + os.width) / 2 + PAD - Math.abs(o.x - c.x);
+            const oy = (s.height + os.height) / 2 + PAD - Math.abs(o.y - c.y);
+            if (ox > 0 && oy > 0) {
+              // Separate along the axis of least penetration (push both halfway).
+              if (ox < oy) {
+                const push = ((o.x - c.x >= 0 ? 1 : -1) * ox) / 2;
+                c.x -= push;
+                o.x += push;
+              } else {
+                const push = ((o.y - c.y >= 0 ? 1 : -1) * oy) / 2;
+                c.y -= push;
+                o.y += push;
+              }
+              moved = true;
+            }
+          }
+        }
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+/** Dense stress majorization (webcola): true SMACOF + overlap avoidance, for smaller comps. */
+function denseStressLayout(view: LayoutInput, options: LayoutOptions): Positions {
   const positions: Positions = new Map();
   const n = view.nodes.length;
-  if (n === 0) return positions;
-  if (n === 1) {
-    positions.set(...topLeft(view.nodes[0], 0, 0));
-    return positions;
-  }
   const index = new Map(view.nodes.map((nd, i) => [nd.id, i]));
   const spread = 200 * Math.sqrt(n);
   const colaNodes = view.nodes.map((nd, i) => {
@@ -820,9 +876,6 @@ function stressLayout(view: LayoutInput, options: LayoutOptions = {}): Positions
   const links = view.edges
     .filter((e) => e.source !== e.target && index.has(e.source) && index.has(e.target))
     .map((e) => ({ source: index.get(e.source)!, target: index.get(e.target)! }));
-  // The per-component cap (HEAVY_COMPONENT_CAP.stress) bounds n, so overlap avoidance
-  // stays ON at a fixed iteration count — cards never sit on top of each other, and the
-  // run stays well under the worker timeout. Deterministic (seeded + fixed iterations).
   new ColaLayout()
     .nodes(colaNodes)
     .links(links)
@@ -833,6 +886,52 @@ function stressLayout(view: LayoutInput, options: LayoutOptions = {}): Positions
     positions.set(...topLeft(nd, colaNodes[i].x ?? 0, colaNodes[i].y ?? 0));
   });
   return positions;
+}
+
+/** PivotMDS (landmark) stress for large components — near-linear, then scaled + de-overlapped. */
+function sparseStressLayout(view: LayoutInput): Positions {
+  const positions: Positions = new Map();
+  const ids = view.nodes.map((nd) => nd.id).sort();
+  const centers = pivotMds(ids, view.edges, Math.min(ids.length, 50));
+  // Scale graph-distance units to pixels so connected cards sit ~a card-and-a-half apart.
+  let sum = 0;
+  let cnt = 0;
+  for (const e of view.edges) {
+    const a = centers.get(e.source);
+    const b = centers.get(e.target);
+    if (a && b) {
+      sum += Math.hypot(a.x - b.x, a.y - b.y);
+      cnt++;
+    }
+  }
+  const meanLen = cnt > 0 ? sum / cnt : 0;
+  const scale = meanLen > 1e-6 ? 320 / meanLen : 1;
+  for (const c of centers.values()) {
+    c.x *= scale;
+    c.y *= scale;
+  }
+  relaxOverlaps(centers, view);
+  for (const nd of view.nodes) {
+    const c = centers.get(nd.id) ?? { x: 0, y: 0 };
+    positions.set(...topLeft(nd, c.x, c.y));
+  }
+  return positions;
+}
+
+/**
+ * Stress layout. Small components use true stress majorization (SMACOF + overlap avoidance);
+ * large ones use PivotMDS (landmark MDS), which is near-linear — so stress now scales to
+ * thousands of nodes within the worker budget instead of falling back to grid.
+ */
+function stressLayout(view: LayoutInput, options: LayoutOptions = {}): Positions {
+  const n = view.nodes.length;
+  if (n === 0) return new Map();
+  if (n === 1) {
+    const positions: Positions = new Map();
+    positions.set(...topLeft(view.nodes[0], 0, 0));
+    return positions;
+  }
+  return n <= DENSE_STRESS_MAX ? denseStressLayout(view, options) : sparseStressLayout(view);
 }
 
 // Small LRU of computed layouts, so toggling filters/algorithms back to a prior
@@ -910,12 +1009,13 @@ export function runLayout(input: LayoutInput, options: LayoutOptions = {}): Layo
 // e.g. stress builds an O(N²) distance matrix BEFORE any iteration, so capping its
 // iterations is not enough. Caps are on node count (not iterations), plus a shared edge
 // cap as a backstop for dense components (dagre is ~O(V·E), stress's SP is ~O(V·E)).
-// Calibrated from measured per-component times so each engine stays comfortably under
-// the 8s worker timeout at its cap (with margin for dense components and a busy machine):
-// stress is ~O(N²) (~5s @1000 → lowest cap), layered ~O(V·E) (~8s @1800 → capped well
-// below that), force/backbone iterative, tree near-linear. Above the cap → cheap grid.
+// Calibrated from measured per-component times so each engine stays comfortably under the
+// 8s worker timeout at its cap (with margin for dense components and a busy machine):
+// layered ~O(V·E) (~8s @1800 → capped well below that), force/backbone iterative, tree
+// near-linear. Stress is hybrid — true majorization up to DENSE_STRESS_MAX, then PivotMDS
+// (near-linear), so it scales far higher than the old O(N²) cap. Above the cap → cheap grid.
 const HEAVY_COMPONENT_CAP = {
-  stress: 800,
+  stress: 6000,
   layered: 1200,
   tree: 2500,
   backbone: 1500,
@@ -944,7 +1044,10 @@ export function resolveEngineForBudget(
   const cap = HEAVY_COMPONENT_CAP[requested as keyof typeof HEAVY_COMPONENT_CAP];
   if (cap === undefined) return { engine: requested, fallbackReason: null };
   if (nodeCount > cap) return { engine: "grid", fallbackReason: "node-cap" };
-  if (edgeCount > HEAVY_EDGE_CAP) return { engine: "grid", fallbackReason: "edge-cap" };
+  // Stress is near-linear in edges (PivotMDS for large comps), so the dense edge backstop
+  // doesn't apply to it; the other heavy engines are ~O(V·E) and keep it.
+  if (requested !== "stress" && edgeCount > HEAVY_EDGE_CAP)
+    return { engine: "grid", fallbackReason: "edge-cap" };
   return { engine: requested, fallbackReason: null };
 }
 
@@ -980,8 +1083,12 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
     case "backbone":
       return cappedComponents(view, HEAVY_COMPONENT_CAP.backbone, (sub) => backboneLayout(sub));
     case "stress":
-      return cappedComponents(view, HEAVY_COMPONENT_CAP.stress, (sub) =>
-        stressLayout(sub, options),
+      // Node-cap only (no dense edge backstop) — stressLayout is near-linear in edges for
+      // large components (PivotMDS), so a high edge count no longer forces a grid fallback.
+      return layoutByComponents(view, (sub) =>
+        sub.nodes.length > HEAVY_COMPONENT_CAP.stress
+          ? gridLayout(sub)
+          : stressLayout(sub, options),
       );
     case "force":
       // Force runs as one whole-view simulation (charge spreads the components), so cap

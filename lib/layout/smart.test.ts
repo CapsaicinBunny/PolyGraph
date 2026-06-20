@@ -281,15 +281,20 @@ describe("resolveEngineForBudget (budget guard, separate from chooseEngine)", ()
     });
   });
   test("downgrades to grid over the node cap", () => {
-    expect(resolveEngineForBudget("stress", 801, 10)).toEqual({
+    expect(resolveEngineForBudget("layered", 1201, 10)).toEqual({
       engine: "grid",
       fallbackReason: "node-cap",
     });
   });
-  test("downgrades to grid over the edge cap", () => {
+  test("downgrades to grid over the edge cap (but stress is exempt — near-linear)", () => {
     expect(resolveEngineForBudget("layered", 100, 8001)).toEqual({
       engine: "grid",
       fallbackReason: "edge-cap",
+    });
+    // Stress uses PivotMDS for large/dense comps, so a high edge count keeps it running.
+    expect(resolveEngineForBudget("stress", 100, 8001)).toEqual({
+      engine: "stress",
+      fallbackReason: null,
     });
   });
   test("uncapped engines (grid/circular/radial) always pass through", () => {

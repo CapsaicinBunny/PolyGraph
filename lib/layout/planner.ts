@@ -8,9 +8,9 @@ import type { GraphShape } from "./shape";
 
 /** Largest cyclic component for which a single ring stays legible. */
 const CIRCULAR_MAX = 60;
-// Stress majorization is ~O(n²); only AUTO-select it where it finishes fast. Manual
-// selection allows larger components (see HEAVY_COMPONENT_CAP.stress in layout.ts).
-const STRESS_AUTO_MAX = 400;
+// Stress is hybrid (true majorization for small comps, near-linear PivotMDS for large), so
+// it can be AUTO-selected for sizable components now. Still bounded by the budget guard.
+const STRESS_AUTO_MAX = 2500;
 
 /**
  * Choose the best concrete engine for a graph of the given shape. Order matters —

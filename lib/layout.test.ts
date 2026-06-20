@@ -564,22 +564,28 @@ describe("heavy-engine safety caps (no engine pins a core)", () => {
   const distinctColumns = (pos: Map<string, { x: number; y: number }>) =>
     new Set([...pos.values()].map((p) => Math.round(p.x))).size;
 
-  test("stress falls back to grid for an oversized connected component", () => {
-    const n = 1100; // > the stress per-component cap (1000)
-    const nodes: LayoutInput["nodes"] = [
-      { id: "hub", kind: "file" },
-      ...Array.from({ length: n - 1 }, (_, i) => ({ id: `s${i}`, kind: "file" as const })),
-    ];
-    const edges: LayoutInput["edges"] = Array.from({ length: n - 1 }, (_, i) => ({
-      source: "hub",
-      target: `s${i}`,
+  const chain = (n: number): LayoutInput => ({
+    nodes: Array.from({ length: n }, (_, i) => ({ id: `s${i}`, kind: "file" as const })),
+    edges: Array.from({ length: n - 1 }, (_, i) => ({
+      source: `s${i}`,
+      target: `s${i + 1}`,
       kind: "import" as const,
       count: 1,
       weight: edgeWeight("import", 1),
-    }));
-    const pos = layoutView({ nodes, edges }, { algorithm: "stress" });
-    expect(pos.size).toBe(n);
-    expect(distinctColumns(pos)).toBeLessThan(100); // gridded, not run through stress
+    })),
+  });
+
+  test("stress scales to large components via PivotMDS (no longer grids at ~1000)", () => {
+    // 1500 nodes used to grid (old ~O(n²) cap); PivotMDS lays them out for real now.
+    const pos = layoutView(chain(1500), { algorithm: "stress" });
+    expect(pos.size).toBe(1500);
+    expect(distinctColumns(pos)).toBeGreaterThan(200); // continuous positions → it ran
+  });
+
+  test("stress still grids a component past the (much higher) cap", () => {
+    const pos = layoutView(chain(6001), { algorithm: "stress" }); // > HEAVY_COMPONENT_CAP.stress
+    expect(pos.size).toBe(6001);
+    expect(distinctColumns(pos)).toBeLessThan(150); // gridded past the cap
   });
 
   test("force falls back to grid for an oversized view", () => {
