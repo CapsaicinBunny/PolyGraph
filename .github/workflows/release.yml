@@ -38,6 +38,18 @@ jobs:
             build-essential libssl-dev patchelf librsvg2-dev libfuse2 \
             libwebkit2gtk-4.1-dev libappindicator3-dev
 
+      - name: Work around linuxdeploy aborting on the bun sidecar
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          # The AppImage bundler (linuxdeploy) aborts (SIGABRT) when `ldd` exits non-zero,
+          # which it does on the self-contained bun sidecar (ldd: "not a dynamic
+          # executable"). Wrap ldd so it always exits 0; its output passes through, so
+          # real binaries' libraries are still discovered, and a self-contained binary
+          # simply contributes no deps to bundle.
+          sudo mv /usr/bin/ldd /usr/bin/ldd.real
+          printf '%s\n' '#!/usr/bin/env bash' '/usr/bin/ldd.real "$@" || true' 'exit 0' | sudo tee /usr/bin/ldd >/dev/null
+          sudo chmod +x /usr/bin/ldd
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -54,11 +66,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           # Per-OS bundle targets. Windows: a portable zip (assembled below), so skip
-          # bundling and just build the exe. Linux: deb + rpm only — the AppImage target's
-          # linuxdeploy bundler cannot run in CI (fails on both 22.04 and 24.04, with or
-          # without libfuse2 / extract-and-run, emitting no diagnostics). macOS: defaults
-          # (dmg + .app).
-          args: ${{ matrix.os == 'windows-latest' && '--no-bundle' || startsWith(matrix.os, 'ubuntu') && '--bundles deb,rpm' || '' }}
+          # bundling and just build the exe. Linux + macOS: their full default set
+          # (deb/rpm/AppImage and dmg/.app) — AppImage works now that ldd is wrapped
+          # above. --verbose on Linux so any bundler issue surfaces in the log.
+          args: ${{ matrix.os == 'windows-latest' && '--no-bundle' || startsWith(matrix.os, 'ubuntu') && '--verbose' || '' }}
           # On a version tag, publish a draft GitHub Release with the unsigned bundles
           # (Linux/macOS) + the Windows portable zip (attached below); otherwise just
           # build, with everything uploaded as artifacts. Unsigned — no auto-update.
@@ -66,17 +77,6 @@ jobs:
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('PolyGraph {0}', github.ref_name) || '' }}
           releaseDraft: true
           prerelease: false
-
-      - name: DIAGNOSE AppImage bundling (verbose, temporary)
-        if: matrix.os == 'ubuntu-22.04'
-        continue-on-error: true
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: 1
-        run: |
-          set +e
-          echo "Re-bundling AppImage verbosely to surface linuxdeploy's real error:"
-          bun run tauri build --verbose --bundles appimage 2>&1 | tail -160
-          echo "appimage-bundle pipe-exit=${PIPESTATUS[0]}"
 
       # Windows portable distribution: a plain zip of the app exe + the sidecar +
       # the native addon + language packs — exactly what lib.rs resolves from the
