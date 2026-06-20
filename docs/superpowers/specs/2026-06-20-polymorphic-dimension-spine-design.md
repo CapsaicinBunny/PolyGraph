@@ -10,8 +10,10 @@ are JS/TS-only and silently empty elsewhere — and the group/LOD/camera state m
 structurally fragile (one `collapsedClusters` set with five writers; camera LOD wired to
 Directory only).
 
-**Status:** Multi-phase north-star. **Revision 2** — incorporates the architectural
-review (serializable catalog vs runtime index; bootstrap-collapse is not user intent;
+**Status:** Multi-phase north-star. **Revision 3** — incorporates two architectural reviews.
+Rev 3 adds columnar/interned facet storage, the catalog label/color handshake, a single
+dual-write helper with a parity invariant, and LOD hysteresis. Rev 2 wove in the first review
+(serializable catalog vs runtime index; bootstrap-collapse is not user intent;
 single intent map; mode-namespaced group ids; multi-valued facet grouping; serializable
 grouping snapshot for the worker; None-mode internal hierarchy; bounded LOD eviction;
 missing-facet semantics; descriptor merge rules; dual-write migration; two-stage config
@@ -116,7 +118,11 @@ don't survive serialization):
 { environment: "client", facets: { env: ["client"] } }   // dual write during A–C
 ```
 
-Legacy named fields are removed only after every consumer reads `facets` (end of Phase D).
+All facet writes route through **one** `writeFacet(node, key, values)` helper that sets the
+legacy field *and* `facets[key]` together, so no code path can desync them *(2nd review)*. A
+graph-wide **parity invariant** test asserts the legacy field equals its `facets` value for
+every node throughout A–C. Legacy named fields are removed only after every consumer reads
+`facets` (end of Phase D).
 
 ### Serializable catalog vs. runtime index *(review §1, §13)*
 The catalog travels with the analysis as JSON; the index is rebuilt at runtime and never
@@ -157,13 +163,24 @@ export interface DimensionIndex {
 build the **same** `DimensionIndex` from `(graph, catalog)` — deterministic, no shared
 mutable runtime object.
 
-### Index representation *(review §13)*
+### Index, memory & representation *(review §13 + 2nd review)*
 - Assign each node a stable **ordinal** once; postings are `Uint32Array` of ordinals, not
   repeated string ids.
 - Build **lazily**, only for dimensions that are `present` AND (`filterable` or `groupable`)
   AND actually requested.
 - Small **closed** domains → bitsets; **open** high-cardinality domains → sorted ordinal
   arrays.
+
+**Memory at kernel scale** (~1.3M nodes a per-node `Record` would mean ~1.3M small objects):
+- The per-node `facets` is the **interchange** shape only — sparse (omit empty), with keys
+  and values **interned** through a string table the `DimensionCatalog` carries (the wire
+  format references table indices, not repeated literals).
+- The **runtime** holds facets **columnar inside the `DimensionIndex`** (per-dimension typed
+  arrays keyed by node ordinal); the filter/group/query path reads columns, never 1.3M
+  dictionaries. `node.facets` is a sparse convenience view, not the hot structure.
+- Closed single-cardinality domains may pack into a **bitmask/enum column** — a
+  profiling-gated optimization, not required for Phase A. A memory benchmark guards the
+  baseline (see Testing).
 
 ### Provider contract & descriptor merge *(review §10)*
 ```ts
@@ -180,6 +197,14 @@ Kernel merge rules (deterministic):
   value still admitted as `open`-fallback so nothing is silently dropped.
 - Provider-specific keys stay **namespaced** (`rust.visibility`); a provider may set
   `canonicalKey` to opt a key into a shared concept.
+
+**Catalog handshake** *(2nd review)*: the catalog is the **sole** source of a dimension's
+human metadata — UI/CLI never hardcode. A `filterable`/`groupable` descriptor **must** carry
+a `label`; closed-domain `values` must carry labels; `color`/`glyph` are optional with a
+deterministic palette fallback, so a freshly contributed Rust/Python facet renders with zero
+UI changes. The Rust core emits descriptors through the **same JSON `DimensionDescriptor`
+schema** as the TS analyzer — a strict cross-language handshake validated on merge (a
+`filterable` descriptor missing a label is an analysis error, not a silent blank chip).
 
 ### Everything derives from the catalog/index
 - **Filters** (Sidebar/Explorer): one section per `filterable` descriptor that is
@@ -332,6 +357,12 @@ around the active viewport** but **bounded**:
 ```ts
 interface AutoOpenEntry { groupId: GroupId; lastVisibleAt: number; lastOpenedAt: number; }
 ```
+**Hysteresis** *(2nd review)*: open/close use a **deadband** — a group opens above
+`openPx + margin` and is eligible to close only below `openPx − margin` — and the recompute
+stays debounced (`LOD_RECUT_DEBOUNCE_MS`). So panning a boundary back and forth, or small
+zoom jitter, can't oscillate the cut and cascade worker re-layouts. Eviction fires only when
+**over budget** (LRU on `lastVisibleAt`), not on every pan.
+
 The camera writes **only** `lodOpen`/eviction bookkeeping (a ref) — never `intent` or the
 layout-driving collapse — so it can never clobber user intent.
 
@@ -421,6 +452,13 @@ hierarchies, `valuesOf`), plus — per review:
 - Connection-highlight anchors are **pruned/remapped** after hierarchy/LOD changes.
 - Smart still selects per-cluster engines after receiving an external snapshot.
 - Layout cache signatures are **canonical regardless of `Map` insertion order**.
+- **Dual-write parity:** for every node, the legacy field equals its `facets` value (A–C).
+- **Catalog handshake:** every `filterable`/`groupable` descriptor (incl. Rust-emitted) has a
+  label; unknown values get a deterministic color, never a blank chip.
+- **LOD no-thrash:** panning/jittering across a group boundary doesn't oscillate the cut or
+  re-trigger worker layout.
+- **Memory benchmark:** a faceted `GraphModel` stays within an agreed factor of today's at
+  kernel scale (columnar index + interned interchange).
 - Golden: Phase A preserves exact facet values (no detection drift). The 547 stay green.
 
 ## Migration & back-compat
