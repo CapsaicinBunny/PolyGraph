@@ -38,6 +38,30 @@ jobs:
             build-essential libssl-dev patchelf librsvg2-dev \
             libwebkit2gtk-4.1-dev libappindicator3-dev
 
+      - name: DIAGNOSE linuxdeploy (temporary)
+        if: matrix.os == 'ubuntu-22.04'
+        continue-on-error: true
+        run: |
+          set +e
+          echo "::group::kernel / FUSE state"
+          uname -a
+          ls -la /dev/fuse 2>&1 || echo "NO /dev/fuse"
+          lsmod | grep -i fuse || echo "(fuse module not listed)"
+          dpkg -l | grep -iE 'fuse' || echo "(no fuse packages)"
+          echo "::endgroup::"
+          echo "::group::run the exact linuxdeploy binary tauri downloads"
+          curl -fsSL -o ld.AppImage https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage
+          chmod +x ld.AppImage
+          echo "--- direct (FUSE mount): ---"
+          ./ld.AppImage --version 2>&1; echo "exit=$?"
+          echo "--- with APPIMAGE_EXTRACT_AND_RUN=1: ---"
+          APPIMAGE_EXTRACT_AND_RUN=1 ./ld.AppImage --version 2>&1; echo "exit=$?"
+          echo "--- after installing libfuse2: ---"
+          sudo apt-get install -y libfuse2 >/dev/null 2>&1; echo "libfuse2 install exit=$?"
+          ./ld.AppImage --version 2>&1; echo "exit=$?"
+          APPIMAGE_EXTRACT_AND_RUN=1 ./ld.AppImage --version 2>&1; echo "extract+libfuse2 exit=$?"
+          echo "::endgroup::"
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
