@@ -13,7 +13,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        # Linux on 22.04, not ubuntu-latest (24.04): 24.04's AppImage tooling can't run
+        # (linuxdeploy fails even with APPIMAGE_EXTRACT_AND_RUN), and building on the older
+        # glibc (2.35) makes the bundles run on a far wider range of distros.
+        os: [windows-latest, macos-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -29,11 +32,13 @@ jobs:
           workspaces: src-tauri
 
       - name: Install Linux build dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
+          # libfuse2: the AppImage bundlers (linuxdeploy/appimagetool) are AppImages and
+          # need FUSE to run; the runner doesn't ship it by default.
           sudo apt-get install -y \
-            build-essential libssl-dev patchelf librsvg2-dev \
+            build-essential libssl-dev patchelf librsvg2-dev libfuse2 \
             libwebkit2gtk-4.1-dev libappindicator3-dev
 
       - name: Install dependencies
@@ -50,11 +55,9 @@ jobs:
         uses: tauri-apps/tauri-action@action-v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # linuxdeploy + appimagetool (the AppImage bundlers) are themselves AppImages,
-          # and ubuntu-latest (24.04 / noble) ships no libfuse2 — so they can't FUSE-mount
-          # and bundling dies with "failed to run linuxdeploy". Tell them to extract and
-          # run instead of mounting. No-op on Windows/macOS. The deb/rpm bundles already
-          # build fine; this is only the AppImage target.
+          # Belt-and-suspenders for AppImage bundling: with libfuse2 installed the
+          # bundler AppImages mount normally, and this lets them extract-and-run even if
+          # FUSE is unavailable. No-op on Windows/macOS.
           APPIMAGE_EXTRACT_AND_RUN: 1
         with:
           # Windows ships as a portable zip (assembled in the next step), not an
@@ -85,6 +88,12 @@ jobs:
           Copy-Item $sidecar.FullName "$stage/polygraph-sidecar.exe"
           Copy-Item "analyzer-core/analyzer-core.node" "$stage/"
           Copy-Item "language-packs" "$stage/" -Recurse
+          # App-local VC++ runtime (~0.8 MB). A *missing* system VC++ redist would stop
+          # the exe from starting before any of our code runs (so we couldn't show the
+          # WebView2-style dialog for it) — bundling it app-local makes that impossible.
+          foreach ($dll in "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll") {
+            Copy-Item "$env:SystemRoot/System32/$dll" "$stage/"
+          }
           $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           $zip = "PolyGraph_${version}_windows-x64-portable.zip"
           Compress-Archive -Path $stage -DestinationPath $zip -Force

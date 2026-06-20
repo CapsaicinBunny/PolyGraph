@@ -101,6 +101,29 @@ fn write_file_base64(path: String, base64: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  // The portable Windows build does not bundle the (~180 MB) WebView2 runtime — it's
+  // present on every supported Windows (10 1803+ / 11). On the rare machine without it,
+  // Tauri would otherwise fail to create the window with no explanation, so detect it
+  // up front and show a clear message + download link instead.
+  #[cfg(windows)]
+  {
+    if tauri::webview_version().is_err() {
+      let open_download = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Microsoft Edge WebView2 required")
+        .set_description(
+          "PolyGraph needs the Microsoft Edge WebView2 runtime, which isn't installed.\n\n\
+           It ships with Windows 10 (1803+) and Windows 11. Open the download page now?",
+        )
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show();
+      if open_download == rfd::MessageDialogResult::Yes {
+        let _ = open::that("https://developer.microsoft.com/microsoft-edge/webview2/");
+      }
+      std::process::exit(1);
+    }
+  }
+
   use tauri_plugin_log::{Target, TargetKind};
 
   // Write the log file to a `logs/` folder right next to the executable so it's
