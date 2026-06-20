@@ -32,6 +32,7 @@
   "exclude": [
     "node_modules",
     "out",
+    "dist",
     "vello-renderer/target",
     "vello-renderer/pkg",
     "src-tauri/target",

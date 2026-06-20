@@ -82,6 +82,14 @@ export function useScene(
   const [layingOut, setLayingOut] = useState(false);
   const reqId = useRef(0);
 
+  // Always-current positions, read as the seed for the NEXT layout. On a structure
+  // change this still holds the prior layout's positions, so engines continue from
+  // there and the mental map is preserved across filter/zoom changes.
+  const positionsRef = useRef(positions);
+  useEffect(() => {
+    positionsRef.current = positions;
+  }, [positions]);
+
   useEffect(() => {
     const cached = layoutCacheGet(structure.signature);
     if (cached) {
@@ -102,7 +110,11 @@ export function useScene(
     const myReq = ++reqId.current;
     setLayingOut(true);
     const tLayout = performance.now();
-    layoutInWorker(structure.layoutInput, structure.options)
+    // Seed from the previous layout (when there is one) for mental-map stability.
+    const seed = positionsRef.current;
+    const options =
+      seed.size > 0 ? { ...structure.options, previousPositions: seed } : structure.options;
+    layoutInWorker(structure.layoutInput, options)
       .then(({ positions: pos, clusters: cl }) => {
         if (myReq !== reqId.current) return; // a newer request superseded this one
         const layoutMs = performance.now() - tLayout;

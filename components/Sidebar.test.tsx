@@ -81,4 +81,37 @@ describe("Sidebar scope section", () => {
     expect(screen.queryByText("Category")).toBeNull();
     expect(screen.queryByText("Environment")).toBeNull();
   });
+
+  test("no modified dot when every present scope chip is enabled (default)", () => {
+    render(
+      <Provider>
+        <Sidebar {...baseProps({ runtimes: ["node"], environments: ["client"] })} />
+      </Provider>,
+    );
+    expect(screen.queryByTestId("section-modified-scope")).toBeNull();
+  });
+
+  test("shows the modified dot when a present scope chip is disabled", () => {
+    const props = baseProps({ runtimes: ["node", "bun"] });
+    props.enabledRuntimes = new Set<Runtime>(["node"]); // bun present but turned off
+    render(
+      <Provider>
+        <Sidebar {...props} />
+      </Provider>,
+    );
+    expect(screen.queryByTestId("section-modified-scope")).not.toBeNull();
+  });
+
+  test("a present value with no rendered chip never lights the dot", () => {
+    // An out-of-list scope value (e.g. a future/extra facet from the analyzer) has no toggleable
+    // chip, so it must not show 'modified' while every visible chip is on.
+    const props = baseProps({ runtimes: ["node"] });
+    props.presentRuntimes = new Set<Runtime>(["node", "edge" as Runtime]);
+    render(
+      <Provider>
+        <Sidebar {...props} />
+      </Provider>,
+    );
+    expect(screen.queryByTestId("section-modified-scope")).toBeNull();
+  });
 });

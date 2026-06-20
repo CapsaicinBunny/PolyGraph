@@ -81,6 +81,8 @@ const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
   { value: "circular", label: "Circular", glyph: "○" },
   { value: "grid", label: "Grid", glyph: "▦" },
   { value: "force", label: "Force", glyph: "✸" },
+  { value: "stress", label: "Stress", glyph: "◈" },
+  { value: "backbone", label: "Backbone", glyph: "⊕" },
 ];
 
 const GROUP_BY: { value: GroupBy; label: string; glyph: string }[] = [
@@ -169,7 +171,16 @@ function Section({
           >
             {title}
           </Text>
-          {modified && <Box w="6px" h="6px" rounded="full" bg="blue.solid" flexShrink={0} />}
+          {modified && (
+            <Box
+              data-testid={`section-modified-${title.toLowerCase()}`}
+              w="6px"
+              h="6px"
+              rounded="full"
+              bg="blue.solid"
+              flexShrink={0}
+            />
+          )}
         </HStack>
         {action}
       </Flex>
@@ -178,6 +189,30 @@ function Section({
           {children}
         </Box>
       )}
+    </Box>
+  );
+}
+
+/** Small right-aligned "hide all" / "show all" toggle used on filter (sub)section headers. */
+function HideAllToggle({ allOn, onToggle }: { allOn: boolean; onToggle: () => void }) {
+  return (
+    <Box
+      role="button"
+      tabIndex={0}
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+      fontSize="10px"
+      color="fg.subtle"
+      cursor="pointer"
+      userSelect="none"
+      _hover={{ color: "fg" }}
+    >
+      {allOn ? "hide all" : "show all"}
     </Box>
   );
 }
@@ -304,6 +339,15 @@ export function Sidebar({
   const directionEnabled = DIRECTIONAL_ALGORITHMS.includes(algorithm);
 
   const relationshipsModified = enabledEdgeKinds.size !== FILTERABLE_EDGE_KINDS.length;
+  const allEdgesOn = enabledEdgeKinds.size === FILTERABLE_EDGE_KINDS.length;
+  // No bulk edge setter prop exists, so drive "hide all" / "show all" by flipping just the kinds
+  // that need it via the single-toggle prop (its setter is a functional update, so the calls
+  // compound correctly).
+  const setAllEdges = (on: boolean) => {
+    for (const kind of FILTERABLE_EDGE_KINDS) {
+      if (enabledEdgeKinds.has(kind) !== on) onToggleEdgeKind(kind);
+    }
+  };
   const nodeTypesModified = enabledNodeKinds.size !== FILTERABLE_NODE_KINDS.length;
 
   // Only surface scope values the codebase actually has. On a C/Rust project the
@@ -313,10 +357,13 @@ export function Sidebar({
   const environments = ENVIRONMENTS.filter((e) => presentEnvironments.has(e.value));
   const runtimes = RUNTIMES.filter((r) => presentRuntimes.has(r.value));
   const hasScope = categories.length > 0 || environments.length > 0 || runtimes.length > 0;
+  // "Modified" iff a scope chip the user can actually SEE is turned off. Iterate the same
+  // filtered lists the chips render from (not the raw present* sets), so a present value with no
+  // rendered chip can never light the dot when every visible chip is on.
   const scopeModified =
-    [...presentCategories].some((c) => !enabledCategories.has(c)) ||
-    [...presentEnvironments].some((e) => !enabledEnvironments.has(e)) ||
-    [...presentRuntimes].some((r) => !enabledRuntimes.has(r));
+    categories.some((c) => !enabledCategories.has(c.value)) ||
+    environments.some((e) => !enabledEnvironments.has(e.value)) ||
+    runtimes.some((r) => !enabledRuntimes.has(r.value));
 
   return (
     <Stack
@@ -390,7 +437,11 @@ export function Sidebar({
         )}
       </Section>
 
-      <Section title="Relationships" modified={relationshipsModified}>
+      <Section
+        title="Relationships"
+        modified={relationshipsModified}
+        action={<HideAllToggle allOn={allEdgesOn} onToggle={() => setAllEdges(!allEdgesOn)} />}
+      >
         <ChipRow>
           {FILTERABLE_EDGE_KINDS.map((kind) => (
             <Chip
@@ -423,24 +474,10 @@ export function Sidebar({
                   >
                     {layer.label}
                   </Text>
-                  <Box
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onSetNodeKinds(layer.kinds, !allOn)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        onSetNodeKinds(layer.kinds, !allOn);
-                      }
-                    }}
-                    fontSize="10px"
-                    color="fg.subtle"
-                    cursor="pointer"
-                    userSelect="none"
-                    _hover={{ color: "fg" }}
-                  >
-                    {allOn ? "hide all" : "show all"}
-                  </Box>
+                  <HideAllToggle
+                    allOn={allOn}
+                    onToggle={() => onSetNodeKinds(layer.kinds, !allOn)}
+                  />
                 </Flex>
                 <ChipRow>
                   {layer.kinds.map((kind) => (

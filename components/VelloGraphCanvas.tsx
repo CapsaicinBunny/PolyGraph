@@ -7,7 +7,12 @@ import type { ViewEdgeKind } from "@/lib/aggregate";
 import { clusterIdOfAggregate, isAggregateId } from "@/lib/graph/collapse";
 import type { Scene, SceneEdge, SceneFilters } from "@/lib/graph/scene";
 import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
-import type { GroupBy, LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
+import {
+  type GroupBy,
+  type LayoutAlgorithm,
+  type LayoutDirection,
+  layoutFallbackSummary,
+} from "@/lib/layout";
 import { frameBoxes } from "@/lib/graph/frame";
 import { buildDirTree, type DirNode } from "@/lib/graph/hierarchy";
 import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
@@ -214,6 +219,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     projected,
   );
   const { resolvedTheme } = useTheme();
+
+  // "Layout simplified" notice: surfaces when the budget guard downgraded any Smart cluster's
+  // engine (e.g. Layered → Grid for an oversized component), so a grid fallback isn't mistaken
+  // for the chosen engine producing a poor result. Null when nothing was downgraded.
+  const fallbackNote = useMemo(() => layoutFallbackSummary(scene.clusters), [scene.clusters]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -821,6 +831,26 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         }}
       />
       {layingOut && <LayoutOverlay />}
+      {fallbackNote && (
+        <Box
+          position="absolute"
+          bottom="3"
+          left="3"
+          maxW="60%"
+          truncate
+          bg="orange.subtle"
+          color="orange.fg"
+          fontSize="xs"
+          px="3"
+          py="1.5"
+          rounded="md"
+          borderWidth="1px"
+          borderColor="border"
+          title={fallbackNote}
+        >
+          {fallbackNote}
+        </Box>
+      )}
       {error && (
         <Box
           position="absolute"
