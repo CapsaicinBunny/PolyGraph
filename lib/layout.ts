@@ -767,18 +767,27 @@ function backboneLayout(view: LayoutInput): Positions {
 
   const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
   const nodeById = new Map(view.nodes.map((n) => [n.id, n]));
-  const coreSet = new Set(ids.filter((id) => (core.get(id) ?? 0) >= 2));
+
+  // Adaptive core threshold: raise it past 2 until the core is a real backbone (not most
+  // of the graph), so a dense codebase doesn't end up with nearly everything in the core.
+  const atLeast = (k: number) =>
+    ids.reduce((acc, id) => acc + ((core.get(id) ?? 0) >= k ? 1 : 0), 0);
+  let threshold = 2;
+  while (threshold < maxCore && atLeast(threshold) > 0.4 * ids.length) threshold++;
+  const coreSet = new Set(ids.filter((id) => (core.get(id) ?? 0) >= threshold));
   const positions = forceLayout({
     nodes: view.nodes.filter((n) => coreSet.has(n.id)),
     edges: view.edges.filter((e) => coreSet.has(e.source) && coreSet.has(e.target)),
   });
 
-  const undirected = new Map<string, Set<string>>();
-  for (const id of ids) undirected.set(id, new Set());
+  // Weighted undirected adjacency → anchor each satellite to its STRONGEST placed neighbor.
+  const wadj = new Map<string, Map<string, number>>();
+  for (const id of ids) wadj.set(id, new Map());
   for (const e of view.edges) {
-    if (e.source === e.target || !undirected.has(e.source) || !undirected.has(e.target)) continue;
-    undirected.get(e.source)!.add(e.target);
-    undirected.get(e.target)!.add(e.source);
+    if (e.source === e.target || !wadj.has(e.source) || !wadj.has(e.target)) continue;
+    const w = e.weight && e.weight > 0 ? e.weight : 1;
+    wadj.get(e.source)!.set(e.target, (wadj.get(e.source)!.get(e.target) ?? 0) + w);
+    wadj.get(e.target)!.set(e.source, (wadj.get(e.target)!.get(e.source) ?? 0) + w);
   }
 
   const centerOf = (id: string): XYPosition => {
@@ -792,13 +801,24 @@ function backboneLayout(view: LayoutInput): Positions {
   const frontier = () =>
     ids
       .filter(
-        (id) => !placed.has(id) && [...(undirected.get(id) ?? [])].some((nb) => placed.has(nb)),
+        (id) => !placed.has(id) && [...(wadj.get(id)?.keys() ?? [])].some((nb) => placed.has(nb)),
       )
       .sort(cmp);
   for (let wave = frontier(); wave.length > 0; wave = frontier()) {
     for (const id of wave) {
       if (placed.has(id)) continue;
-      const anchor = [...(undirected.get(id) ?? [])].filter((nb) => placed.has(nb)).sort(cmp)[0];
+      // Anchor = the placed neighbor with the strongest summed relationship weight.
+      let anchor: string | undefined;
+      let bestW = -1;
+      for (const [nb, w] of wadj.get(id) ?? []) {
+        if (
+          placed.has(nb) &&
+          (w > bestW || (w === bestW && (anchor === undefined || nb < anchor)))
+        ) {
+          bestW = w;
+          anchor = nb;
+        }
+      }
       const node = nodeById.get(id);
       if (!anchor || !node) continue;
       const c = centerOf(anchor);
@@ -812,13 +832,20 @@ function backboneLayout(view: LayoutInput): Positions {
       placed.add(id);
     }
   }
-  // Anything detached from the core: tuck it into a grid well below.
+  // Detached leftovers: a grid just below the actual content (not a hard-coded offset).
+  let maxY = 0;
+  for (const [id, p] of positions)
+    maxY = Math.max(maxY, p.y + nodeSize(nodeById.get(id)?.kind ?? "").height);
   const leftover = ids.filter((id) => !placed.has(id)).sort(cmp);
   const cols = Math.max(1, Math.ceil(Math.sqrt(leftover.length)));
   leftover.forEach((id, i) => {
     const node = nodeById.get(id);
-    if (node) positions.set(...topLeft(node, (i % cols) * 250, 4000 + Math.floor(i / cols) * 110));
+    if (node)
+      positions.set(...topLeft(node, (i % cols) * 250, maxY + 200 + Math.floor(i / cols) * 110));
   });
+
+  // Final global pass: separate satellites whose fans overlap across different anchors.
+  relaxOverlaps(positions, view);
   return positions;
 }
 

@@ -495,6 +495,25 @@ describe("backbone layout (core + satellites)", () => {
     const pos = layoutView(g, { algorithm: "backbone" });
     expect(pos.get("r")!.y).toBeLessThan(pos.get("x")!.y);
   });
+
+  test("is deterministic (adaptive core + weighted anchor + overlap relax)", () => {
+    // Triangle core a,b,c + leaves on each — exercises the full path incl. relaxOverlaps.
+    const g: LayoutInput = {
+      nodes: ["a", "b", "c", "d", "e", "f", "g"].map(mk),
+      edges: [
+        ed("a", "b"),
+        ed("b", "c"),
+        ed("c", "a"),
+        ed("a", "d"),
+        ed("a", "e"),
+        ed("b", "f"),
+        ed("c", "g"),
+      ],
+    };
+    const p1 = layoutView(g, { algorithm: "backbone" });
+    const p2 = layoutView(g, { algorithm: "backbone" });
+    expect([...p1.entries()]).toEqual([...p2.entries()]);
+  });
 });
 
 describe("stress layout (cola.js)", () => {
