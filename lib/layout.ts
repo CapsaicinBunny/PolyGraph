@@ -86,6 +86,9 @@ export interface LayoutOptions {
   previousPositions?: Map<string, XYPosition>;
 }
 
+/** Why the budget guard downgraded a leaf cluster's planner choice to grid (null = it didn't). */
+export type FallbackReason = "node-cap" | "edge-cap" | null;
+
 /** A directory/package container box emitted by the Smart layout. World-space, top-left origin. */
 export interface ClusterBox {
   id: string;
@@ -96,6 +99,15 @@ export interface ClusterBox {
   height: number;
   depth: number;
   label: string;
+  /**
+   * For a leaf cluster laid out by the Smart planner: the engine actually run inside it,
+   * what the planner asked for before the budget guard, and why it was downgraded (if so).
+   * Undefined for container boxes, whose children are arranged by the item-box placement.
+   * Diagnostics only (feeds the future "layout simplified" indicator); LOD ignores these.
+   */
+  engine?: LayoutAlgorithm;
+  requestedEngine?: LayoutAlgorithm;
+  fallbackReason?: FallbackReason;
 }
 
 /** Smart layout output: node positions plus the nested container boxes. */
@@ -782,6 +794,26 @@ const HEAVY_EDGE_CAP = 8_000;
 /** True when a (sub)graph is too big for a heavy engine to lay out within the time budget. */
 function tooHeavy(view: LayoutInput, nodeCap: number): boolean {
   return view.nodes.length > nodeCap || view.edges.length > HEAVY_EDGE_CAP;
+}
+
+/**
+ * Resolve the planner's requested engine against the per-engine budget caps: returns the
+ * engine to actually run, plus why it was downgraded (if it was). Deliberately SEPARATE
+ * from chooseEngine — the planner picks the ideal engine purely on graph shape, and this
+ * is the single place that downgrades to grid for budget. The Smart leaf-cluster path
+ * records the (requested, resolved, reason) triple for diagnostics. Mirrors tooHeavy, so
+ * engines without a cap (grid/circular/radial — all cheap) always pass through.
+ */
+export function resolveEngineForBudget(
+  requested: LayoutAlgorithm,
+  nodeCount: number,
+  edgeCount: number,
+): { engine: LayoutAlgorithm; fallbackReason: FallbackReason } {
+  const cap = HEAVY_COMPONENT_CAP[requested as keyof typeof HEAVY_COMPONENT_CAP];
+  if (cap === undefined) return { engine: requested, fallbackReason: null };
+  if (nodeCount > cap) return { engine: "grid", fallbackReason: "node-cap" };
+  if (edgeCount > HEAVY_EDGE_CAP) return { engine: "grid", fallbackReason: "edge-cap" };
+  return { engine: requested, fallbackReason: null };
 }
 
 /** Lay each component out with `engine`, falling back to grid for any oversized component. */

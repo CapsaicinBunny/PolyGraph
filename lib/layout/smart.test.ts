@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { ClusterBox } from "../layout";
-import { smartLayout } from "./smart";
+import { type ClusterBox, resolveEngineForBudget } from "../layout";
+import { aggregateInternalEdges, smartLayout } from "./smart";
 
 const N = (id: string, kind = "file") => ({ id, kind });
 const SYMN = (id: string) => ({ id, kind: "function" });
@@ -148,5 +148,169 @@ describe("smartLayout adaptive (Phase B)", () => {
     for (const id of ids) expect(within(a.nodes.get(id)!, box, 200, 56)).toBe(true);
     const b = smartLayout(dense, { direction: "LR" });
     expect([...a.nodes.entries()]).toEqual([...b.nodes.entries()]);
+  });
+});
+
+describe("grouped Smart runs the shape planner per leaf cluster", () => {
+  const dir = (view: {
+    nodes: { id: string; kind: string }[];
+    edges: { source: string; target: string }[];
+  }) => smartLayout(view, { groupBy: "directory", direction: "LR" });
+  const engineOf = (clusters: ClusterBox[], id: string) =>
+    clusters.find((c) => c.id === id)?.engine;
+
+  test("edgeless leaf cluster → grid", () => {
+    const { clusters } = dir({ nodes: [N("g/a.ts"), N("g/b.ts"), N("g/c.ts")], edges: [] });
+    expect(engineOf(clusters, "g")).toBe("grid");
+  });
+
+  test("rooted-tree leaf cluster → tree", () => {
+    const { clusters } = dir({
+      nodes: ["t/r.ts", "t/a.ts", "t/b.ts", "t/c.ts"].map((id) => N(id)),
+      edges: [E("t/r.ts", "t/a.ts"), E("t/r.ts", "t/b.ts"), E("t/a.ts", "t/c.ts")],
+    });
+    expect(engineOf(clusters, "t")).toBe("tree");
+  });
+
+  test("acyclic merge (DAG) leaf cluster → layered", () => {
+    const { clusters } = dir({
+      nodes: ["d/a.ts", "d/b.ts", "d/c.ts", "d/e.ts"].map((id) => N(id)),
+      edges: [
+        E("d/a.ts", "d/b.ts"),
+        E("d/a.ts", "d/c.ts"),
+        E("d/b.ts", "d/e.ts"),
+        E("d/c.ts", "d/e.ts"),
+      ],
+    });
+    expect(engineOf(clusters, "d")).toBe("layered");
+  });
+
+  test("small cyclic leaf cluster → circular", () => {
+    const { clusters } = dir({
+      nodes: ["c/x.ts", "c/y.ts", "c/z.ts"].map((id) => N(id)),
+      edges: [E("c/x.ts", "c/y.ts"), E("c/y.ts", "c/z.ts"), E("c/z.ts", "c/x.ts")],
+    });
+    expect(engineOf(clusters, "c")).toBe("circular");
+  });
+
+  test("hub-with-many-leaves leaf cluster → backbone", () => {
+    const edges = [E("h/a.ts", "h/b.ts"), E("h/b.ts", "h/c.ts"), E("h/c.ts", "h/a.ts")];
+    for (const leaf of ["d", "e", "f", "g", "i"]) edges.push(E("h/a.ts", `h/${leaf}.ts`));
+    const nodes = ["a", "b", "c", "d", "e", "f", "g", "i"].map((s) => N(`h/${s}.ts`));
+    expect(engineOf(dir({ nodes, edges }).clusters, "h")).toBe("backbone");
+  });
+
+  test("large cyclic leaf cluster → stress", () => {
+    const ids = Array.from({ length: 70 }, (_, i) => `s/n${i}.ts`);
+    const edges = ids.map((id, i) => E(id, ids[(i + 1) % ids.length]));
+    expect(engineOf(dir({ nodes: ids.map((id) => N(id)), edges }).clusters, "s")).toBe("stress");
+  });
+
+  test("oversized leaf cluster → guarded grid fallback (records requested + reason)", () => {
+    // A multi-parent DAG of >1200 nodes: the planner asks for layered; the budget guard
+    // downgrades it to grid deterministically and records why.
+    const n = 1250;
+    const nodes = Array.from({ length: n }, (_, i) => N(`big/n${i}.ts`));
+    const edges: { source: string; target: string }[] = [];
+    for (let i = 2; i < n; i++) {
+      edges.push(E(`big/n${i - 1}.ts`, `big/n${i}.ts`));
+      edges.push(E(`big/n${i - 2}.ts`, `big/n${i}.ts`));
+    }
+    const box = dir({ nodes, edges }).clusters.find((c) => c.id === "big")!;
+    expect(box.requestedEngine).toBe("layered");
+    expect(box.engine).toBe("grid");
+    expect(box.fallbackReason).toBe("node-cap");
+  });
+
+  test("selects different engines for different-shaped dirs in one repo", () => {
+    const { clusters } = dir({
+      nodes: [
+        ...["t/r.ts", "t/a.ts", "t/b.ts"].map((id) => N(id)),
+        ...["c/x.ts", "c/y.ts", "c/z.ts"].map((id) => N(id)),
+        ...["g/a.ts", "g/b.ts"].map((id) => N(id)),
+        ...["d/a.ts", "d/b.ts", "d/c.ts", "d/e.ts"].map((id) => N(id)),
+      ],
+      edges: [
+        E("t/r.ts", "t/a.ts"),
+        E("t/r.ts", "t/b.ts"),
+        E("c/x.ts", "c/y.ts"),
+        E("c/y.ts", "c/z.ts"),
+        E("c/z.ts", "c/x.ts"),
+        E("d/a.ts", "d/b.ts"),
+        E("d/a.ts", "d/c.ts"),
+        E("d/b.ts", "d/e.ts"),
+        E("d/c.ts", "d/e.ts"),
+      ],
+    });
+    expect(engineOf(clusters, "t")).toBe("tree");
+    expect(engineOf(clusters, "c")).toBe("circular");
+    expect(engineOf(clusters, "g")).toBe("grid");
+    expect(engineOf(clusters, "d")).toBe("layered");
+    // The whole point: one repo, several different engines selected.
+    expect(
+      new Set(["t", "c", "g", "d"].map((id) => engineOf(clusters, id))).size,
+    ).toBeGreaterThanOrEqual(3);
+  });
+
+  test("every directory box keeps its directory-path id + is deterministic (LOD contract)", () => {
+    const view = {
+      nodes: [
+        ...["t/r.ts", "t/a.ts"].map((id) => N(id)),
+        ...["c/x.ts", "c/y.ts", "c/z.ts"].map((id) => N(id)),
+      ],
+      edges: [
+        E("t/r.ts", "t/a.ts"),
+        E("c/x.ts", "c/y.ts"),
+        E("c/y.ts", "c/z.ts"),
+        E("c/z.ts", "c/x.ts"),
+      ],
+    };
+    const a = dir(view);
+    const b = dir(view);
+    expect(a.clusters.map((c) => c.id).sort()).toEqual(["c", "t"]);
+    expect(a.clusters).toEqual(b.clusters);
+    expect([...a.nodes.entries()]).toEqual([...b.nodes.entries()]);
+  });
+});
+
+describe("resolveEngineForBudget (budget guard, separate from chooseEngine)", () => {
+  test("passes an engine through under its cap", () => {
+    expect(resolveEngineForBudget("tree", 100, 50)).toEqual({
+      engine: "tree",
+      fallbackReason: null,
+    });
+  });
+  test("downgrades to grid over the node cap", () => {
+    expect(resolveEngineForBudget("stress", 801, 10)).toEqual({
+      engine: "grid",
+      fallbackReason: "node-cap",
+    });
+  });
+  test("downgrades to grid over the edge cap", () => {
+    expect(resolveEngineForBudget("layered", 100, 8001)).toEqual({
+      engine: "grid",
+      fallbackReason: "edge-cap",
+    });
+  });
+  test("uncapped engines (grid/circular/radial) always pass through", () => {
+    expect(resolveEngineForBudget("circular", 99999, 99999)).toEqual({
+      engine: "circular",
+      fallbackReason: null,
+    });
+  });
+});
+
+describe("aggregateInternalEdges (weighted relationship aggregation)", () => {
+  test("sums weight + count of parallel edges and keeps the heaviest kind", () => {
+    const edges = [
+      { source: "A", target: "B", kind: "call" as const, count: 3, weight: 1 },
+      { source: "A", target: "B", kind: "extends" as const, count: 1, weight: 8 },
+      { source: "C", target: "D", kind: "call" as const, count: 1, weight: 1 },
+      { source: "A", target: "Z", kind: "call" as const, count: 1, weight: 1 }, // Z not in set
+    ];
+    expect(aggregateInternalEdges(edges, new Set(["A", "B", "C", "D"]))).toEqual([
+      { source: "A", target: "B", kind: "extends", count: 4, weight: 9 },
+      { source: "C", target: "D", kind: "call", count: 1, weight: 1 },
+    ]);
   });
 });
