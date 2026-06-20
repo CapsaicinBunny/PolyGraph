@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chooseEngine } from "./planner";
+import { candidateEngines, chooseEngine } from "./planner";
 import { graphShape } from "./shape";
 
 const E = (source: string, target: string) => ({ source, target });
@@ -46,5 +46,24 @@ describe("chooseEngine (Smart planner)", () => {
   test("never returns 'smart' (no infinite recursion)", () => {
     const shape = graphShape(["a", "b"], [E("a", "b")]);
     expect(chooseEngine(shape)).not.toBe("smart");
+  });
+});
+
+describe("candidateEngines", () => {
+  test("returns just the primary for clear-cut shapes (grid)", () => {
+    expect(candidateEngines(graphShape(["a", "b", "c"], []))).toEqual(["grid"]);
+  });
+
+  test("returns the primary plus alternates for an ambiguous shape", () => {
+    const ids = Array.from({ length: 70 }, (_, i) => `n${i}`);
+    const cands = candidateEngines(
+      graphShape(
+        ids,
+        ids.map((id, i) => E(id, ids[(i + 1) % ids.length])),
+      ),
+    );
+    expect(cands[0]).toBe("stress"); // primary first
+    expect(cands.length).toBeGreaterThan(1);
+    expect(new Set(cands).size).toBe(cands.length); // deduped
   });
 });

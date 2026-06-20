@@ -43,3 +43,15 @@ export function chooseEngine(shape: GraphShape): LayoutAlgorithm {
   // Mild cycles otherwise: layered handles the condensation fine.
   return "layered";
 }
+
+/**
+ * Candidate engines for a shape, primary (chooseEngine) first. Clear-cut shapes (grid /
+ * tree / circular) return just the primary — the heuristic is obviously right, so scoring
+ * alternates wastes work. Ambiguous medium graphs return the primary plus the versatile
+ * engines so the caller can pick the lowest-crossing result. Capped at 3.
+ */
+export function candidateEngines(shape: GraphShape): LayoutAlgorithm[] {
+  const primary = chooseEngine(shape);
+  if (primary === "grid" || primary === "tree" || primary === "circular") return [primary];
+  return [...new Set<LayoutAlgorithm>([primary, "stress", "force", "layered"])].slice(0, 3);
+}

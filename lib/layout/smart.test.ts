@@ -156,8 +156,10 @@ describe("grouped Smart runs the shape planner per leaf cluster", () => {
     nodes: { id: string; kind: string }[];
     edges: { source: string; target: string }[];
   }) => smartLayout(view, { groupBy: "directory", direction: "LR" });
+  // The planner's heuristic pick for a shape (candidate scoring may then refine the actual
+  // engine for medium clusters — see the candidate-scoring test below).
   const engineOf = (clusters: ClusterBox[], id: string) =>
-    clusters.find((c) => c.id === id)?.engine;
+    clusters.find((c) => c.id === id)?.requestedEngine;
 
   test("edgeless leaf cluster → grid", () => {
     const { clusters } = dir({ nodes: [N("g/a.ts"), N("g/b.ts"), N("g/c.ts")], edges: [] });
@@ -270,6 +272,20 @@ describe("grouped Smart runs the shape planner per leaf cluster", () => {
     expect(a.clusters.map((c) => c.id).sort()).toEqual(["c", "t"]);
     expect(a.clusters).toEqual(b.clusters);
     expect([...a.nodes.entries()]).toEqual([...b.nodes.entries()]);
+  });
+
+  test("candidate scoring refines the actual engine (medium cluster), deterministically", () => {
+    // A 70-node cycle is in the scoring band: the planner REQUESTS stress, then scoring runs
+    // the candidates and keeps the lowest-crossing one — recorded as the actual engine.
+    const ids = Array.from({ length: 70 }, (_, i) => `sc/n${i}.ts`);
+    const edges = ids.map((id, i) => E(id, ids[(i + 1) % ids.length]));
+    const box = dir({ nodes: ids.map((id) => N(id)), edges }).clusters.find((c) => c.id === "sc")!;
+    expect(box.requestedEngine).toBe("stress"); // the planner's heuristic pick
+    expect(box.engine && ["stress", "force", "layered"].includes(box.engine)).toBe(true); // scored candidate
+    const again = dir({ nodes: ids.map((id) => N(id)), edges }).clusters.find(
+      (c) => c.id === "sc",
+    )!;
+    expect(again.engine).toBe(box.engine); // deterministic
   });
 });
 
