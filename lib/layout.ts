@@ -620,56 +620,135 @@ function treeLayout(view: LayoutInput, direction: LayoutDirection): Positions {
   );
   // A single virtual root unifies a forest into one hierarchy for stratify.
   const VIRTUAL = " treeRoot";
-  const data: StratifyDatum[] = view.nodes.map((nd) => ({
-    id: nd.id,
-    parentId: parent.get(nd.id) ?? VIRTUAL,
-  }));
-  data.push({ id: VIRTUAL, parentId: null });
-  // d3.stratify orders each parent's children by their order in `data`, so sort by id
-  // to make sibling placement independent of input order (deterministic).
-  data.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const ids = view.nodes.map((nd) => nd.id);
 
-  let root: ReturnType<ReturnType<typeof d3tree<StratifyDatum>>>;
-  try {
-    const h = stratify<StratifyDatum>()
-      .id((d) => d.id)
-      .parentId((d) => d.parentId)(data);
-    const vertical = direction === "TB" || direction === "BT";
-    const sample = nodeSize("file");
-    const dx = (vertical ? sample.width : sample.height) + 40;
-    const dy = (vertical ? sample.height : sample.width) + 80;
-    root = d3tree<StratifyDatum>().nodeSize([dx, dy])(h);
-  } catch {
-    return gridLayout(view); // defensive: stratify only throws on a malformed forest
+  // Children of each node (roots hang off the virtual root).
+  const children = new Map<string, string[]>([[VIRTUAL, []]]);
+  for (const id of ids) children.set(id, []);
+  for (const id of ids) children.get(parent.get(id) ?? VIRTUAL)!.push(id);
+
+  // Subtree sizes via reverse-BFS accumulation (iterative — safe for deep chains).
+  const bfs: string[] = [];
+  const sizeQueue = [VIRTUAL];
+  for (let i = 0; i < sizeQueue.length; i++) {
+    bfs.push(sizeQueue[i]);
+    for (const c of children.get(sizeQueue[i]) ?? []) sizeQueue.push(c);
+  }
+  const subtree = new Map<string, number>(bfs.map((id) => [id, 1]));
+  for (let i = bfs.length - 1; i >= 0; i--) {
+    const v = bfs[i];
+    if (v === VIRTUAL) continue;
+    const p = parent.get(v) ?? VIRTUAL;
+    subtree.set(p, subtree.get(p)! + subtree.get(v)!);
   }
 
-  root.each((dnode) => {
-    if (dnode.data.id === VIRTUAL) return;
-    const node = nodeById.get(dnode.data.id);
-    if (!node) return;
-    const across = dnode.x; // cross-axis (siblings)
-    const depth = dnode.y; // depth-axis (levels)
+  // Parent-edge weight (strongest relationship to the parent) + non-tree neighbors.
+  const pairKey = (a: string, b: string) => (a < b ? `${a} ${b}` : `${b} ${a}`);
+  const pairW = new Map<string, number>();
+  for (const e of view.edges) {
+    if (e.source === e.target) continue;
+    const k = pairKey(e.source, e.target);
+    const w = e.weight ?? 1;
+    if (w > (pairW.get(k) ?? 0)) pairW.set(k, w);
+  }
+  const parentWeight = (id: string): number => {
+    const p = parent.get(id);
+    return p == null ? 0 : (pairW.get(pairKey(id, p)) ?? 0);
+  };
+  const treeEdges = new Set<string>();
+  for (const id of ids) {
+    const p = parent.get(id);
+    if (p != null) treeEdges.add(pairKey(id, p));
+  }
+  const nonTree = new Map<string, string[]>(ids.map((id) => [id, []]));
+  for (const e of view.edges) {
+    if (e.source === e.target || !nonTree.has(e.source) || !nonTree.has(e.target)) continue;
+    if (treeEdges.has(pairKey(e.source, e.target))) continue;
+    nonTree.get(e.source)!.push(e.target);
+    nonTree.get(e.target)!.push(e.source);
+  }
+
+  const vertical = direction === "TB" || direction === "BT";
+  const sample = nodeSize("file");
+  const dx = (vertical ? sample.width : sample.height) + 40;
+  const dy = (vertical ? sample.height : sample.width) + 80;
+  // Lay the tree out with a sibling comparator. d3.stratify keeps children in their order
+  // of appearance, so sorting rows by (parentId, cmp) fixes each parent's sibling order.
+  const layoutWithOrder = (
+    cmp: (a: string, b: string) => number,
+  ): Map<string, { across: number; depth: number }> | null => {
+    const data: StratifyDatum[] = view.nodes.map((nd) => ({
+      id: nd.id,
+      parentId: parent.get(nd.id) ?? VIRTUAL,
+    }));
+    data.push({ id: VIRTUAL, parentId: null });
+    data.sort((a, b) => {
+      const pa = a.parentId ?? "";
+      const pb = b.parentId ?? "";
+      return pa !== pb ? (pa < pb ? -1 : 1) : cmp(a.id, b.id);
+    });
+    try {
+      const h = stratify<StratifyDatum>()
+        .id((d) => d.id)
+        .parentId((d) => d.parentId)(data);
+      const laid = d3tree<StratifyDatum>().nodeSize([dx, dy])(h);
+      const out = new Map<string, { across: number; depth: number }>();
+      laid.each((dnode) => {
+        if (dnode.data.id !== VIRTUAL) out.set(dnode.data.id, { across: dnode.x, depth: dnode.y });
+      });
+      return out;
+    } catch {
+      return null; // stratify only throws on a malformed forest
+    }
+  };
+
+  const tie = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  // Initial order: bigger subtrees first, then stronger parent-edge, then stable id.
+  const initial = layoutWithOrder(
+    (a, b) => subtree.get(b)! - subtree.get(a)! || parentWeight(b) - parentWeight(a) || tie(a, b),
+  );
+  if (!initial) return gridLayout(view);
+
+  // One barycenter sweep: order siblings by the mean cross-axis position of their NON-tree
+  // neighbors, pulling cross-link endpoints together so secondary edges cross less.
+  const bary = (id: string): number => {
+    let sum = 0;
+    let cnt = 0;
+    for (const nb of nonTree.get(id) ?? []) {
+      const pp = initial.get(nb);
+      if (pp) {
+        sum += pp.across;
+        cnt++;
+      }
+    }
+    return cnt > 0 ? sum / cnt : (initial.get(id)?.across ?? 0);
+  };
+  const placed = layoutWithOrder((a, b) => bary(a) - bary(b) || tie(a, b)) ?? initial;
+
+  for (const [id, p] of placed) {
+    const node = nodeById.get(id);
+    if (!node) continue;
     let cx: number;
     let cy: number;
     switch (direction) {
       case "BT":
-        cx = across;
-        cy = -depth;
+        cx = p.across;
+        cy = -p.depth;
         break;
       case "LR":
-        cx = depth;
-        cy = across;
+        cx = p.depth;
+        cy = p.across;
         break;
       case "RL":
-        cx = -depth;
-        cy = across;
+        cx = -p.depth;
+        cy = p.across;
         break;
       default:
-        cx = across;
-        cy = depth;
+        cx = p.across;
+        cy = p.depth;
     }
     positions.set(...topLeft(node, cx, cy));
-  });
+  }
   return positions;
 }
 

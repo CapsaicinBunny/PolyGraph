@@ -646,3 +646,34 @@ describe("heavy engines keep cards from overlapping", () => {
     expect(anyOverlap(pos, leaves)).toBe(false);
   });
 });
+
+describe("tree sibling ordering (subtree size + weight)", () => {
+  const W = (s: string, t: string) => ({
+    source: s,
+    target: t,
+    kind: "import" as const,
+    count: 1,
+    weight: edgeWeight("import", 1),
+  });
+
+  test("orders a bigger subtree before a leaf sibling", () => {
+    // Under r: a carries a subtree of 3 (a,c,d), b is a leaf. Bigger subtree → ordered
+    // first → a's cross-axis (x in TB) sits left of the leaf b's.
+    const g: LayoutInput = {
+      nodes: ["r", "a", "b", "c", "d"].map((id) => ({ id, kind: "file" })),
+      edges: [W("r", "a"), W("r", "b"), W("a", "c"), W("a", "d")],
+    };
+    const pos = layoutView(g, { algorithm: "tree", direction: "TB" });
+    expect(pos.get("a")!.x).toBeLessThan(pos.get("b")!.x);
+  });
+
+  test("is deterministic", () => {
+    const g: LayoutInput = {
+      nodes: ["r", "a", "b", "c"].map((id) => ({ id, kind: "file" })),
+      edges: [W("r", "a"), W("r", "b"), W("b", "c")],
+    };
+    const a = layoutView(g, { algorithm: "tree", direction: "TB" });
+    const b = layoutView(g, { algorithm: "tree", direction: "TB" });
+    expect([...a.entries()]).toEqual([...b.entries()]);
+  });
+});
