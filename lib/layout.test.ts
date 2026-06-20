@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { GraphView } from "./aggregate";
-import { type LayoutAlgorithm, type LayoutInput, layoutView, runLayout } from "./layout";
+import {
+  type ClusterBox,
+  type LayoutAlgorithm,
+  type LayoutInput,
+  layoutFallbackSummary,
+  layoutView,
+  runLayout,
+} from "./layout";
 import { edgeWeight } from "./layout/weight";
 
 // A → B, so the layout should place B "after" A along the flow axis.
@@ -712,5 +719,38 @@ describe("tree sibling ordering (subtree size + weight)", () => {
     const a = layoutView(g, { algorithm: "tree", direction: "TB" });
     const b = layoutView(g, { algorithm: "tree", direction: "TB" });
     expect([...a.entries()]).toEqual([...b.entries()]);
+  });
+});
+
+describe("layoutFallbackSummary", () => {
+  const box = (o: Partial<ClusterBox>): ClusterBox => ({
+    id: "x",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    depth: 0,
+    label: "x",
+    ...o,
+  });
+
+  test("returns null when nothing was downgraded", () => {
+    expect(
+      layoutFallbackSummary([
+        box({ requestedEngine: "tree", engine: "tree", fallbackReason: null }),
+      ]),
+    ).toBeNull();
+  });
+
+  test("summarizes downgrades grouped by substitution", () => {
+    const msg = layoutFallbackSummary([
+      box({ requestedEngine: "layered", engine: "grid", fallbackReason: "node-cap" }),
+      box({ requestedEngine: "layered", engine: "grid", fallbackReason: "node-cap" }),
+      box({ requestedEngine: "stress", engine: "grid", fallbackReason: "edge-cap" }),
+      box({ requestedEngine: "tree", engine: "tree", fallbackReason: null }), // not a fallback
+    ]);
+    expect(msg).toContain("Layout simplified");
+    expect(msg).toContain("Layered → Grid (2 areas)");
+    expect(msg).toContain("Stress → Grid");
   });
 });

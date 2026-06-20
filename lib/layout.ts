@@ -1215,6 +1215,27 @@ export function resolveEngineForBudget(
   return { engine: requested, fallbackReason: null };
 }
 
+/**
+ * Human summary of any Smart leaf clusters the budget guard downgraded to a cheaper engine,
+ * for a "layout simplified" indicator — so a grid fallback isn't mistaken for the chosen
+ * engine producing a poor result. Returns null when nothing was downgraded. Groups by the
+ * requested → actual substitution; deterministic order.
+ */
+export function layoutFallbackSummary(clusters: ClusterBox[]): string | null {
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  const counts = new Map<string, number>();
+  for (const c of clusters) {
+    if (c.fallbackReason == null || !c.requestedEngine || !c.engine) continue;
+    const key = `${cap(c.requestedEngine)} → ${cap(c.engine)}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  const parts = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+    .map(([k, n]) => (n > 1 ? `${k} (${n} areas)` : k));
+  return `Layout simplified — ${parts.join(", ")} (too large for the chosen engine)`;
+}
+
 /** Lay each component out with `engine`, falling back to grid for any oversized component. */
 function cappedComponents(
   view: LayoutInput,
