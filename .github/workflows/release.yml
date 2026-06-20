@@ -50,6 +50,12 @@ jobs:
         uses: tauri-apps/tauri-action@action-v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # linuxdeploy + appimagetool (the AppImage bundlers) are themselves AppImages,
+          # and ubuntu-latest (24.04 / noble) ships no libfuse2 — so they can't FUSE-mount
+          # and bundling dies with "failed to run linuxdeploy". Tell them to extract and
+          # run instead of mounting. No-op on Windows/macOS. The deb/rpm bundles already
+          # build fine; this is only the AppImage target.
+          APPIMAGE_EXTRACT_AND_RUN: 1
         with:
           # On a version tag, publish a draft GitHub Release with the unsigned
           # installers; otherwise just build the bundles (uploaded as artifacts
