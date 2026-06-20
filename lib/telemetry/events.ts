@@ -2,7 +2,7 @@
 // recent N events (oldest overwritten) so a long session can't grow memory, and
 // snapshots them in chronological order for the downloadable log. Pure.
 
-export type Category = "analysis" | "layout" | "scene" | "lod" | "render" | "interaction";
+export type Category = "analysis" | "layout" | "scene" | "lod" | "render" | "interaction" | "app"; // lifecycle + global crashes (uncaught errors, rejections, React errors)
 export type Level = "debug" | "info" | "warn" | "error";
 
 export interface TelemetryEvent {

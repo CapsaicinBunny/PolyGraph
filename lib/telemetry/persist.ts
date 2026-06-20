@@ -5,8 +5,8 @@
 // no-op; use the Settings "Download session log" button there.
 
 import { isTauri } from "@/lib/client/env";
-import { telemetry } from "@/lib/telemetry";
 import type { TelemetryEvent } from "./events";
+import { telemetry } from "./telemetry";
 
 /** Events newer than the last flushed timestamp (snapshot is oldest-first). */
 export function eventsSince(events: readonly TelemetryEvent[], lastT: number): TelemetryEvent[] {
@@ -14,6 +14,16 @@ export function eventsSince(events: readonly TelemetryEvent[], lastT: number): T
 }
 
 let started = false;
+let triggerFlush: (() => void) | null = null;
+
+/**
+ * Force an immediate flush of buffered telemetry to disk — call right after logging a
+ * crash so it survives even if the page dies before the next interval tick. No-op if
+ * persistence hasn't started (browser, or before startSessionLogPersist ran).
+ */
+export function flushSessionLog(): void {
+  triggerFlush?.();
+}
 
 /**
  * Start periodically flushing new telemetry events to logs/session.ndjson. Safe to
@@ -46,6 +56,7 @@ export function startSessionLogPersist(intervalMs = 1000): void {
     }
   };
 
+  triggerFlush = () => void flush();
   setInterval(() => void flush(), intervalMs);
   // Best-effort final flush when the window is going away.
   if (typeof window !== "undefined") {

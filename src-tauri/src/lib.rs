@@ -192,7 +192,16 @@ pub fn run() {
               log::warn!("sidecar: {}", String::from_utf8_lossy(&bytes).trim());
             }
             CommandEvent::Terminated(payload) => {
-              if !port_seen {
+              if port_seen {
+                // The sidecar died AFTER announcing its port — a Bun crash/exit mid-session.
+                // Scanning is broken until the app restarts; record it here (the webview also
+                // logs the resulting scan failures via telemetry → session.ndjson).
+                log::error!(
+                  "sidecar terminated mid-session (code {:?}, signal {:?})",
+                  payload.code,
+                  payload.signal
+                );
+              } else {
                 log::error!("sidecar exited before reporting a port (code {:?})", payload.code);
                 handle
                   .dialog()
@@ -205,6 +214,10 @@ pub fn run() {
                   .show(|_| {});
               }
               break;
+            }
+            CommandEvent::Error(err) => {
+              // An I/O error on the sidecar's pipe (distinct from the process exiting).
+              log::error!("sidecar pipe error: {err}");
             }
             _ => {}
           }

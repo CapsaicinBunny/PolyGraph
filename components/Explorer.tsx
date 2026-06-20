@@ -40,6 +40,7 @@ import { Sidebar } from "./Sidebar";
 import { ThemeToggle } from "./ThemeToggle";
 import { UploadDropzone } from "./UploadDropzone";
 import type { ExplorerWorkspaceState } from "@/lib/workspace/schema";
+import { isTauri } from "@/lib/client/env";
 import { telemetry } from "@/lib/telemetry";
 import { startSessionLogPersist } from "@/lib/telemetry/persist";
 
@@ -166,8 +167,11 @@ export function Explorer() {
 
   // Mirror telemetry to logs/session.ndjson on desktop so the LOD/render trace
   // survives a crash (no-op in the browser; Settings "Download session log" there).
+  // Also mark the app shell as mounted/hydrated — the first lifecycle breadcrumb after
+  // session-start, so the log shows how far startup got before any crash.
   useEffect(() => {
     startSessionLogPersist();
+    telemetry.event("app", "mounted", { tauri: isTauri() });
   }, []);
 
   // Load / persist user saved searches.

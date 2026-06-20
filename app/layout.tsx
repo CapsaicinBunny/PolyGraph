@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Provider } from "@/components/ui/provider";
 
 export const metadata: Metadata = {
@@ -10,7 +11,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <body style={{ margin: 0 }}>
-        <Provider>{children}</Provider>
+        <ErrorBoundary>
+          <Provider>{children}</Provider>
+        </ErrorBoundary>
       </body>
     </html>
   );
