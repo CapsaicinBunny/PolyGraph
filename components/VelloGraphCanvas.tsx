@@ -846,9 +846,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     if (shouldFit(fitSignature, prevFitSig.current)) {
       const fit = vc.fit();
       cam.current = { x: fit[0], y: fit[1], scale: fit[2] };
-      // Match the renderer's dynamic floor: allow zooming out to the fit scale (or the
-      // normal floor, whichever is smaller) so large graphs aren't stuck zoomed in.
-      minScale.current = Math.min(fit[2], 0.02);
+      // Allow zooming out to the fit scale (or the normal 0.02 floor, whichever is smaller) so
+      // large graphs aren't stuck zoomed in — but never below 0.004, so a stray/oversized fit
+      // can't let the user zoom out to a useless sub-pixel speck. (Adaptive LOD thins the card
+      // count at low zoom, so you never need to zoom past this to see the whole graph.)
+      minScale.current = Math.max(0.004, Math.min(fit[2], 0.02));
       lodBand.current = cameraBand(cam.current.scale);
     } else {
       // Cut-only change: keep the camera where the user left it.

@@ -1121,8 +1121,17 @@ function stressLayout(view: LayoutInput, options: LayoutOptions = {}): Positions
     return positions;
   }
   const m = view.edges.length;
-  if (n <= DENSE_STRESS_MAX && m <= DENSE_STRESS_EDGE_CAP) return denseStressLayout(view, options);
   const pivots = stressPivots(n);
+  if (n <= DENSE_STRESS_MAX && m <= DENSE_STRESS_EDGE_CAP) {
+    try {
+      return denseStressLayout(view, options);
+    } catch {
+      // webcola can fail to run in some bundles (notably the production Web Worker). Fall back to
+      // the pure-TS PivotMDS path so Stress still produces a layout instead of throwing (which
+      // would otherwise hang the worker until the 8s timeout).
+      return sparseStressLayout(view, pivots);
+    }
+  }
   if (stressWork(n, m, pivots) > MAX_STRESS_WORK) return gridLayout(view);
   return sparseStressLayout(view, pivots);
 }

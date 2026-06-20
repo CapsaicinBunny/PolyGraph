@@ -96,8 +96,18 @@ export function layoutInWorker(input: LayoutInput, options: LayoutOptions): Prom
       clearTimeout(timer);
       resolve(result);
     };
-    // Guarantee termination: if the worker hangs, fall back to a synchronous grid.
-    timer = setTimeout(() => finish(layoutSync(input, gridOptions(opts))), LAYOUT_TIMEOUT_MS);
+    // Guarantee termination: if the worker hangs on a pathological input, KILL it (so it can't
+    // block every future layout — a wedged worker would make the next request queue behind it
+    // and time out too) and fall back to a synchronous grid. The next call spins up a fresh worker.
+    timer = setTimeout(() => {
+      try {
+        worker?.terminate();
+      } catch {
+        /* ignore */
+      }
+      worker = null;
+      finish(layoutSync(input, gridOptions(opts)));
+    }, LAYOUT_TIMEOUT_MS);
     pending.set(id, finish);
     w.postMessage({ id, input, options: opts });
   });
