@@ -1,9 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  type DimensionDescriptor,
-  mergeDescriptors,
-  STRUCTURAL_DESCRIPTORS,
-} from "./dimensions";
+import { type DimensionDescriptor, mergeDescriptors, STRUCTURAL_DESCRIPTORS } from "./dimensions";
 import { FILTERABLE_NODE_KINDS } from "./visual";
 
 test("STRUCTURAL_DESCRIPTORS covers kind/language/folder, all structural + core", () => {

@@ -89,7 +89,8 @@ export function buildDimensionIndex(graph: GraphModel, catalog: DimensionCatalog
     const declaredFlags: boolean[] = [];
     const accum: number[][] = [];
 
-    const isFacetDefault = descriptor.dimension === "facet" && descriptor.defaultValue !== undefined;
+    const isFacetDefault =
+      descriptor.dimension === "facet" && descriptor.defaultValue !== undefined;
     const defaultValue = descriptor.defaultValue;
 
     const intern = (value: string): number => {
