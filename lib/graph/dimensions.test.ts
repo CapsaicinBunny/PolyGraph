@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { type DimensionDescriptor, mergeDescriptors, STRUCTURAL_DESCRIPTORS } from "./dimensions";
-import { FILTERABLE_NODE_KINDS } from "./visual";
+import { FILTERABLE_NODE_KINDS, NODE_STYLES } from "./visual";
 
 test("STRUCTURAL_DESCRIPTORS covers kind/language/folder, all structural + core", () => {
   const keys = STRUCTURAL_DESCRIPTORS.map((d) => d.key).sort();
@@ -18,11 +18,19 @@ test("STRUCTURAL_DESCRIPTORS covers kind/language/folder, all structural + core"
   }
 });
 
-test("kind is a closed domain whose values come from FILTERABLE_NODE_KINDS", () => {
+test("kind is a closed domain over the FULL node taxonomy (incl. file + external)", () => {
   const kind = STRUCTURAL_DESCRIPTORS.find((d) => d.key === "kind");
   expect(kind?.domain).toBe("closed");
   expect(kind?.cardinality).toBe("single");
-  expect(kind?.values.map((v) => v.value)).toEqual([...FILTERABLE_NODE_KINDS]);
+  // The closed domain is the universal node taxonomy (every NodeKind), NOT the
+  // filter-UI subset — file/external dominate real graphs and must be declared.
+  expect(kind?.values.map((v) => v.value)).toEqual(Object.keys(NODE_STYLES));
+  expect(kind?.values.map((v) => v.value)).toContain("file");
+  expect(kind?.values.map((v) => v.value)).toContain("external");
+  // …and it is a strict superset of the filterable subset.
+  for (const k of FILTERABLE_NODE_KINDS) {
+    expect(kind?.values.some((v) => v.value === k)).toBe(true);
+  }
 });
 
 test("language and folder are open domains with no declared values", () => {
@@ -75,6 +83,56 @@ test("mergeDescriptors: core/built-in wins metadata; provider values are unioned
   expect(merged.values.find((v) => v.value === "a")?.label).toBe("A core");
   // providerIds unioned.
   expect(merged.providerIds).toEqual(["core", "typescript"]);
+});
+
+test("mergeDescriptors: a non-first defaultValue is dropped first-wins but warned", () => {
+  const core: DimensionDescriptor = {
+    key: "category",
+    label: "Category",
+    dimension: "facet",
+    cardinality: "single",
+    domain: "closed",
+    values: [],
+    providerIds: ["core"],
+    // No defaultValue on the winning contributor…
+    filterable: true,
+    groupable: true,
+    grouping: { mode: "single" },
+    missing: { filter: "include", group: "unclassified" },
+  };
+  // …but a later provider declares one (which first-wins discards).
+  const provider: DimensionDescriptor = {
+    ...core,
+    providerIds: ["typescript"],
+    defaultValue: "feature",
+  };
+  const { catalog, warnings } = mergeDescriptors([[core], [provider]]);
+  // Behavior is unchanged (first-wins): the merged default stays undefined…
+  expect(catalog.descriptors[0].defaultValue).toBeUndefined();
+  // …but the divergence is surfaced rather than silently swallowed.
+  const w = warnings.find((x) => x.key === "category" && x.value === "feature");
+  expect(w).toBeDefined();
+});
+
+test("mergeDescriptors: agreeing metadata across contributors raises no warning", () => {
+  const a: DimensionDescriptor = {
+    key: "category",
+    label: "Category",
+    dimension: "facet",
+    cardinality: "single",
+    domain: "closed",
+    values: [{ value: "feature", label: "Feature" }],
+    providerIds: ["core"],
+    defaultValue: "feature",
+    filterable: true,
+    groupable: true,
+    grouping: { mode: "single" },
+    missing: { filter: "include", group: "unclassified" },
+  };
+  const b: DimensionDescriptor = { ...a, providerIds: ["typescript"] };
+  const { catalog, warnings } = mergeDescriptors([[a], [b]]);
+  expect(catalog.descriptors[0].defaultValue).toBe("feature");
+  expect(warnings).toEqual([]);
 });
 
 test("mergeDescriptors: cardinality conflict upgrades to multi", () => {

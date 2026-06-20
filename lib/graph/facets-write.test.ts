@@ -23,6 +23,19 @@ test("writeFacet sets the legacy field but NOT node.facets for the default value
   expect(FACET_DEFAULTS.category).toBe("feature");
 });
 
+test("writeFacet rewriting a key to its default clears the stale materialized facet", () => {
+  const node = bareNode();
+  // First an informative value materializes the facet…
+  writeFacet(node, "category", ["ui"]);
+  expect(node.facets?.category).toEqual(["ui"]);
+  // …then a default value must clear it so legacy and facet stay in lock-step.
+  writeFacet(node, "category", ["feature"]);
+  expect(node.category).toBe("feature");
+  expect(node.facets?.category).toBeUndefined();
+  // Parity holds: legacy "feature" resolves to the same as the (absent) facet.
+  expect(facetParityMismatches(node)).toEqual([]);
+});
+
 test("writeFacet mirrors env → environment and role → role", () => {
   const node = bareNode();
   writeFacet(node, "env", ["client"]);

@@ -14,7 +14,16 @@
 // catalog model free of the heavy graph types avoids an import cycle. It needs only
 // the structural value sources from ./visual (whose type imports are type-only).
 
-import { FILTERABLE_NODE_KINDS, KIND_GLYPH, NODE_STYLES } from "./visual";
+import { KIND_GLYPH, NODE_STYLES } from "./visual";
+
+/**
+ * Every node kind in the universal taxonomy, in `NODE_STYLES` declaration order
+ * (file … external). The `kind` dimension's closed domain is this full set — NOT
+ * the filter-UI subset (`FILTERABLE_NODE_KINDS`), which omits `file`/`external`
+ * because they are toggled by separate controls. Those two kinds dominate real
+ * graphs, so the catalog must declare them or every consumer mishandles them.
+ */
+const ALL_NODE_KINDS = Object.keys(NODE_STYLES) as (keyof typeof NODE_STYLES)[];
 
 /** A dimension's key, e.g. "role", "env", "kind", "rust.visibility". Namespaced. */
 export type FacetKey = string;
@@ -107,7 +116,7 @@ export const STRUCTURAL_DESCRIPTORS: DimensionDescriptor[] = [
     dimension: "structural",
     cardinality: "single",
     domain: "closed",
-    values: FILTERABLE_NODE_KINDS.map((kind) => ({
+    values: ALL_NODE_KINDS.map((kind) => ({
       value: kind,
       label: NODE_STYLES[kind].label,
       color: NODE_STYLES[kind].color,
@@ -164,9 +173,15 @@ function unionProviderIds(a: string[], b: string[]): string[] {
  * Fold one descriptor into an accumulator that already holds an earlier one for the
  * same key. The earlier (core/built-in) descriptor wins metadata; values are
  * unioned by `.value` (first occurrence's metadata wins); a single/multi conflict
- * upgrades cardinality to `multi`; `providerIds` are unioned.
+ * upgrades cardinality to `multi`; `providerIds` are unioned. Resolution stays
+ * first-wins, but a later contributor whose `defaultValue`/`domain` is dropped or
+ * overridden raises a (non-fatal) `CatalogWarning` so the divergence is not silent.
  */
-function foldDescriptor(into: DimensionDescriptor, next: DimensionDescriptor): DimensionDescriptor {
+function foldDescriptor(
+  into: DimensionDescriptor,
+  next: DimensionDescriptor,
+  warnings: CatalogWarning[],
+): DimensionDescriptor {
   const values = [...into.values];
   const seen = new Set(values.map((v) => v.value));
   for (const v of next.values) {
@@ -175,6 +190,25 @@ function foldDescriptor(into: DimensionDescriptor, next: DimensionDescriptor): D
       values.push(v);
     }
   }
+
+  // First-wins keeps `into`'s metadata; surface anything from `next` we discard.
+  if (next.defaultValue !== undefined && next.defaultValue !== into.defaultValue) {
+    warnings.push({
+      key: into.key,
+      value: next.defaultValue,
+      message:
+        into.defaultValue === undefined
+          ? `Dropped defaultValue "${next.defaultValue}" from provider [${next.providerIds.join(", ")}] on "${into.key}" (no default on the winning contributor)`
+          : `Ignored conflicting defaultValue "${next.defaultValue}" from provider [${next.providerIds.join(", ")}] on "${into.key}" (kept "${into.defaultValue}")`,
+    });
+  }
+  if (next.domain !== into.domain) {
+    warnings.push({
+      key: into.key,
+      message: `Ignored conflicting domain "${next.domain}" from provider [${next.providerIds.join(", ")}] on "${into.key}" (kept "${into.domain}")`,
+    });
+  }
+
   return {
     ...into, // metadata from the first contributor wins
     values,
@@ -200,7 +234,7 @@ export function mergeDescriptors(lists: DimensionDescriptor[][]): {
     for (const descriptor of list) {
       const existing = byKey.get(descriptor.key);
       if (existing) {
-        byKey.set(descriptor.key, foldDescriptor(existing, descriptor));
+        byKey.set(descriptor.key, foldDescriptor(existing, descriptor, warnings));
       } else {
         // Copy values so later folds never mutate a caller's array.
         byKey.set(descriptor.key, { ...descriptor, values: [...descriptor.values] });

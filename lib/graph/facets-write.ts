@@ -57,7 +57,12 @@ export function writeFacet(node: GraphNode, key: string, values: string[]): void
   writeLegacy(node, key, values);
 
   const isDefault = values.length === 1 && values[0] === FACET_DEFAULTS[key];
-  if (isDefault) return;
+  if (isDefault) {
+    // The default is never materialized; clear any earlier non-default facet for
+    // this key so the facet never lags behind the (just-updated) legacy field.
+    if (node.facets) delete node.facets[key];
+    return;
+  }
 
   (node.facets ??= {})[key] = values;
 }
