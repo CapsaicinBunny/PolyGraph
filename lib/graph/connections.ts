@@ -73,15 +73,31 @@ export function connectionPath(
 
 export interface ConnectionHighlight {
   /** Card ids to keep lit (everything else dims). */
-  ids: Set<string>;
+  nodeIds: Set<string>;
+  /** pairKey() of each EXACT highlighted edge — only the anchor↔neighbor / on-path edges, not
+   * every edge whose endpoints happen to be lit (e.g. a B–C chord when A's neighbors are lit). */
+  edgePairs: Set<string>;
+  /** The shortest path (two connected anchors), else null. */
+  path: string[] | null;
   /** False only when two anchors have no path between them. */
   connected: boolean;
 }
 
 /**
- * What to highlight for the current selection: one anchor → the card and its direct
- * neighbors; two anchors → the path between them (connected), or just the two cards
- * (connected: false) when there's no path. Null when nothing is selected.
+ * Order-independent key for an undirected card pair. Length-prefixed so it's collision-free
+ * regardless of what characters the ids contain (no NUL separator).
+ */
+export function pairKey(a: string, b: string): string {
+  const [x, y] = a < b ? [a, b] : [b, a];
+  return `${x.length}:${x}${y}`;
+}
+
+/**
+ * What to highlight for the current selection: one anchor → the card and its direct neighbors
+ * (and the anchor→neighbor edges); two anchors → the shortest path between them and its edges
+ * (connected), or just the two cards (connected: false) when there's no path. Null when nothing
+ * is selected. Edges are returned EXACTLY (as pairKeys) so only real connection edges light —
+ * not incidental edges between two independently-lit nodes.
  */
 export function connectionHighlight(
   anchors: string[],
@@ -90,14 +106,22 @@ export function connectionHighlight(
   if (anchors.length === 0) return null;
   if (anchors.length === 1) {
     const a = anchors[0];
-    const ids = new Set<string>([a]);
-    for (const nb of adj.get(a) ?? []) ids.add(nb);
-    return { ids, connected: true };
+    const nodeIds = new Set<string>([a]);
+    const edgePairs = new Set<string>();
+    for (const nb of adj.get(a) ?? []) {
+      nodeIds.add(nb);
+      edgePairs.add(pairKey(a, nb));
+    }
+    return { nodeIds, edgePairs, path: null, connected: true };
   }
   const [a, b] = anchors;
   const path = connectionPath(a, b, adj);
-  if (path) return { ids: new Set(path), connected: true };
-  return { ids: new Set([a, b]), connected: false };
+  if (path) {
+    const edgePairs = new Set<string>();
+    for (let i = 0; i + 1 < path.length; i++) edgePairs.add(pairKey(path[i], path[i + 1]));
+    return { nodeIds: new Set(path), edgePairs, path, connected: true };
+  }
+  return { nodeIds: new Set([a, b]), edgePairs: new Set(), path: null, connected: false };
 }
 
 /**
@@ -139,7 +163,7 @@ export function connectionStatus(
   if (!highlight.connected) {
     return { text: `No connection between ${labelOf(a)} and ${labelOf(b)}`, ok: false };
   }
-  const steps = highlight.ids.size - 1;
+  const steps = (highlight.path?.length ?? 1) - 1;
   return {
     text: `${labelOf(a)} ⇄ ${labelOf(b)} · ${steps} step${steps === 1 ? "" : "s"}`,
     ok: true,

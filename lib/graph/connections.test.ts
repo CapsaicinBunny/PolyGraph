@@ -5,6 +5,7 @@ import {
   connectionPath,
   connectionStatus,
   nextAnchors,
+  pairKey,
   pruneAnchors,
 } from "./connections";
 
@@ -106,6 +107,8 @@ describe("connectionPath (undirected shortest path)", () => {
 });
 
 describe("connectionHighlight", () => {
+  const sorted = (s?: Set<string>) => [...(s ?? [])].sort();
+
   test("returns null for no anchors", () => {
     expect(connectionHighlight([], adj)).toBeNull();
   });
@@ -113,18 +116,59 @@ describe("connectionHighlight", () => {
   test("one anchor → the card plus its direct neighbors", () => {
     const h = connectionHighlight(["b"], adj);
     expect(h?.connected).toBe(true);
-    expect([...(h?.ids ?? [])].sort()).toEqual(["a", "b", "c"]);
+    expect(sorted(h?.nodeIds)).toEqual(["a", "b", "c"]);
   });
 
   test("two connected anchors → the full path between them", () => {
     const h = connectionHighlight(["a", "d"], adj);
     expect(h?.connected).toBe(true);
-    expect([...(h?.ids ?? [])].sort()).toEqual(["a", "b", "c", "d"]);
+    expect(sorted(h?.nodeIds)).toEqual(["a", "b", "c", "d"]);
+    expect(h?.path).toEqual(["a", "b", "c", "d"]);
   });
 
-  test("two unconnected anchors → not connected, just the two cards lit", () => {
+  test("two unconnected anchors → not connected, just the two cards lit, no edges", () => {
     const h = connectionHighlight(["a", "x"], adj);
     expect(h?.connected).toBe(false);
-    expect([...(h?.ids ?? [])].sort()).toEqual(["a", "x"]);
+    expect(sorted(h?.nodeIds)).toEqual(["a", "x"]);
+    expect(h?.edgePairs.size).toBe(0);
+  });
+
+  test("triangle, one anchor: only the anchor's edges light, NOT the neighbor↔neighbor chord", () => {
+    // A connected to B and C; B—C is a chord between two lit neighbors.
+    const tri = buildAdjacency([E("A", "B"), E("A", "C"), E("B", "C")]);
+    const h = connectionHighlight(["A"], tri);
+    expect(sorted(h?.nodeIds)).toEqual(["A", "B", "C"]);
+    expect(h?.edgePairs.has(pairKey("A", "B"))).toBe(true);
+    expect(h?.edgePairs.has(pairKey("A", "C"))).toBe(true);
+    expect(h?.edgePairs.has(pairKey("B", "C"))).toBe(false); // the chord must stay dim
+  });
+
+  test("path: edgePairs are exactly the consecutive path edges", () => {
+    const h = connectionHighlight(["a", "d"], adj); // a-b-c-d
+    expect(sorted(h?.edgePairs)).toEqual(
+      [pairKey("a", "b"), pairKey("b", "c"), pairKey("c", "d")].sort(),
+    );
+  });
+
+  test("path skipping a node via a chord lights only the chosen path's edges", () => {
+    // a-b-c-d-e linear plus a b—d chord → shortest a→e is a-b-d-e (skips c).
+    const g = buildAdjacency([E("a", "b"), E("b", "c"), E("c", "d"), E("d", "e"), E("b", "d")]);
+    const h = connectionHighlight(["a", "e"], g);
+    expect(h?.path).toEqual(["a", "b", "d", "e"]);
+    expect(h?.nodeIds.has("c")).toBe(false); // c is skipped, must dim
+    expect(h?.edgePairs.has(pairKey("b", "c"))).toBe(false);
+    expect(h?.edgePairs.has(pairKey("c", "d"))).toBe(false);
+  });
+
+  test("parallel relationship kinds between the same two cards share one pairKey", () => {
+    // Multiple scene edges A↔B (e.g. import + call) collapse to one undirected pair, so the
+    // canvas lights all of them when A—B is a connection edge.
+    const g = buildAdjacency([
+      { source: "A", target: "B", kind: "import" },
+      { source: "A", target: "B", kind: "call" },
+    ]);
+    const h = connectionHighlight(["A"], g);
+    expect(h?.edgePairs.has(pairKey("A", "B"))).toBe(true);
+    expect(h?.edgePairs.has(pairKey("B", "A"))).toBe(true); // order-independent
   });
 });

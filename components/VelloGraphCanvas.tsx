@@ -10,6 +10,7 @@ import {
   connectionHighlight,
   connectionStatus,
   nextAnchors,
+  pairKey,
   pruneAnchors,
 } from "@/lib/graph/connections";
 import type { Scene, SceneEdge, SceneFilters } from "@/lib/graph/scene";
@@ -254,7 +255,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   }, [sceneIds]);
   const liveAnchors = useMemo(() => anchors.filter((a) => sceneIds.has(a)), [anchors, sceneIds]);
   const conn = useMemo(() => connectionHighlight(liveAnchors, connAdj), [liveAnchors, connAdj]);
-  const effectiveHighlight = conn ? conn.ids : highlightIds;
+  const effectiveHighlight = conn ? conn.nodeIds : highlightIds;
   const labelById = useMemo(() => new Map(scene.nodes.map((n) => [n.id, n.label])), [scene.nodes]);
   const connStatus = useMemo(
     () => connectionStatus(liveAnchors, conn, (id) => labelById.get(id) ?? id),
@@ -332,8 +333,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
 
   // The JSON payload Vello consumes. Built from the positioned scene.
   const payload = useMemo(() => {
-    // In highlight mode, mute everything outside the match set so the matches pop.
-    const dim = (id: string) => effectiveHighlight != null && !effectiveHighlight.has(id);
+    // Mute everything outside the highlight set so the matches pop. Nodes dim by membership.
+    const dimNode = (id: string) => effectiveHighlight != null && !effectiveHighlight.has(id);
+    // Edges dim by EXACT pair in connection mode (so a chord between two lit nodes stays dim),
+    // and by "both endpoints lit" in query-highlight mode (which has no edge set).
+    const dimEdge = (source: string, target: string) =>
+      conn
+        ? !conn.edgePairs.has(pairKey(source, target))
+        : highlightIds != null && (!highlightIds.has(source) || !highlightIds.has(target));
     const center = new Map<string, [number, number]>();
     const map = new Map<string, boolean>();
     for (const n of scene.nodes) {
@@ -347,7 +354,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       y: n.y,
       w: n.width,
       h: n.height,
-      color: dim(n.id) ? DIM_RGB : hexToRgb(n.color),
+      color: dimNode(n.id) ? DIM_RGB : hexToRgb(n.color),
       label: n.label,
       shape: n.shape,
       badge: n.isFile && n.symbolCount > 0 ? `+${n.symbolCount}` : "",
@@ -360,7 +367,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         const a = center.get(e.source);
         const b = center.get(e.target);
         if (!a || !b) return null;
-        const muted = dim(e.source) || dim(e.target);
+        const muted = dimEdge(e.source, e.target);
         return {
           id: e.id,
           x1: a[0],
@@ -383,7 +390,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       color: clusterColor(c.id),
     }));
     return JSON.stringify({ nodes, edges, clusters, routing: edgeRouting });
-  }, [scene, edgeRouting, effectiveHighlight]);
+  }, [scene, edgeRouting, effectiveHighlight, conn, highlightIds]);
 
   // One-time Vello/WebGPU setup + camera interaction.
   useEffect(() => {
@@ -649,42 +656,56 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       } catch {
         /* ignore */
       }
-      if (moved > 4 || !vcRef.current) return;
+      // A drag isn't a click — reset the double-click tracker so it can't pair into a double.
+      if (moved > 4 || !vcRef.current) {
+        lastClick.current = { id: "", time: 0 };
+        return;
+      }
       const rect = el.getBoundingClientRect();
       const id = vcRef.current.pick(
         (e.clientX - rect.left) * dpr.current,
         (e.clientY - rect.top) * dpr.current,
       );
-      if (id) {
-        if (id.startsWith("cluster:")) {
-          handlers.current.onToggleCollapse(id.slice("cluster:".length)); // collapse a directory
-        } else if (id.startsWith("edge:")) {
-          const edge = edgesById.current.get(id.slice("edge:".length));
-          if (edge) handlers.current.onSelectEdge(edge);
-        } else if (e.shiftKey) {
-          // Shift-click = path anchoring (state machine: first endpoint → second → fresh path).
-          // Never expands/collapses — the universal "show connections" gesture for any card.
-          handlers.current.onAnchor(id, true);
-        } else {
-          // Plain click: a SINGLE click selects + lights the card and its direct neighbors; a
-          // DOUBLE click (two quick clicks on the same card) expands/collapses a file or
-          // aggregate. Keeping expand off the single click means one click never swaps the card
-          // out from under its own highlight.
-          const now = performance.now();
-          const isDouble = id === lastClick.current.id && now - lastClick.current.time < 300;
-          lastClick.current = { id, time: now };
-          if (isDouble && isAggregateId(id)) {
-            handlers.current.onToggleCollapse(clusterIdOfAggregate(id)); // expand an aggregate
-          } else if (isDouble && isFile.current.get(id)) {
-            handlers.current.onToggleExpand(id); // expand/collapse a file
-          } else {
-            if (!isAggregateId(id)) handlers.current.onSelect(id);
-            handlers.current.onAnchor(id, false); // light this card + its direct neighbors
-          }
-        }
-      } else {
+      // Any action that isn't a plain card click resets the double-click tracker, so an unrelated
+      // click between two card clicks can't complete an accidental double-click sequence.
+      if (!id) {
+        lastClick.current = { id: "", time: 0 };
         handlers.current.clearAnchors(); // empty space clears the connection highlight
+        return;
       }
+      if (id.startsWith("cluster:")) {
+        lastClick.current = { id: "", time: 0 };
+        handlers.current.onToggleCollapse(id.slice("cluster:".length)); // collapse a directory
+        return;
+      }
+      if (id.startsWith("edge:")) {
+        lastClick.current = { id: "", time: 0 };
+        const edge = edgesById.current.get(id.slice("edge:".length));
+        if (edge) handlers.current.onSelectEdge(edge);
+        return;
+      }
+      if (e.shiftKey) {
+        // Shift-click = path anchoring (first endpoint → second → fresh path); never expands.
+        lastClick.current = { id: "", time: 0 };
+        handlers.current.onAnchor(id, true);
+        return;
+      }
+      // Plain click on a card: a SINGLE click selects + lights the card and its direct neighbors;
+      // a DOUBLE click (two quick clicks on the same card) expands/collapses a file or aggregate.
+      // Keeping expand off the single click means one click never swaps the card out from under
+      // its own highlight.
+      const now = performance.now();
+      const prev = lastClick.current;
+      const isDouble = id === prev.id && now - prev.time < 300;
+      if (isDouble) {
+        lastClick.current = { id: "", time: 0 }; // reset so a quick 3rd click isn't another double
+        if (isAggregateId(id)) handlers.current.onToggleCollapse(clusterIdOfAggregate(id));
+        else if (isFile.current.get(id)) handlers.current.onToggleExpand(id);
+        return;
+      }
+      lastClick.current = { id, time: now };
+      if (!isAggregateId(id)) handlers.current.onSelect(id);
+      handlers.current.onAnchor(id, false); // light this card + its direct neighbors
     };
     // Esc clears the connection highlight (parallels clicking empty space).
     const onKeyDown = (e: KeyboardEvent) => {
