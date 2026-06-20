@@ -150,6 +150,9 @@ function clusterColor(id: string): [number, number, number] {
 
 // Muted gray for nodes/edges outside the highlight set (readable in both themes).
 const DIM_RGB: [number, number, number] = [90, 99, 112];
+// The two shift-clicked connection endpoints — washed orange so they read as the
+// "from/to" of the path, distinct from the lit (blue) route between them.
+const ANCHOR_RGB: [number, number, number] = [255, 149, 0];
 
 interface VelloHandle {
   set_data: (json: string) => void;
@@ -401,6 +404,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const payload = useMemo(() => {
     // Mute everything outside the highlight set so the matches pop. Nodes dim by membership.
     const dimNode = (id: string) => effectiveHighlight != null && !effectiveHighlight.has(id);
+    // In connection mode the two endpoints get an orange wash (the renderer tints the card
+    // fill + outline + label by node color) so the "from/to" stand out from the lit path.
+    const anchorSet = conn ? new Set(liveAnchors) : null;
     // Edges dim by EXACT pair in connection mode (so a chord between two lit nodes stays dim),
     // and by "both endpoints lit" in query-highlight mode (which has no edge set).
     const dimEdge = (source: string, target: string) =>
@@ -420,7 +426,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       y: n.y,
       w: n.width,
       h: n.height,
-      color: dimNode(n.id) ? lerpRgb(hexToRgb(n.color), DIM_RGB, dimT) : hexToRgb(n.color),
+      color: anchorSet?.has(n.id)
+        ? ANCHOR_RGB
+        : dimNode(n.id)
+          ? lerpRgb(hexToRgb(n.color), DIM_RGB, dimT)
+          : hexToRgb(n.color),
       label: n.label,
       shape: n.shape,
       badge: n.isFile && n.symbolCount > 0 ? `+${n.symbolCount}` : "",
@@ -456,7 +466,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       color: clusterColor(c.id),
     }));
     return JSON.stringify({ nodes, edges, clusters, routing: edgeRouting });
-  }, [scene, edgeRouting, effectiveHighlight, conn, highlightIds, dimT]);
+  }, [scene, edgeRouting, effectiveHighlight, conn, liveAnchors, highlightIds, dimT]);
 
   // One-time Vello/WebGPU setup + camera interaction.
   useEffect(() => {
