@@ -6,6 +6,7 @@ import {
   type LayoutInput,
   layoutFallbackSummary,
   layoutView,
+  resolveEngineForBudget,
   runLayout,
 } from "./layout";
 import { edgeWeight } from "./layout/weight";
@@ -624,6 +625,47 @@ describe("heavy-engine safety caps (no engine pins a core)", () => {
     const pos = layoutView({ nodes, edges: [] }, { algorithm: "force" });
     expect(pos.size).toBe(n);
     expect(distinctColumns(pos)).toBeLessThan(120);
+  });
+
+  test("layered grids a small-but-DENSE component (dagre hangs on density)", () => {
+    // The CI-hanging case: a 196n/752e component (3.8 edges/node) sails under the node
+    // (1200) and edge (8000) caps but pins dagre's network-simplex for >60s. The density
+    // guard grids it. Here: 60 nodes, 4 out-edges each = 4 edges/node, well over the cap.
+    const n = 60;
+    const nodes: LayoutInput["nodes"] = Array.from({ length: n }, (_, i) => ({
+      id: `d${i}`,
+      kind: "file" as const,
+    }));
+    const edges: LayoutInput["edges"] = [];
+    for (let i = 0; i < n; i++)
+      for (let k = 1; k <= 4; k++)
+        edges.push({
+          source: `d${i}`,
+          target: `d${(i + k) % n}`,
+          kind: "import" as const,
+          count: 1,
+          weight: edgeWeight("import", 1),
+        });
+    const pos = layoutView({ nodes, edges }, { algorithm: "layered" });
+    expect(pos.size).toBe(n);
+    expect(distinctColumns(pos)).toBeLessThan(20); // gridded (~sqrt(60)≈8), not dagre-ranked
+  });
+});
+
+describe("resolveEngineForBudget (density guard for the Smart per-cluster path)", () => {
+  test("layered downgrades a dense cluster to grid (the 196n/752e CI hang)", () => {
+    expect(resolveEngineForBudget("layered", 196, 752)).toEqual({
+      engine: "grid",
+      fallbackReason: "edge-cap",
+    });
+  });
+
+  test("layered keeps a sparse cluster of the same node count", () => {
+    expect(resolveEngineForBudget("layered", 196, 200).engine).toBe("layered");
+  });
+
+  test("the density guard is layered-only — stress absorbs density via PivotMDS", () => {
+    expect(resolveEngineForBudget("stress", 196, 752).engine).toBe("stress");
   });
 });
 
