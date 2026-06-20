@@ -7,6 +7,7 @@
 import {
   type Editor,
   editorInvocation,
+  openInvocation,
   type Platform,
   revealInvocation,
   toAbsolute,
@@ -41,6 +42,12 @@ export async function openInEditor(
   line: number,
 ): Promise<void> {
   const { program, args } = editorInvocation(editor, projectRoot, relPath, line, currentPlatform());
+  await spawnDetached(program, args);
+}
+
+/** Open `relPath` with the OS's default app for its type (desktop only). */
+export async function openWithDefault(projectRoot: string, relPath: string): Promise<void> {
+  const { program, args } = openInvocation(projectRoot, relPath, currentPlatform());
   await spawnDetached(program, args);
 }
 

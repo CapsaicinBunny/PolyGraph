@@ -6,6 +6,7 @@
 import { SCAN_NDJSON_CONTENT_TYPE, scanNdjsonStream } from "../lib/graph/scan-ndjson";
 import type { SourceFileMap } from "../lib/graph/types";
 import { runAnalyze, runScan } from "../lib/server/handlers";
+import { exitWhenOrphaned } from "./orphan-watch";
 
 const CORS: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -80,6 +81,9 @@ export function startServer(port = Number(process.env.POLYGRAPH_PORT) || 0): Run
 
 // Binary entry point: start, then announce the port on stdout for the host.
 if (import.meta.main) {
+  // Exit if the Tauri app dies without killing us (crash / force-kill), so the
+  // sidecar can't outlive its parent and strand memory. See sidecar/orphan-watch.ts.
+  exitWhenOrphaned(process.ppid);
   const { port } = startServer();
   console.log(`POLYGRAPH_PORT=${port}`);
 }

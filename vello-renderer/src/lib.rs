@@ -38,8 +38,16 @@ const FONT_SIZE: f32 = 13.0;
 const GLYPH_SIZE: f32 = 13.0;
 const BADGE_SIZE: f32 = 9.0; // language-code text size inside file icons
 const LABEL_MIN_SCALE: f64 = 0.5; // only lay out labels/icons when readable
-const EDGE_DASH_BUDGET: usize = 300; // above this many edges, draw solid (dashing overruns the allocator)
+const EDGE_DASH_BUDGET: usize = 300; // above this many *on-screen* edges, draw solid (dashing more overruns the allocator)
 const EDGE_RENDER_CAP: usize = 60_000; // max edges encoded per frame; above this, sample a uniform subset (LOD)
+// Zoomed-out render LOD: when the whole graph is on screen the cull can't drop
+// anything, so a huge expanded scene (e.g. the kernel: ~29k nodes + ~56k edges)
+// would draw everything every frame (~11fps). Below LABEL_MIN_SCALE we already hide
+// labels/icons; also (a) draw each node as a single dot instead of a 3-op card, and
+// (b) sample far fewer edges — individual cards/edges are imperceptible at that
+// zoom, so detail is no loss but throughput jumps.
+const EDGE_RENDER_CAP_LOD: usize = 8_000; // edge cap when zoomed out (below LABEL_MIN_SCALE)
+const DOT_LOD_PX: f64 = 7.0; // below this on-screen card height, draw a dot, not a card
 const ICON_R: f64 = 6.0; // icon half-size in world units
 
 #[wasm_bindgen(start)]
@@ -448,11 +456,6 @@ impl VelloCanvas {
         // Each segment is clipped to a padded viewport BEFORE dashing — an
         // off-screen endpoint at high zoom would otherwise yield a multi-million
         // pixel line and dashing it would exhaust the wasm allocator.
-        // Marching-ants dashing tessellates each curve into many short segments; on a
-        // large, zoomed-out graph the cumulative dash geometry overruns the wasm
-        // allocator (memory access out of bounds). Past an edge budget, fall back to
-        // cheap solid strokes — still readable, and it keeps big graphs from crashing.
-        let solid_mode = self.data.edges.len() > EDGE_DASH_BUDGET;
         const PAD: f64 = 120.0;
         let (cx, cy, cs) = (self.cam_x, self.cam_y, self.cam_scale);
         // Only draw the ×N multiplicity labels when zoomed in enough to read them.
@@ -462,7 +465,37 @@ impl VelloCanvas {
         // encoding hundreds of thousands of curves overruns the wasm scene allocator
         // (the proximate "fails to render" failure). Zoomed-in views clip to far fewer
         // than the cap, so the stride is invisible in practice.
-        let edge_step = (self.data.edges.len() / EDGE_RENDER_CAP).max(1);
+        let edge_cap = if self.cam_scale < LABEL_MIN_SCALE {
+            EDGE_RENDER_CAP_LOD
+        } else {
+            EDGE_RENDER_CAP
+        };
+        let edge_step = (self.data.edges.len() / edge_cap).max(1);
+        // Marching-ants dashing tessellates each curve into many short segments; doing
+        // it for too many edges at once overruns the wasm allocator (memory access out
+        // of bounds). Tie it to the LOD instead of the whole graph's size: count how
+        // many edges are actually on screen this frame — the same sample + clip the
+        // draw loop below uses — and only animate when that's a readable handful, i.e.
+        // when zoomed into detail. Zoomed out / dense views cross the budget and fall
+        // back to solid strokes. The count early-exits at the budget so it stays cheap
+        // even on a million-edge graph.
+        let solid_mode = {
+            let mut on_screen = 0usize;
+            for (i, e) in self.data.edges.iter().enumerate() {
+                if i % edge_step != 0 {
+                    continue;
+                }
+                let (ax, ay) = (e.x1 * cs + cx, e.y1 * cs + cy);
+                let (bx, by) = (e.x2 * cs + cx, e.y2 * cs + cy);
+                if clip_segment(ax, ay, bx, by, -PAD, -PAD, self.vw + PAD, self.vh + PAD).is_some() {
+                    on_screen += 1;
+                    if on_screen > EDGE_DASH_BUDGET {
+                        break;
+                    }
+                }
+            }
+            on_screen > EDGE_DASH_BUDGET
+        };
         for (i, e) in self.data.edges.iter().enumerate() {
             if i % edge_step != 0 {
                 continue;
@@ -488,9 +521,9 @@ impl VelloCanvas {
                 fade,
             ]);
             // Thicker stroke for repeated relationships — log-scaled so a few very
-            // heavy edges don't swamp the rest, and capped so it stays a line. Past the
-            // edge budget, drop the marching-ants dashes (solid) to avoid the allocator
-            // overrun on huge graphs.
+            // heavy edges don't swamp the rest, and capped so it stays a line. In
+            // solid_mode (too many edges on screen — see above) drop the marching-ants
+            // dashes to avoid the allocator overrun.
             let count = e.count.max(1);
             let weight = (1.4 + (count as f64).ln() * 0.9).min(6.0);
             let stroke = if solid_mode {
@@ -572,6 +605,19 @@ impl VelloCanvas {
             }
             stats.nodes_drawn += 1;
             let accent = Color::from_rgb8(n.color[0], n.color[1], n.color[2]);
+
+            // Zoomed-out LOD: when this card is only a few pixels tall, draw it as a
+            // single screen-space dot (one fill) instead of the 3-op card + chrome.
+            // Imperceptible as a shape at that size, but a big throughput win when the
+            // whole graph is on screen.
+            if n.h * self.cam_scale < DOT_LOD_PX {
+                let scx = (n.x + n.w / 2.0) * self.cam_scale + self.cam_x;
+                let scy = (n.y + n.h / 2.0) * self.cam_scale + self.cam_y;
+                let dot = RoundedRect::new(scx - 1.6, scy - 1.6, scx + 1.6, scy + 1.6, 1.6);
+                self.scene.fill(Fill::NonZero, Affine::IDENTITY, accent, None, &dot);
+                continue;
+            }
+
             let selected = Some(&n.id) == self.selected.as_ref();
             let r = n.x + n.w;
             let b = n.y + n.h;

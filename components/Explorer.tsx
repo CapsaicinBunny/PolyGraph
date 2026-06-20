@@ -27,6 +27,7 @@ import {
   DEFAULT_HIDDEN_LANGUAGES,
 } from "@/lib/graph/filters";
 import { autoCollapseDirs } from "@/lib/graph/auto-collapse";
+import { buildDirTree, type DirNode, dirIndex } from "@/lib/graph/hierarchy";
 import { FiltersPanel } from "./FiltersPanel";
 import { graphKeyFor, type SceneEdge } from "@/lib/graph/scene";
 import { EdgeDetailPanel } from "./EdgeDetailPanel";
@@ -40,6 +41,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { UploadDropzone } from "./UploadDropzone";
 import type { ExplorerWorkspaceState } from "@/lib/workspace/schema";
 import { telemetry } from "@/lib/telemetry";
+import { startSessionLogPersist } from "@/lib/telemetry/persist";
 
 // Vello renders via WebGPU (browser-only), so load it client-side.
 const VelloGraphCanvas = dynamic(
@@ -53,6 +55,11 @@ const ALL_CATEGORIES: NodeCategory[] = ["ui", "feature"];
 // Above this many file nodes, auto-collapse directories so the initial scene the
 // renderer receives stays drawable (LOD v0; see docs/SCALE-100K.md).
 const AUTO_COLLAPSE_MAX_CARDS = 2000;
+// Cap on estimated layout NODES (files + their symbols when expanded) used to seed
+// the collapse on expand-all. Keeps the layout input small enough for Smart to finish
+// within the worker timeout instead of falling back to grid. Matches LOD_NODE_BUDGET
+// in VelloGraphCanvas. See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
+const LOD_NODE_BUDGET = 2500;
 
 interface Stats {
   fileCount: number;
@@ -102,6 +109,9 @@ export function Explorer() {
   // Adaptive level-of-detail (LOD): recompute the collapsed cut as the camera
   // zooms so a huge repo stays drawable. Off by default — see docs/SCALE-100K.md.
   const [adaptiveLod, setAdaptiveLod] = useState(true);
+  // Navigation minimap overlay (graph extent + viewport rect). Default on; toggle
+  // in Settings. Helps re-find the graph when zoomed out / panned out of bounds.
+  const [minimap, setMinimap] = useState(true);
   // Analytics & logging (telemetry) — mirrors the bus's persisted enabled flag so the
   // Settings toggle reflects and controls it. Default on; persisted to localStorage.
   const [telemetryOn, setTelemetryOn] = useState(telemetry.isEnabled());
@@ -153,6 +163,12 @@ export function Explorer() {
       graph ? [...analyzeInsights(graph), ...unresolvedToInsights(result?.unresolved ?? [])] : [],
     [graph, result],
   );
+
+  // Mirror telemetry to logs/session.ndjson on desktop so the LOD/render trace
+  // survives a crash (no-op in the browser; Settings "Download session log" there).
+  useEffect(() => {
+    startSessionLogPersist();
+  }, []);
 
   // Load / persist user saved searches.
   const SAVED_KEY = "polygraph.savedSearches";
@@ -267,6 +283,25 @@ export function Explorer() {
     return map;
   }, [baseGraph]);
 
+  // Symbols per file id — feeds the LOD node budget so the cut and the expand-all seed
+  // account for the symbols an expanded file pulls into the layout, not just the card.
+  const symbolCount = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const n of baseGraph?.nodes ?? []) {
+      if (n.kind !== "file") map.set(n.parentFile, (map.get(n.parentFile) ?? 0) + 1);
+    }
+    return map;
+  }, [baseGraph]);
+
+  // Directory tree: an index (path → node) so drilling into an aggregate reveals just
+  // its immediate child directories, plus the top-level dir paths for "Collapse all".
+  const dirTree = useMemo(() => (baseGraph ? buildDirTree(baseGraph) : null), [baseGraph]);
+  const dirNodes = useMemo<Map<string, DirNode>>(
+    () => (dirTree ? dirIndex(dirTree) : new Map()),
+    [dirTree],
+  );
+  const topDirs = useMemo(() => dirTree?.children.map((c) => c.path) ?? [], [dirTree]);
+
   const fileIds = useMemo(
     () => (baseGraph?.nodes ?? []).filter((n) => n.kind === "file").map((n) => n.id),
     [baseGraph],
@@ -274,16 +309,26 @@ export function Explorer() {
   const allExpanded = fileIds.length > 0 && fileIds.every((id) => expanded.has(id));
 
   const handleToggleExpandAll = useCallback(() => {
-    setExpanded(allExpanded ? new Set() : new Set(fileIds));
-    // Reseed the collapsed-cluster cut the way a fresh scan does. Without this, a
-    // stale cut (e.g. the coarse one the adaptive-LOD pass writes while everything is
-    // expanded) lingers after collapsing and most nodes stay folded until a rescan.
-    setCollapsedClusters(
-      baseGraph
-        ? (autoCollapseDirs(baseGraph, AUTO_COLLAPSE_MAX_CARDS)?.collapsed ?? new Set())
-        : new Set(),
-    );
-  }, [allExpanded, fileIds, baseGraph]);
+    if (allExpanded) {
+      // Collapse all → the coarsest overview: every top-level directory as one
+      // aggregate. (Always tiny, so it's unambiguously "more collapsed" than expand-all
+      // and never overruns the layout.)
+      setExpanded(new Set());
+      setCollapsedClusters(new Set(topDirs));
+    } else {
+      // Expand all → as much detail as the layout budget allows. Expanding pulls every
+      // file's symbols into the layout, so seed the collapse on node cost (1 + symbols)
+      // under the node budget — else the input balloons past what Smart can lay out and
+      // it falls back to a grid. The cut then opens further detail where you zoom.
+      setExpanded(new Set(fileIds));
+      const cost = (id: string) => 1 + (symbolCount.get(id) ?? 0);
+      setCollapsedClusters(
+        baseGraph
+          ? (autoCollapseDirs(baseGraph, LOD_NODE_BUDGET, cost)?.collapsed ?? new Set())
+          : new Set(),
+      );
+    }
+  }, [allExpanded, fileIds, baseGraph, symbolCount, topDirs]);
 
   const handleResult = useCallback(
     (res: AnalyzeResult, s: Stats, m: PackageManifest[], scannedPath = "") => {
@@ -374,14 +419,27 @@ export function Explorer() {
     });
   }, []);
 
-  const handleToggleCollapse = useCallback((clusterId: string) => {
-    setCollapsedClusters((prev) => {
-      const next = new Set(prev);
-      if (next.has(clusterId)) next.delete(clusterId);
-      else next.add(clusterId);
-      return next;
-    });
-  }, []);
+  const handleToggleCollapse = useCallback(
+    (clusterId: string) => {
+      setCollapsedClusters((prev) => {
+        const next = new Set(prev);
+        if (next.has(clusterId)) {
+          // Drill in ONE level: un-collapse this aggregate but fold its immediate child
+          // directories, so the layout grows by a handful of child aggregates instead of
+          // the dir's entire subtree (which on a big dir would dump thousands of
+          // files+symbols in, time Smart out, and lock the view to grid). Direct files
+          // of this dir still render; deeper dirs stay aggregated and can be drilled too.
+          next.delete(clusterId);
+          const node = dirNodes.get(clusterId);
+          if (node) for (const child of node.children) next.add(child.path);
+        } else {
+          next.add(clusterId);
+        }
+        return next;
+      });
+    },
+    [dirNodes],
+  );
 
   const handleToggleEdgeKind = useCallback((kind: ViewEdgeKind) => {
     setEnabledEdgeKinds((prev) => {
@@ -474,6 +532,12 @@ export function Explorer() {
     setEnabledEnvironments(new Set(ALL_ENVIRONMENTS));
     setEnabledRuntimes(new Set(ALL_RUNTIMES));
     setShowExternal(false);
+    // Also drop any impact/focus constraint and selection — Reset means "show all
+    // nodes again", and focus (Dependencies/Dependents/…) otherwise persists with no
+    // other way to clear it from here.
+    setFocusedIds(null);
+    setSelectedId(null);
+    setSelectedEdge(null);
     resetFileFilters(graph);
   }, [graph, resetFileFilters]);
 
@@ -520,7 +584,12 @@ export function Explorer() {
         >
           {showExternal ? "Externals: on" : "Externals: off"}
         </Button>
-        <Button size="sm" variant="subtle" onClick={handleToggleExpandAll}>
+        <Button
+          size="sm"
+          variant={allExpanded ? "subtle" : "ghost"}
+          colorPalette={allExpanded ? "blue" : "gray"}
+          onClick={handleToggleExpandAll}
+        >
           {allExpanded ? "Collapse all" : "Expand all"}
         </Button>
         <Button
@@ -610,6 +679,7 @@ export function Explorer() {
           <VelloGraphCanvas
             graph={graph}
             expanded={expanded}
+            symbolCount={symbolCount}
             enabledEdgeKinds={enabledEdgeKinds}
             search={search}
             selectedId={selectedId}
@@ -635,6 +705,7 @@ export function Explorer() {
             onToggleExpand={handleToggleExpand}
             onToggleCollapse={handleToggleCollapse}
             onSelectEdge={handleSelectEdge}
+            minimap={minimap}
             adaptiveLod={adaptiveLod}
             onCut={setCollapsedClusters}
             fitSignature={fitSignature}
@@ -660,8 +731,8 @@ export function Explorer() {
             packageCount={manifests.length}
             density={density}
             onDensity={setDensity}
-            adaptiveLod={adaptiveLod}
-            onAdaptiveLod={setAdaptiveLod}
+            minimap={minimap}
+            onMinimap={setMinimap}
             edgeRouting={edgeRouting}
             onEdgeRouting={setEdgeRouting}
             communityCollapse={communityCollapse}

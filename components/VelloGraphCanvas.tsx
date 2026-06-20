@@ -12,6 +12,12 @@ import { frameBoxes } from "@/lib/graph/frame";
 import { buildDirTree, type DirNode } from "@/lib/graph/hierarchy";
 import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
 import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
+import {
+  centerCameraOn,
+  contentBounds,
+  fitProjection,
+  viewportWorldRect,
+} from "@/lib/graph/minimap";
 import { telemetry } from "@/lib/telemetry";
 import { LayoutOverlay } from "./LayoutOverlay";
 import { useScene } from "./useScene";
@@ -21,10 +27,22 @@ import { useScene } from "./useScene";
 // MAX_CARDS cards. These want desktop calibration (see docs/SCALE-100K.md).
 const LOD_OPEN_PX = 240;
 const LOD_MAX_CARDS = 800;
+// Cap on estimated layout NODES (files + their symbols when expanded). Smart lays out
+// ~2.5k dense nodes in ~1s but ~40s at 29k, so keep the cut's input under this and
+// Smart always finishes within the worker timeout (never degrading to the grid
+// fallback). See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
+const LOD_NODE_BUDGET = 2500;
+// Debounce the adaptive recompute so a single zoom *gesture* (many wheel ticks
+// across bands) triggers ONE cut+rebuild after it settles — not one per tick. The
+// rebuild reprocesses the whole base graph (1.39M nodes on the kernel), so coalescing
+// is the difference between a usable zoom and a multi-second-per-frame freeze.
+const LOD_RECUT_DEBOUNCE_MS = 200;
 
 export interface GraphViewProps {
   graph: GraphModel;
   expanded: Set<string>;
+  /** Symbols per file id — the cut adds these to its node budget for expanded files. */
+  symbolCount: Map<string, number>;
   enabledEdgeKinds: Set<ViewEdgeKind>;
   search: string;
   selectedId: string | null;
@@ -53,6 +71,8 @@ export interface GraphViewProps {
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
   onSelectEdge: (edge: SceneEdge) => void;
+  /** Show the navigation minimap overlay (graph extent + viewport rect). */
+  minimap?: boolean;
   /** Adaptive level-of-detail: recompute the collapsed cut as the camera zooms. */
   adaptiveLod?: boolean;
   /** Called with a new collapsed-directory set when the adaptive cut changes. */
@@ -124,6 +144,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const {
     graph,
     expanded,
+    symbolCount,
     enabledEdgeKinds,
     search,
     selectedId,
@@ -149,6 +170,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     onToggleExpand,
     onToggleCollapse,
     onSelectEdge,
+    minimap = true,
     adaptiveLod,
     onCut,
     fitSignature,
@@ -196,6 +218,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const vcRef = useRef<VelloHandle | null>(null);
+  const minimapRef = useRef<HTMLCanvasElement>(null);
+  // Synced to the prop each render so the mount-once effect's draw loop reads the
+  // live value (the canvas stays mounted and is CSS-toggled).
+  const minimapOn = useRef(minimap);
+  minimapOn.current = minimap;
+  // The effect owns the minimap draw fn; expose it so a scene change can redraw the
+  // minimap (camera changes already redraw it via renderSoon).
+  const drawMinimapRef = useRef<(() => void) | null>(null);
   const cam = useRef({ x: 0, y: 0, scale: 1 });
   // Smallest zoom the wheel allows; tracks fit() so a graph too big to fit above the
   // normal floor (e.g. the fully-expanded symbol level) can still be zoomed all the way out.
@@ -217,12 +247,27 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     dirTree: DirNode;
     scene: Scene;
     collapsed: Set<string>;
-  }>({ adaptiveLod, onCut, dirTree, scene, collapsed: collapsedClusters });
+    expanded: Set<string>;
+    symbolCount: Map<string, number>;
+    groupBy: GroupBy;
+  }>({
+    adaptiveLod,
+    onCut,
+    dirTree,
+    scene,
+    collapsed: collapsedClusters,
+    expanded,
+    symbolCount,
+    groupBy,
+  });
   lod.current.adaptiveLod = adaptiveLod;
   lod.current.onCut = onCut;
   lod.current.dirTree = dirTree;
   lod.current.scene = scene;
   lod.current.collapsed = collapsedClusters;
+  lod.current.expanded = expanded;
+  lod.current.symbolCount = symbolCount;
+  lod.current.groupBy = groupBy;
   const lodBand = useRef(cameraBand(1));
 
   // The JSON payload Vello consumes. Built from the positioned scene.
@@ -288,11 +333,82 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     let destroyed = false;
     let raf = 0;
 
+    // Minimap: graph extent (downsampled dots) + the current viewport rectangle,
+    // drawn on a small 2D-canvas overlay. CSS pixels; scaled by dpr.
+    const MM_W = 200;
+    const MM_H = 140;
+    const MM_PAD = 6;
+    const drawMinimap = () => {
+      const mc = minimapRef.current;
+      if (!mc || !minimapOn.current) return;
+      const ratio = dpr.current;
+      const w = Math.round(MM_W * ratio);
+      const h = Math.round(MM_H * ratio);
+      if (mc.width !== w || mc.height !== h) {
+        mc.width = w;
+        mc.height = h;
+      }
+      const ctx = mc.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, w, h);
+      const sc = lod.current.scene;
+      const bounds = contentBounds(sc);
+      if (!bounds) return;
+      const proj = fitProjection(bounds, w, h, MM_PAD * ratio);
+      // Downsampled node dots (cap the work regardless of scene size).
+      const nodes = sc.nodes;
+      const step = Math.max(1, Math.floor(nodes.length / 2500));
+      const d = Math.max(1, ratio);
+      ctx.fillStyle = "rgba(120,134,156,0.6)";
+      for (let i = 0; i < nodes.length; i += step) {
+        const n = nodes[i]!;
+        const p = proj.toMap(n.x + n.width / 2, n.y + n.height / 2);
+        ctx.fillRect(p.x, p.y, d, d);
+      }
+      // Current viewport rectangle (clamped to the map for legibility).
+      const main = canvasRef.current;
+      const vp = viewportWorldRect(cam.current, main?.width ?? 1, main?.height ?? 1);
+      const tl = proj.toMap(vp.minX, vp.minY);
+      const br = proj.toMap(vp.maxX, vp.maxY);
+      const rx = Math.max(0, tl.x);
+      const ry = Math.max(0, tl.y);
+      const rw = Math.min(w, br.x) - rx;
+      const rh = Math.min(h, br.y) - ry;
+      ctx.strokeStyle = "rgba(59,130,246,0.95)";
+      ctx.lineWidth = Math.max(1, ratio);
+      ctx.strokeRect(rx + 0.5, ry + 0.5, Math.max(0, rw - 1), Math.max(0, rh - 1));
+    };
+    drawMinimapRef.current = drawMinimap;
+
+    // Recenter the camera on the world point under a minimap click/drag.
+    const recenterFromMinimap = (clientX: number, clientY: number) => {
+      const mc = minimapRef.current;
+      const bounds = contentBounds(lod.current.scene);
+      if (!mc || !bounds) return;
+      const rect = mc.getBoundingClientRect();
+      const mx = (clientX - rect.left) * dpr.current;
+      const my = (clientY - rect.top) * dpr.current;
+      const proj = fitProjection(bounds, mc.width, mc.height, MM_PAD * dpr.current);
+      const world = proj.toWorld(mx, my);
+      const main = canvasRef.current;
+      const ncam = centerCameraOn(
+        world.x,
+        world.y,
+        cam.current.scale,
+        main?.width ?? 1,
+        main?.height ?? 1,
+      );
+      cam.current = ncam;
+      vcRef.current?.set_camera(ncam.x, ncam.y, ncam.scale);
+      renderSoon();
+    };
+
     const renderSoon = () => {
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
         vcRef.current?.render();
+        drawMinimap();
       });
     };
 
@@ -347,6 +463,90 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     let dragging = false;
     let last = { x: 0, y: 0 };
     let moved = 0;
+    let recutTimer: ReturnType<typeof setTimeout> | undefined;
+
+    // Recompute the adaptive cut from what's currently on screen and hand the new
+    // collapsed set up. The box coordinates come from the live scene, so the cut
+    // decision matches exactly what the user sees. No-op unless adaptiveLod is on or
+    // the zoom band hasn't actually changed since the last cut.
+    const recomputeCut = () => {
+      const l = lod.current;
+      if (!l.adaptiveLod || !l.onCut) return;
+      // The cut walks the DIRECTORY tree and measures boxes keyed by dir path. Under
+      // Community grouping the scene's boxes are keyed by community id (no dir match) so
+      // every dir would read as off-screen and the cut would wrongly collapse the whole
+      // view; under "none" there are no cluster boxes at all. The adaptive cut only makes
+      // sense for Directory grouping — leave the other modes' layouts alone.
+      if (l.groupBy !== "directory") return;
+      // The cut measures each directory's on-screen size from the layout's cluster
+      // boxes. The grid fallback (forced on large/dense graphs) and groupBy:"none"
+      // produce NO clusters, so every dir reads as "off-screen, height 0" and the cut
+      // would wrongly collapse the whole graph to a few aggregates (the disappearing
+      // view). With no clusters to measure, leave the cut alone.
+      if (l.scene.clusters.length === 0) return;
+      const c = cam.current;
+      const band = cameraBand(c.scale);
+      // Monotonic LOD: only ever REFINE (open more detail) as the user zooms IN —
+      // never re-collapse on zoom-OUT. Collapsing the view you're looking at when you
+      // zoom out is the disliked behavior; once a region is opened it stays open. The
+      // cut resets (re-fits lodBand) on a new scan / expand / collapse-all. computeCut
+      // still caps the result at maxCards, so the open set stays bounded.
+      if (band <= lodBand.current) return;
+      const prevBand = lodBand.current;
+      lodBand.current = band;
+      const boxes = sceneBoxes(l.scene);
+      const vp = { w: canvas.width, h: canvas.height };
+      // An expanded file pulls its symbols into the layout too, so cost it as
+      // 1 + symbols; collapsed/unexpanded files are a single node. Bounding the cut on
+      // this (not just card count) keeps Smart's input small enough to finish in time.
+      const exp = l.expanded;
+      const sc = l.symbolCount;
+      const nodeCost = (id: string) => 1 + (exp.has(id) ? (sc.get(id) ?? 0) : 0);
+      const cutOpts = {
+        openPx: LOD_OPEN_PX,
+        maxCards: LOD_MAX_CARDS,
+        prevCut: l.collapsed,
+        nodeBudget: LOD_NODE_BUDGET,
+        nodeCost,
+      };
+      let next: Set<string>;
+      // When telemetry is on, take the traced path and log everything about this cut
+      // (per-dir decisions, deltas, timings); otherwise the cheap one.
+      if (telemetry.isEnabled()) {
+        const t0 = performance.now();
+        const r = computeCutTraced(l.dirTree, boxes, c, vp, cutOpts);
+        const computeMs = performance.now() - t0;
+        next = r.cut;
+        const changed = !cutEquals(next, l.collapsed);
+        telemetry.event("lod", "cut", {
+          trigger: "zoom",
+          cam: { x: c.x, y: c.y, scale: c.scale },
+          band,
+          prevBand,
+          viewport: vp,
+          openPx: LOD_OPEN_PX,
+          maxCards: LOD_MAX_CARDS,
+          dirsEvaluated: r.dirsEvaluated,
+          dirsOnScreen: r.dirsOnScreen,
+          cutSize: next.size,
+          prevCutSize: l.collapsed.size,
+          cards: r.cards,
+          computeMs,
+          changed,
+          opened: [...l.collapsed].filter((p) => !next.has(p)), // collapsed → open
+          collapsed: [...next].filter((p) => !l.collapsed.has(p)), // open → collapsed
+          trace: r.trace,
+        });
+        telemetry.metric("lod.computeMs", computeMs);
+        telemetry.metric("lod.cutSize", next.size);
+        telemetry.metric("lod.cards", r.cards);
+        telemetry.count("lod.recomputes");
+        if (changed) telemetry.count("lod.cutChanges");
+      } else {
+        next = computeCut(l.dirTree, boxes, c, vp, cutOpts);
+      }
+      if (!cutEquals(next, l.collapsed)) l.onCut(next);
+    };
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -360,58 +560,10 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       c.scale = next;
       vcRef.current?.set_camera(c.x, c.y, c.scale);
       renderSoon();
-      // Adaptive LOD: when the zoom crosses a band, recompute the directory cut
-      // from what's currently on screen and hand the new collapsed set up. The
-      // box coordinates come from the live scene, so the cut decision matches
-      // exactly what the user sees. No-op unless adaptiveLod is enabled.
-      const l = lod.current;
-      if (l.adaptiveLod && l.onCut) {
-        const band = cameraBand(c.scale);
-        if (band !== lodBand.current) {
-          const prevBand = lodBand.current;
-          lodBand.current = band;
-          const boxes = sceneBoxes(l.scene);
-          const vp = { w: canvas.width, h: canvas.height };
-          const cutOpts = { openPx: LOD_OPEN_PX, maxCards: LOD_MAX_CARDS, prevCut: l.collapsed };
-          let next: Set<string>;
-          // When telemetry is on, take the traced path and log everything about
-          // this cut (per-dir decisions, deltas, timings); otherwise the cheap one.
-          if (telemetry.isEnabled()) {
-            const t0 = performance.now();
-            const r = computeCutTraced(l.dirTree, boxes, c, vp, cutOpts);
-            const computeMs = performance.now() - t0;
-            next = r.cut;
-            const changed = !cutEquals(next, l.collapsed);
-            telemetry.event("lod", "cut", {
-              trigger: "zoom",
-              cam: { x: c.x, y: c.y, scale: c.scale },
-              band,
-              prevBand,
-              viewport: vp,
-              openPx: LOD_OPEN_PX,
-              maxCards: LOD_MAX_CARDS,
-              dirsEvaluated: r.dirsEvaluated,
-              dirsOnScreen: r.dirsOnScreen,
-              cutSize: next.size,
-              prevCutSize: l.collapsed.size,
-              cards: r.cards,
-              computeMs,
-              changed,
-              opened: [...l.collapsed].filter((p) => !next.has(p)), // collapsed → open
-              collapsed: [...next].filter((p) => !l.collapsed.has(p)), // open → collapsed
-              trace: r.trace,
-            });
-            telemetry.metric("lod.computeMs", computeMs);
-            telemetry.metric("lod.cutSize", next.size);
-            telemetry.metric("lod.cards", r.cards);
-            telemetry.count("lod.recomputes");
-            if (changed) telemetry.count("lod.cutChanges");
-          } else {
-            next = computeCut(l.dirTree, boxes, c, vp, cutOpts);
-          }
-          if (!cutEquals(next, l.collapsed)) l.onCut(next);
-        }
-      }
+      // Debounce the recompute: one cut+rebuild after the zoom gesture settles,
+      // not one per wheel tick (each rebuild reprocesses the whole base graph).
+      clearTimeout(recutTimer);
+      recutTimer = setTimeout(recomputeCut, LOD_RECUT_DEBOUNCE_MS);
     };
     const onDown = (e: PointerEvent) => {
       dragging = true;
@@ -458,6 +610,32 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       }
     };
 
+    // Minimap navigation: click or drag to recenter the camera on that part of the
+    // graph — the fix for losing the graph when zoomed out / panned out of bounds.
+    let mmDragging = false;
+    const onMmDown = (e: PointerEvent) => {
+      if (!minimapOn.current) return;
+      e.stopPropagation();
+      mmDragging = true;
+      minimapRef.current?.setPointerCapture(e.pointerId);
+      recenterFromMinimap(e.clientX, e.clientY);
+    };
+    const onMmMove = (e: PointerEvent) => {
+      if (mmDragging) recenterFromMinimap(e.clientX, e.clientY);
+    };
+    const onMmUp = (e: PointerEvent) => {
+      mmDragging = false;
+      try {
+        minimapRef.current?.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+    };
+    const mm = minimapRef.current;
+    mm?.addEventListener("pointerdown", onMmDown);
+    mm?.addEventListener("pointermove", onMmMove);
+    mm?.addEventListener("pointerup", onMmUp);
+
     const ro = new ResizeObserver(() => {
       if (!vcRef.current) return;
       sizeCanvas();
@@ -498,10 +676,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       if (raf) cancelAnimationFrame(raf);
       if (animRaf) cancelAnimationFrame(animRaf);
       ro.disconnect();
+      clearTimeout(recutTimer);
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("pointerdown", onDown);
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
+      mm?.removeEventListener("pointerdown", onMmDown);
+      mm?.removeEventListener("pointermove", onMmMove);
+      mm?.removeEventListener("pointerup", onMmUp);
       vcRef.current?.free?.();
       vcRef.current = null;
     };
@@ -611,9 +793,33 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     vc.render();
   }, [ready, resolvedTheme]);
 
+  // Redraw the minimap when the scene (extent) or toggle changes — camera moves
+  // already redraw it via renderSoon.
+  useEffect(() => {
+    drawMinimapRef.current?.();
+  }, [scene, minimap, ready]);
+
   return (
     <Box position="absolute" inset="0" ref={containerRef} overflow="hidden">
       <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+      <canvas
+        ref={minimapRef}
+        aria-label="Minimap"
+        style={{
+          position: "absolute",
+          right: 12,
+          bottom: 12,
+          width: 200,
+          height: 140,
+          display: minimap ? "block" : "none",
+          borderRadius: 8,
+          border: "1px solid var(--chakra-colors-border)",
+          background: "var(--chakra-colors-bg-panel)",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+          cursor: "crosshair",
+          touchAction: "none",
+        }}
+      />
       {layingOut && <LayoutOverlay />}
       {error && (
         <Box
