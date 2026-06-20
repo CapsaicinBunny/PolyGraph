@@ -81,6 +81,47 @@ describe("layoutScore", () => {
       ["B", { w: 10, h: 10 }],
     ]);
     const edges = [{ source: "A", target: "B" }]; // backward under LR
-    expect(layoutScore(c, sz, edges, "LR", 0)).toBe(layoutScore(c, sz, edges, "TB", 0));
+    expect(layoutScore(c, sz, edges, "LR", { flowWeight: 0 })).toBe(
+      layoutScore(c, sz, edges, "TB", { flowWeight: 0 }),
+    );
+  });
+
+  test("weights crossings/flow by relationship importance", () => {
+    const c = new Map([
+      ["A", p(500, 0)],
+      ["B", p(0, 50)],
+    ]); // backward under LR
+    const sz = new Map([
+      ["A", { w: 10, h: 10 }],
+      ["B", { w: 10, h: 10 }],
+    ]);
+    const heavy = layoutScore(c, sz, [{ source: "A", target: "B", weight: 8 }], "LR");
+    const light = layoutScore(c, sz, [{ source: "A", target: "B", weight: 0 }], "LR");
+    expect(heavy).toBeGreaterThan(light); // a backward `extends` costs more than a backward call
+  });
+
+  test("penalizes rearrangement vs previous, not uniform translation (mental map)", () => {
+    const sz = new Map([
+      ["A", { w: 10, h: 10 }],
+      ["B", { w: 10, h: 10 }],
+    ]);
+    const opts = {
+      movementWeight: 6,
+      previous: new Map([
+        ["A", p(0, 0)],
+        ["B", p(100, 0)],
+      ]),
+    };
+    const translated = new Map([
+      ["A", p(50, 80)],
+      ["B", p(150, 80)],
+    ]); // same arrangement, shifted
+    const swapped = new Map([
+      ["A", p(100, 0)],
+      ["B", p(0, 0)],
+    ]); // rearranged
+    expect(layoutScore(translated, sz, [], "LR", opts)).toBeLessThan(
+      layoutScore(swapped, sz, [], "LR", opts),
+    );
   });
 });

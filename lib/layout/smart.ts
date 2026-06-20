@@ -320,6 +320,18 @@ function selectEngineAndLayout(
   // Disable the flow (backward-edge) term for substantially-cyclic clusters, where there's no
   // meaningful dependency direction to violate.
   const flowWeight = shape.sccNodeRatio > 0.3 ? 0 : 4;
+  // Previous CENTERS for this cluster's nodes → the mental-map (movement) term in scoring.
+  let previousCenters: Map<string, XYPosition> | undefined;
+  if (previousPositions) {
+    previousCenters = new Map();
+    for (const id of nodeIds) {
+      const p = previousPositions.get(id);
+      if (p) {
+        const s = nodeSize(kindOf.get(id) ?? "");
+        previousCenters.set(id, { x: p.x + s.width / 2, y: p.y + s.height / 2 });
+      }
+    }
+  }
   const scoreOf = (laid: Map<string, XYPosition>): number => {
     const centers = new Map<string, { x: number; y: number }>();
     const sizes = new Map<string, { w: number; h: number }>();
@@ -329,7 +341,11 @@ function selectEngineAndLayout(
       centers.set(id, { x: p.x + s.width / 2, y: p.y + s.height / 2 });
       sizes.set(id, { w: s.width, h: s.height });
     }
-    return layoutScore(centers, sizes, clusterEdges, direction, flowWeight);
+    return layoutScore(centers, sizes, clusterEdges, direction, {
+      flowWeight,
+      previous: previousCenters,
+      movementWeight: 6,
+    });
   };
 
   // The planner's pick (resolved[0]) is the default; an alternative replaces it only if it
