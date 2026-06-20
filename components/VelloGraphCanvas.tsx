@@ -865,11 +865,18 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // adaptive cut changed, so a recut preserves the user's zoom. With adaptiveLod
   // off, fitSignature is undefined and this always fits: today's behavior.
   const prevFitSig = useRef<string | undefined>(undefined);
+  const prevScene = useRef<Scene | null>(null);
   useEffect(() => {
     const vc = vcRef.current;
     if (!ready || !vc) return;
     vc.set_data(payload);
-    if (shouldFit(fitSignature, prevFitSig.current)) {
+    // Only the SCENE STRUCTURE changing (new layout/filter) warrants a re-fit. The payload also
+    // changes for highlight/dim (a click, the focus-fade) and the marching-ants phase — those must
+    // NOT yank the camera. Critical when adaptiveLod is off, where fitSignature is undefined and
+    // shouldFit() is always true: without this gate every click re-fit to min zoom.
+    const sceneChanged = scene !== prevScene.current;
+    prevScene.current = scene;
+    if (sceneChanged && shouldFit(fitSignature, prevFitSig.current)) {
       const fit = vc.fit();
       cam.current = { x: fit[0], y: fit[1], scale: fit[2] };
       // Allow zooming out to the fit scale (or the normal 0.02 floor, whichever is smaller) so
@@ -909,7 +916,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       vc.render();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, payload, fitSignature]);
+  }, [ready, payload, fitSignature, scene]);
 
   // Selection / search are cheap — just update + redraw.
   useEffect(() => {
