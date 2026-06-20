@@ -4,6 +4,11 @@
 // This is the multi-language entry point used by the API route; the TS-only
 // analyzeSources remains for the TypeScript provider and its tests.
 
+import {
+  type DimensionDescriptor,
+  mergeDescriptors,
+  STRUCTURAL_DESCRIPTORS,
+} from "../graph/dimensions";
 import type {
   AnalyzeError,
   AnalyzeResult,
@@ -85,6 +90,7 @@ export async function analyzeProject(
   const edges: GraphEdge[] = [];
   const errors: AnalyzeError[] = [];
   const unresolved: UnresolvedRef[] = [];
+  const facetSchemas: DimensionDescriptor[][] = [];
   // Append with loops, not `push(...arr)` — spreading a huge array as call
   // arguments overflows the engine's argument limit ("Maximum call stack size
   // exceeded") on very large codebases.
@@ -93,7 +99,12 @@ export async function analyzeProject(
     for (const e of r.edges) edges.push(e);
     for (const er of r.errors) errors.push(er);
     if (r.unresolved) for (const u of r.unresolved) unresolved.push(u);
+    if (r.facetSchema) facetSchemas.push(r.facetSchema);
   }
+
+  // Merge every provider's facet schema onto the core's structural descriptors —
+  // one catalog the whole UI/CLI/rule engine projects from.
+  const dimensions = mergeDescriptors([STRUCTURAL_DESCRIPTORS, ...facetSchemas]).catalog;
 
   const dedupedNodes = dedupeById(nodes);
   const nodeIds = new Set(dedupedNodes.map((n) => n.id));
@@ -101,5 +112,5 @@ export async function analyzeProject(
     (e) => nodeIds.has(e.source) && nodeIds.has(e.target),
   );
 
-  return { graph: { nodes: dedupedNodes, edges: validEdges }, errors, unresolved };
+  return { graph: { nodes: dedupedNodes, edges: validEdges }, errors, unresolved, dimensions };
 }

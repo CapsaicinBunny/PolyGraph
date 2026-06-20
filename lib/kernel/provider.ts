@@ -6,6 +6,7 @@
 // a language can start as a declarative pack and later graduate to a precise
 // code-backed provider without changing anything else.
 
+import type { DimensionDescriptor } from "../graph/dimensions";
 import type { AnalyzeError, GraphEdge, GraphNode, UnresolvedRef } from "../graph/types";
 import type { PackageDeps } from "../server/package-deps";
 
@@ -20,6 +21,12 @@ export interface ProviderResult {
   errors: AnalyzeError[];
   /** References that resolved to nothing; providers that don't track this omit it. */
   unresolved?: UnresolvedRef[];
+  /**
+   * Dimension descriptors this provider contributes (the catalog handshake). The
+   * kernel merges them with the core's structural descriptors. Providers with no
+   * facets omit it.
+   */
+  facetSchema?: DimensionDescriptor[];
 }
 
 export interface LanguageProvider {

@@ -1,5 +1,9 @@
 // Shared graph model — used by both the server-side analyzer and the client UI.
 
+// Type-only import: dimensions.ts never imports types.ts at runtime, so a
+// type-only reference here introduces no import cycle.
+import type { DimensionCatalog } from "./dimensions";
+
 // Universal, language-neutral node taxonomy. Each language parser emits the
 // subset that fits its constructs (a Rust parser uses struct/trait/macro, a
 // Java parser uses class/interface/method/field/annotation, etc.).
@@ -181,6 +185,12 @@ export interface AnalyzeResult {
   errors: AnalyzeError[];
   /** References that resolved to nothing in the scanned set. */
   unresolved: UnresolvedRef[];
+  /**
+   * The merged dimension catalog (structural + provider facets), travelling with
+   * the result as plain JSON. Optional during the dimension-spine migration; the
+   * multi-language kernel populates it, the TS-only path may omit it.
+   */
+  dimensions?: DimensionCatalog;
 }
 
 /** A map of relative file path to its source text — the upload payload. */
