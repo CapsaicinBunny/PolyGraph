@@ -11,7 +11,7 @@ import { stratify, tree as d3tree } from "d3-hierarchy";
 import { Layout as ColaLayout } from "webcola";
 import type { ViewEdgeKind } from "./aggregate";
 import { coreness } from "./layout/backbone";
-import { fiedlerOrder, orderByBarycenter, stableOrder } from "./layout/ordering";
+import { fiedlerOrder, orderByCircularBarycenter, stableOrder } from "./layout/ordering";
 import { chooseEngine } from "./layout/planner";
 import { graphShape } from "./layout/shape";
 import { smartLayout } from "./layout/smart";
@@ -312,21 +312,17 @@ function radialLayout(view: LayoutInput): Positions {
   const positions: Positions = new Map();
   if (view.nodes.length === 0) return positions;
 
-  // Directed outgoing edges drive ring depth (dependency flow); the undirected view
-  // drives angular barycenter (a node's neighbors on the adjacent inner ring).
+  // Directed outgoing edges drive ring depth (dependency flow); the weighted undirected
+  // view (built below) drives angular barycenter ordering.
   const out = new Map<string, string[]>();
-  const undir = new Map<string, Set<string>>();
   const indeg = new Map<string, number>();
   for (const nd of view.nodes) {
     out.set(nd.id, []);
-    undir.set(nd.id, new Set());
     indeg.set(nd.id, 0);
   }
   for (const e of view.edges) {
     if (!out.has(e.source) || !out.has(e.target)) continue;
     out.get(e.source)!.push(e.target);
-    undir.get(e.source)!.add(e.target);
-    undir.get(e.target)!.add(e.source);
     indeg.set(e.target, (indeg.get(e.target) ?? 0) + 1);
   }
 
@@ -369,47 +365,75 @@ function radialLayout(view: LayoutInput): Positions {
     (byDepth.get(d) ?? byDepth.set(d, []).get(d))?.push(nd.id);
   }
 
-  // Arc allowance per node (≈ widest card + breathing room) and the minimum radial
-  // gap between consecutive rings. A ring's radius is the larger of "big enough to fit
-  // all its nodes around the circumference" and "clear of the inner ring", so a crowded
-  // ring grows outward instead of cramming its nodes into an overlapping circle.
+  // Rings ordered from center outward; ring 0 anchored by the stable order.
+  const rings = [...byDepth.keys()].sort((a, b) => a - b).map((d) => stableOrder(byDepth.get(d)!));
+
+  // Weighted undirected adjacency — barycenters rank by relationship strength, so an
+  // `extends` neighbor pulls a node toward it harder than an incidental `call`.
+  const wadj = new Map<string, Map<string, number>>();
+  for (const nd of view.nodes) wadj.set(nd.id, new Map());
+  for (const e of view.edges) {
+    if (e.source === e.target || !wadj.has(e.source) || !wadj.has(e.target)) continue;
+    const w = e.weight && e.weight > 0 ? e.weight : 1;
+    wadj.get(e.source)!.set(e.target, (wadj.get(e.source)!.get(e.target) ?? 0) + w);
+    wadj.get(e.target)!.set(e.source, (wadj.get(e.target)!.get(e.source) ?? 0) + w);
+  }
+
+  // Each ring's nodes sit at evenly spaced angles; this maps node → its current angle.
+  const angleMapOf = (ring: string[]): Map<string, number> => {
+    const m = new Map<string, number>();
+    ring.forEach((id, i) => m.set(id, ring.length > 0 ? (i / ring.length) * Math.PI * 2 : 0));
+    return m;
+  };
+  const angleMaps = rings.map(angleMapOf);
+
+  // Reorder ring r against the angles of an adjacent ring, using the circular mean of
+  // weighted neighbor angles (no linear-index wrap artifacts).
+  const reorderAgainst = (r: number, adj: number) => {
+    const adjAngles = angleMaps[adj];
+    rings[r] = orderByCircularBarycenter(rings[r], (id) => {
+      const out: { angle: number; weight: number }[] = [];
+      const nbrs = wadj.get(id);
+      if (nbrs) {
+        for (const [nb, w] of nbrs) {
+          const a = adjAngles.get(nb);
+          if (a !== undefined) out.push({ angle: a, weight: w });
+        }
+      }
+      return out;
+    });
+    angleMaps[r] = angleMapOf(rings[r]);
+  };
+
+  // Initial outward pass, then a few alternating inward/outward sweeps to settle
+  // crossings (bounded + deterministic). Ring 0 stays the fixed anchor.
+  for (let r = 1; r < rings.length; r++) reorderAgainst(r, r - 1);
+  const RING_SWEEPS = 4;
+  for (let s = 0; s < RING_SWEEPS; s++) {
+    if (s % 2 === 0) for (let r = rings.length - 2; r >= 1; r--) reorderAgainst(r, r + 1);
+    else for (let r = 1; r < rings.length; r++) reorderAgainst(r, r - 1);
+  }
+
+  // Arc allowance per node (≈ widest card + breathing room) and the minimum radial gap
+  // between consecutive rings. A ring's radius is the larger of "big enough to fit all
+  // its nodes around the circumference" and "clear of the inner ring", so a crowded ring
+  // grows outward instead of cramming its nodes into an overlapping circle.
   const ARC = 220;
   const RING_GAP = 220;
   const nodeById = new Map(view.nodes.map((nd) => [nd.id, nd]));
-  let prevRing: string[] = [];
   let prevRadius = 0;
-  let first = true;
-  for (const d of [...byDepth.keys()].sort((a, b) => a - b)) {
-    const ringIds = byDepth.get(d)!;
-    // Inner ring first; subsequent rings ordered by barycenter of inner-ring neighbors.
-    const ordered =
-      prevRing.length === 0
-        ? stableOrder(ringIds)
-        : (() => {
-            const prevPos = new Map(prevRing.map((id, i) => [id, i]));
-            return orderByBarycenter(stableOrder(ringIds), (id) => {
-              const ns: { pos: number; weight: number }[] = [];
-              for (const nb of undir.get(id) ?? []) {
-                const p = prevPos.get(nb);
-                if (p !== undefined) ns.push({ pos: p, weight: 1 });
-              }
-              return ns;
-            });
-          })();
-    const fitRadius = (ordered.length * ARC) / (2 * Math.PI);
-    let radius: number;
-    if (first) radius = ordered.length > 1 ? fitRadius : 0;
-    else radius = Math.max(prevRadius + RING_GAP, fitRadius);
-    ordered.forEach((id, i) => {
+  rings.forEach((ring, idx) => {
+    const fitRadius = (ring.length * ARC) / (2 * Math.PI);
+    const radius =
+      idx === 0 ? (ring.length > 1 ? fitRadius : 0) : Math.max(prevRadius + RING_GAP, fitRadius);
+    ring.forEach((id, i) => {
       const node = nodeById.get(id);
       if (!node) return;
-      const angle = (i / ordered.length) * Math.PI * 2;
+      const angle = (i / ring.length) * Math.PI * 2;
       positions.set(...topLeft(node, Math.cos(angle) * radius, Math.sin(angle) * radius));
     });
-    prevRing = ordered;
     prevRadius = radius;
-    first = false;
-  }
+  });
   return positions;
 }
 

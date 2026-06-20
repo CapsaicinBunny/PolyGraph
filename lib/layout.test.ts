@@ -266,6 +266,27 @@ describe("radial layout is graph-aware (directed rings + stable)", () => {
     const p2 = layoutView(scrambled, { algorithm: "radial" });
     for (const id of ["r", "a", "b", "c"]) expect(p2.get(id)).toEqual(p1.get(id));
   });
+
+  test("circular-mean barycenter places a node near its parent, not the opposite side", () => {
+    // R→a, R→b put a/b on opposite sides of ring 1; c hangs off a, d off b. The angular
+    // barycenter must pull c next to a and d next to b (a linear-index average wraps and
+    // could place them mid-ring).
+    const g: GraphView = {
+      nodes: ["R", "a", "b", "c", "d"].map(mk),
+      edges: [ed("R", "a"), ed("R", "b"), ed("a", "c"), ed("b", "d")],
+    };
+    const pos = layoutView(g, { algorithm: "radial" });
+    const ang = (id: string) => {
+      const c = centerOf(pos.get(id)!);
+      return Math.atan2(c.y, c.x);
+    };
+    const adist = (p: string, q: string) => {
+      const d = Math.abs(ang(p) - ang(q));
+      return Math.min(d, 2 * Math.PI - d);
+    };
+    expect(adist("c", "a")).toBeLessThan(adist("c", "b"));
+    expect(adist("d", "b")).toBeLessThan(adist("d", "a"));
+  });
 });
 
 describe("layered layout uses edge weights", () => {

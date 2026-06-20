@@ -251,6 +251,46 @@ export function orderByBarycenter(
   return ranked.map((r) => r.id);
 }
 
+/** A neighbor's angle on an adjacent ring, with its edge weight. */
+export interface WeightedAngle {
+  angle: number;
+  weight: number;
+}
+
+/**
+ * Reorder a ring toward its neighbors' angular positions using the CIRCULAR mean
+ * (the resultant of the weighted unit vectors), not a linear average of indices.
+ * Linear barycenter wraps badly on a ring — neighbors at angles ~0 and ~2π average to
+ * π (the opposite side) instead of ~0. Nodes with no placed neighbors keep their slot
+ * (sorted stably after the rest). Deterministic.
+ */
+export function orderByCircularBarycenter(
+  ring: string[],
+  neighborsOf: (id: string) => WeightedAngle[],
+): string[] {
+  const ranked = ring.map((id, index) => {
+    let sin = 0;
+    let cos = 0;
+    let total = 0;
+    for (const { angle, weight } of neighborsOf(id)) {
+      sin += Math.sin(angle) * weight;
+      cos += Math.cos(angle) * weight;
+      total += weight;
+    }
+    // atan2(0,0)=0 would be a false "angle 0"; mark neighborless nodes null instead.
+    const value = total === 0 ? null : Math.atan2(sin, cos);
+    return { id, index, value };
+  });
+  ranked.sort((a, b) => {
+    if (a.value === null || b.value === null) {
+      if (a.value === null && b.value === null) return a.index - b.index;
+      return a.value === null ? 1 : -1; // neighborless nodes trail, stably
+    }
+    return a.value - b.value || a.index - b.index;
+  });
+  return ranked.map((r) => r.id);
+}
+
 /**
  * Spectral (Fiedler-vector) ordering: a 1-D layout that places strongly connected
  * nodes close together by minimizing squared edge length. Computed per connected
