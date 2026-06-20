@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { barycenterValue, fiedlerOrder, orderByBarycenter, rcmOrder, stableOrder } from "./ordering";
+import {
+  barycenterValue,
+  edgeKey,
+  fiedlerOrder,
+  orderByBarycenter,
+  rcmOrder,
+  stableOrder,
+  undirectedKey,
+} from "./ordering";
 
 const E = (source: string, target: string) => ({ source, target });
 
@@ -116,13 +124,20 @@ describe("stableOrder (deterministic tie-break stack)", () => {
       ["b", "C2"],
       ["c", "C1"],
     ]);
-    expect(stableOrder(["c", "b", "a"], { community })).toEqual(stableOrder(["a", "b", "c"], { community }));
+    expect(stableOrder(["c", "b", "a"], { community })).toEqual(
+      stableOrder(["a", "b", "c"], { community }),
+    );
   });
 });
 
 describe("barycenter ordering (layered/radial crossing reduction)", () => {
   test("barycenterValue is the weight-weighted average of neighbor positions", () => {
-    expect(barycenterValue([{ pos: 0, weight: 1 }, { pos: 4, weight: 3 }])).toBe(3);
+    expect(
+      barycenterValue([
+        { pos: 0, weight: 1 },
+        { pos: 4, weight: 3 },
+      ]),
+    ).toBe(3);
     expect(barycenterValue([])).toBeNull();
   });
 
@@ -140,5 +155,16 @@ describe("barycenter ordering (layered/radial crossing reduction)", () => {
       id === "mid" ? [{ pos: 0, weight: 1 }] : [],
     );
     expect(order.indexOf("left")).toBeLessThan(order.indexOf("right"));
+  });
+});
+
+describe("edgeKey / undirectedKey (collision-free)", () => {
+  test("distinct id pairs never alias", () => {
+    expect(edgeKey("ab", "c")).not.toBe(edgeKey("a", "bc"));
+    expect(edgeKey("a", "b")).not.toBe(edgeKey("b", "a")); // directed: order matters
+  });
+  test("undirectedKey is order-independent but still collision-free", () => {
+    expect(undirectedKey("a", "b")).toBe(undirectedKey("b", "a"));
+    expect(undirectedKey("ab", "c")).not.toBe(undirectedKey("a", "bc"));
   });
 });

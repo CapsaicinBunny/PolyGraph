@@ -12,7 +12,13 @@ import { Layout as ColaLayout } from "webcola";
 import type { ViewEdgeKind } from "./aggregate";
 import { coreness } from "./layout/backbone";
 import { detectCommunities } from "./layout/community";
-import { fiedlerOrder, orderByCircularBarycenter, rcmOrder, stableOrder } from "./layout/ordering";
+import {
+  fiedlerOrder,
+  orderByCircularBarycenter,
+  rcmOrder,
+  stableOrder,
+  undirectedKey,
+} from "./layout/ordering";
 import { chooseEngine } from "./layout/planner";
 import { graphShape } from "./layout/shape";
 import { pivotMds } from "./layout/stress";
@@ -542,7 +548,7 @@ function circularLayout(view: LayoutInput): Positions {
       const ct = commOf(e.target);
       if (cs === ct) internal.get(cs)!.push(e);
       else {
-        const key = cs < ct ? `${cs} ${ct}` : `${ct} ${cs}`;
+        const key = undirectedKey(cs, ct);
         if (!coarse.has(key)) coarse.set(key, { source: cs, target: ct });
       }
     }
@@ -619,7 +625,7 @@ function treeLayout(view: LayoutInput, direction: LayoutDirection): Positions {
     view.edges,
   );
   // A single virtual root unifies a forest into one hierarchy for stratify.
-  const VIRTUAL = " treeRoot";
+  const VIRTUAL = " treeRoot";
   const ids = view.nodes.map((nd) => nd.id);
 
   // Children of each node (roots hang off the virtual root).
@@ -643,7 +649,7 @@ function treeLayout(view: LayoutInput, direction: LayoutDirection): Positions {
   }
 
   // Parent-edge weight (strongest relationship to the parent) + non-tree neighbors.
-  const pairKey = (a: string, b: string) => (a < b ? `${a} ${b}` : `${b} ${a}`);
+  const pairKey = undirectedKey;
   const pairW = new Map<string, number>();
   for (const e of view.edges) {
     if (e.source === e.target) continue;

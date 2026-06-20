@@ -26,6 +26,18 @@ function undirectedAdjacency(nodeIds: string[], edges: Edge[]): Map<string, Set<
 
 const byId = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+// Collision-free keys for node-id pairs. Node ids are arbitrary strings (file paths, symbol
+// ids), so a visible separator can alias — "a b" + "c" and "a" + "b c" both make "a b c".
+// length-prefixed keys (see edgeKey below) make the split unambiguous.
+/** Key for a DIRECTED (source → target) id pair. */
+export function edgeKey(source: string, target: string): string {
+  return `${source.length}:${source}${target}`;
+}
+/** Key for an UNORDERED id pair (same key regardless of argument order). */
+export function undirectedKey(a: string, b: string): string {
+  return a < b ? edgeKey(a, b) : edgeKey(b, a);
+}
+
 /**
  * Reverse Cuthill–McKee ordering: a bandwidth-reducing permutation that keeps
  * connected nodes close together in the sequence. Each component is seeded at its
