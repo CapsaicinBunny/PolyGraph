@@ -107,6 +107,14 @@ export interface GraphNode {
   version?: string;
   /** For npm externals: how the package is declared (or "undeclared"). */
   dependencyType?: DependencyType;
+  /**
+   * Generic dimension facets, keyed by facet key (e.g. `env`, `role`). Plain
+   * strings, sparse: a key is present only when informative (a value differing
+   * from the descriptor's default). This is the durable/interchange shape; the
+   * runtime `DimensionIndex` holds the interned columnar form. During the
+   * dimension-spine migration these dual-write alongside the legacy fields above.
+   */
+  facets?: Record<string, string[]>;
 }
 
 export type EdgeConfidence = "exact" | "inferred" | "ambiguous";
