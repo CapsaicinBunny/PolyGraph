@@ -40,6 +40,7 @@ import { Sidebar } from "./Sidebar";
 import { ThemeToggle } from "./ThemeToggle";
 import { UploadDropzone } from "./UploadDropzone";
 import type { ExplorerWorkspaceState } from "@/lib/workspace/schema";
+import { isTauri } from "@/lib/client/env";
 import { telemetry } from "@/lib/telemetry";
 import { startSessionLogPersist } from "@/lib/telemetry/persist";
 
@@ -166,8 +167,12 @@ export function Explorer() {
 
   // Mirror telemetry to logs/session.ndjson on desktop so the LOD/render trace
   // survives a crash (no-op in the browser; Settings "Download session log" there).
+  // Also mark the app shell as mounted/hydrated — a startup breadcrumb. (This child effect
+  // runs before the root ErrorBoundary's componentDidMount, so "mounted" actually lands just
+  // before "session-start" in the log; both bracket startup.)
   useEffect(() => {
     startSessionLogPersist();
+    telemetry.event("app", "mounted", { tauri: isTauri() });
   }, []);
 
   // Load / persist user saved searches.
@@ -202,9 +207,12 @@ export function Explorer() {
 
   // Signature of everything that should re-frame the camera (new graph, level,
   // filters, focus) but NOT collapsedClusters — so the adaptive cut preserves the
-  // user's zoom. Undefined when adaptive LOD is off (renderer then always fits).
+  // user's zoom. Computed whenever a graph is loaded, regardless of adaptive LOD: a
+  // click/highlight or a no-op recut leaves it unchanged so only a genuine fit-worthy
+  // change re-frames. (It used to be undefined when LOD was off, which made shouldFit()
+  // always true → every click/zoom-recut re-fit the camera to min zoom.)
   const fitSignature = useMemo(() => {
-    if (!adaptiveLod || !graph) return undefined;
+    if (!graph) return undefined;
     const set = (s: Set<string>) => [...s].sort().join(",");
     return [
       graphKeyFor(graph),
@@ -228,7 +236,6 @@ export function Explorer() {
       queryIds ? set(queryIds) : "",
     ].join("|");
   }, [
-    adaptiveLod,
     graph,
     level,
     algorithm,
@@ -311,22 +318,22 @@ export function Explorer() {
   const handleToggleExpandAll = useCallback(() => {
     if (allExpanded) {
       // Collapse all → the coarsest overview: every top-level directory as one
-      // aggregate. (Always tiny, so it's unambiguously "more collapsed" than expand-all
-      // and never overruns the layout.)
+      // aggregate. A manual override, so turn the camera-driven cut OFF — otherwise a
+      // zoom would re-open directories and undo the collapse the user just asked for.
       setExpanded(new Set());
       setCollapsedClusters(new Set(topDirs));
+      setAdaptiveLod(false);
     } else {
-      // Expand all → as much detail as the layout budget allows. Expanding pulls every
-      // file's symbols into the layout, so seed the collapse on node cost (1 + symbols)
-      // under the node budget — else the input balloons past what Smart can lay out and
-      // it falls back to a grid. The cut then opens further detail where you zoom.
+      // Expand all → every file's symbols. If the expanded graph fits the layout budget,
+      // show it flat with the cut OFF — else the camera cut re-collapses on-screen dirs as
+      // "too-small" on the next zoom and the expand appears to do nothing. Only when the
+      // expanded graph is genuinely too big do we seed the dir-collapse AND keep the cut
+      // on, so the rendered card count stays bounded (else Smart overruns → grid fallback).
       setExpanded(new Set(fileIds));
       const cost = (id: string) => 1 + (symbolCount.get(id) ?? 0);
-      setCollapsedClusters(
-        baseGraph
-          ? (autoCollapseDirs(baseGraph, LOD_NODE_BUDGET, cost)?.collapsed ?? new Set())
-          : new Set(),
-      );
+      const seed = baseGraph ? autoCollapseDirs(baseGraph, LOD_NODE_BUDGET, cost) : null;
+      setCollapsedClusters(seed?.collapsed ?? new Set());
+      setAdaptiveLod(seed !== null);
     }
   }, [allExpanded, fileIds, baseGraph, symbolCount, topDirs]);
 

@@ -295,7 +295,20 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
       }
       throw new Error(data.error ?? (res.ok ? TOO_LARGE_MESSAGE : `Scan failed (${res.status})`));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Scan failed");
+      const message = err instanceof Error ? err.message : "Scan failed";
+      // A scan throw is usually the sidecar (Bun) being down/crashed or an OOM on a huge
+      // project — log it so the failure is visible in session.ndjson, not just the toast.
+      try {
+        telemetry.event(
+          "analysis",
+          "scan-error",
+          { path: trimmed, message, roundTripMs: performance.now() - t0 },
+          "error",
+        );
+      } catch {
+        /* never mask the original failure */
+      }
+      setError(message);
       setPhase("idle");
     }
   }

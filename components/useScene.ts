@@ -15,6 +15,7 @@ import {
   layoutCacheSet,
   type LayoutAlgorithm,
   type LayoutDirection,
+  layoutFallbackSummary,
   type XYPosition,
 } from "@/lib/layout";
 import { layoutInWorker } from "@/lib/layout-client";
@@ -41,7 +42,7 @@ export function useScene(
   focusedIds: Set<string> | null,
   queryIds: Set<string> | null = null,
   projected = false,
-): { scene: Scene; layingOut: boolean } {
+): { scene: Scene; layingOut: boolean; ready: boolean } {
   const structure = useMemo(
     () =>
       buildSceneStructure(
@@ -79,7 +80,13 @@ export function useScene(
     initial?.positions ?? EMPTY_POS,
   );
   const [clusters, setClusters] = useState<ClusterBox[]>(initial?.clusters ?? EMPTY_CLUSTERS);
+  // The structure signature `positions` were actually laid out for. On a structure change this
+  // lags by a render (positions update in the effect below), so `ready` is false until the new
+  // layout lands — the camera must not re-fit a half-applied scene (surviving nodes at old coords,
+  // new nodes still at 0,0). Seeded true on a cache hit, which applies positions synchronously.
+  const [positionedSig, setPositionedSig] = useState(initial ? structure.signature : "");
   const [layingOut, setLayingOut] = useState(false);
+  const ready = positionedSig === structure.signature;
   const reqId = useRef(0);
 
   // Always-current positions, read as the seed for the NEXT layout. On a structure
@@ -104,6 +111,7 @@ export function useScene(
       );
       setPositions(cached.positions);
       setClusters(cached.clusters);
+      setPositionedSig(structure.signature);
       setLayingOut(false);
       return;
     }
@@ -128,9 +136,14 @@ export function useScene(
         telemetry.metric("layout.ms", layoutMs);
         telemetry.metric("layout.nodes", structure.layoutInput.nodes.length);
         telemetry.count("layout.runs");
+        // Surface Smart's budget-driven engine downgrades (#71) in the session log, so a grid
+        // fallback isn't mistaken for the chosen engine producing a poor result.
+        const simplified = layoutFallbackSummary(cl);
+        if (simplified) telemetry.event("layout", "simplified", { summary: simplified }, "warn");
         layoutCacheSet(structure.signature, { positions: pos, clusters: cl });
         setPositions(pos);
         setClusters(cl);
+        setPositionedSig(structure.signature);
         setLayingOut(false);
       })
       .catch((err) => {
@@ -150,5 +163,5 @@ export function useScene(
     () => applyPositions(structure, positions, clusters),
     [structure, positions, clusters],
   );
-  return { scene, layingOut };
+  return { scene, layingOut, ready };
 }

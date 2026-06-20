@@ -1,10 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box } from "@chakra-ui/react";
 import { useTheme } from "next-themes";
 import type { ViewEdgeKind } from "@/lib/aggregate";
 import { clusterIdOfAggregate, isAggregateId } from "@/lib/graph/collapse";
+import {
+  buildAdjacency,
+  connectionHighlight,
+  type ConnectionRole,
+  connectionRoles,
+  connectionStatus,
+  nextAnchors,
+  pairKey,
+  pruneAnchors,
+} from "@/lib/graph/connections";
 import type { Scene, SceneEdge, SceneFilters } from "@/lib/graph/scene";
 import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
 import {
@@ -86,7 +96,8 @@ export interface GraphViewProps {
    * Signature of everything that warrants re-framing the camera (graph, level,
    * filters) but NOT the cut. When it's unchanged across a scene update, the
    * camera is preserved instead of re-fitting — so an adaptive recut doesn't
-   * yank the view. Undefined (the default) always re-fits: today's behavior.
+   * yank the view. When undefined the camera re-fits on every ready scene change;
+   * Explorer provides a signature whenever a graph is loaded.
    */
   fitSignature?: string;
 }
@@ -94,6 +105,19 @@ export interface GraphViewProps {
 function hexToRgb(hex: string): [number, number, number] {
   const v = Number.parseInt(hex.replace("#", ""), 16);
   return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+/** Linear blend between two RGB colors (t in [0,1]). Used to fade the de-emphasis in. */
+function lerpRgb(
+  a: [number, number, number],
+  b: [number, number, number],
+  t: number,
+): [number, number, number] {
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * t),
+    Math.round(a[1] + (b[1] - a[1]) * t),
+    Math.round(a[2] + (b[2] - a[2]) * t),
+  ];
 }
 
 function hslToRgb(h: number, s: number, l: number): [number, number, number] {
@@ -129,6 +153,32 @@ function clusterColor(id: string): [number, number, number] {
 
 // Muted gray for nodes/edges outside the highlight set (readable in both themes).
 const DIM_RGB: [number, number, number] = [90, 99, 112];
+// Connection-highlight ring color per path role, drawn as an OUTLINE only (the card keeps its own
+// kind-color so its type still reads). Blue start matches the selection outline.
+const ROLE_RGB: Record<ConnectionRole, [number, number, number]> = {
+  start: [59, 130, 246], // blue
+  end: [239, 68, 68], // red
+  path: [234, 179, 8], // yellow
+};
+
+// The per-node shape the renderer deserializes (vello-renderer NodeData). Named so the object
+// literal below stays in sync with the Rust struct — a renamed/missing field or a wrong color
+// tuple is then a compile error here, not a silent "bad scene json" at runtime. `outline` is
+// optional: omitted (undefined) for non-highlighted nodes → serde reads it as None.
+interface VelloNode {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color: [number, number, number];
+  outline?: [number, number, number];
+  label: string;
+  shape: string;
+  badge: string;
+  lang: string;
+  lang_color: [number, number, number];
+}
 
 interface VelloHandle {
   set_data: (json: string) => void;
@@ -204,7 +254,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     ],
   );
 
-  const { scene, layingOut } = useScene(
+  const {
+    scene,
+    layingOut,
+    ready: layoutReady,
+  } = useScene(
     graph,
     expanded,
     filters,
@@ -225,6 +279,88 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // for the chosen engine producing a poor result. Null when nothing was downgraded.
   const fallbackNote = useMemo(() => layoutFallbackSummary(scene.clusters), [scene.clusters]);
 
+  // Connection highlighting: a single click lights a card + its direct neighbors; shift-click a
+  // second card lights the shortest (undirected) path between them. Anchors are scene ids, so it
+  // works at any collapse/expand level. It takes precedence over the query highlight for dimming,
+  // but never reframes the camera (framing stays tied to the query-highlight prop).
+  const [anchors, setAnchors] = useState<string[]>([]);
+  const onAnchor = useCallback((id: string, shift: boolean) => {
+    setAnchors((prev) => nextAnchors(prev, id, shift));
+  }, []);
+  // No-op when already empty so an empty-space click or stray Esc doesn't force a re-render.
+  const clearAnchors = useCallback(() => setAnchors((prev) => (prev.length ? [] : prev)), []);
+  // Tracks the previous plain click so a quick second click on the same card = double-click.
+  const lastClick = useRef<{ id: string; time: number }>({ id: "", time: 0 });
+  const sceneIds = useMemo(() => new Set(scene.nodes.map((n) => n.id)), [scene.nodes]);
+  // containment edges are dropped inside buildAdjacency, so paths run through code relationships.
+  const connAdj = useMemo(() => buildAdjacency(scene.edges), [scene.edges]);
+  // Actively prune anchors whose card left the scene on an LOD/collapse transition, so a stale
+  // (now-invisible) endpoint can't linger in state behind a still-visible one.
+  useEffect(() => {
+    setAnchors((prev) => pruneAnchors(prev, sceneIds));
+  }, [sceneIds]);
+  const liveAnchors = useMemo(() => anchors.filter((a) => sceneIds.has(a)), [anchors, sceneIds]);
+  const conn = useMemo(() => connectionHighlight(liveAnchors, connAdj), [liveAnchors, connAdj]);
+  const effectiveHighlight = conn ? conn.nodeIds : highlightIds;
+  const labelById = useMemo(() => new Map(scene.nodes.map((n) => [n.id, n.label])), [scene.nodes]);
+  const connStatus = useMemo(
+    () => connectionStatus(liveAnchors, conn, (id) => labelById.get(id) ?? id),
+    [liveAnchors, conn, labelById],
+  );
+  // A stable key for the current selection: changes only when the anchors change (not on
+  // scene-only churn). Drives both the connection log and the focus-fade ramp.
+  const highlightKey = conn ? `c:${liveAnchors.join("")}` : highlightIds ? "q" : "";
+
+  // Session-log connection selections (once per distinct selection — the ref dedups the extra
+  // fires from scene-only changes). Covers the #72 feature in the downloadable log.
+  const lastLoggedConn = useRef("");
+  useEffect(() => {
+    if (highlightKey.startsWith("c:") && conn && highlightKey !== lastLoggedConn.current) {
+      lastLoggedConn.current = highlightKey;
+      telemetry.event("interaction", "connection", {
+        anchors: liveAnchors.length,
+        connected: conn.connected,
+        steps: conn.path ? conn.path.length - 1 : null,
+        ids: liveAnchors,
+      });
+    }
+  }, [highlightKey, conn, liveAnchors]);
+
+  // Focus animation: when the selection changes, fade the de-emphasis IN (dimmed cards/edges
+  // ramp from full colour → grey over ~180ms) so the highlight resolves smoothly instead of
+  // snapping. dimT 0 = no dim, 1 = full dim. Skipped on large scenes, where re-encoding the
+  // payload each frame would be costly (it just snaps to 1).
+  const [dimT, setDimT] = useState(1);
+  // animatable is a boolean (flips only at the size threshold), so it's safe in the deps — the
+  // ramp re-runs on a selection change or when the scene crosses the threshold, not every frame.
+  const prefersReducedMotion = useMemo(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true,
+    [],
+  );
+  // Bound the fade by total payload work (nodes + edges), not just node count — each frame
+  // re-serializes the whole node+edge payload, so an edge-heavy graph (e.g. 700 nodes / 40k
+  // edges) would jank. Honor reduced-motion too (the fade is decorative). Boolean → safe in deps.
+  const animatable = scene.nodes.length + scene.edges.length <= 10_000 && !prefersReducedMotion;
+  useEffect(() => {
+    if (!highlightKey || !animatable) {
+      setDimT(1);
+      return;
+    }
+    setDimT(0);
+    let raf = 0;
+    let start = 0;
+    const step = (ts: number) => {
+      if (start === 0) start = ts;
+      const t = Math.min(1, (ts - start) / 180);
+      setDimT(t);
+      if (t < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [highlightKey, animatable]);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const vcRef = useRef<VelloHandle | null>(null);
@@ -244,8 +380,22 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const isFile = useRef(new Map<string, boolean>());
   const edgesById = useRef(new Map<string, SceneEdge>());
   edgesById.current = new Map(scene.edges.map((e) => [e.id, e]));
-  const handlers = useRef({ onSelect, onToggleExpand, onToggleCollapse, onSelectEdge });
-  handlers.current = { onSelect, onToggleExpand, onToggleCollapse, onSelectEdge };
+  const handlers = useRef({
+    onSelect,
+    onToggleExpand,
+    onToggleCollapse,
+    onSelectEdge,
+    onAnchor,
+    clearAnchors,
+  });
+  handlers.current = {
+    onSelect,
+    onToggleExpand,
+    onToggleCollapse,
+    onSelectEdge,
+    onAnchor,
+    clearAnchors,
+  };
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -282,8 +432,22 @@ export function VelloGraphCanvas(props: GraphViewProps) {
 
   // The JSON payload Vello consumes. Built from the positioned scene.
   const payload = useMemo(() => {
-    // In highlight mode, mute everything outside the match set so the matches pop.
-    const dim = (id: string) => highlightIds != null && !highlightIds.has(id);
+    // Mute everything outside the highlight set so the matches pop. Nodes dim by membership.
+    const dimNode = (id: string) => effectiveHighlight != null && !effectiveHighlight.has(id);
+    // Connection roles → an outline ring (not a fill): start (blue), destination (red), and the
+    // nodes between them on the path (yellow). Outline-only keeps each card's kind-color intact,
+    // so the ring reads as "role" rather than "different type". Empty map when nothing's anchored.
+    const roles = connectionRoles(liveAnchors, conn);
+    const outlineFor = (id: string): [number, number, number] | undefined => {
+      const role = roles.get(id);
+      return role ? ROLE_RGB[role] : undefined;
+    };
+    // Edges dim by EXACT pair in connection mode (so a chord between two lit nodes stays dim),
+    // and by "both endpoints lit" in query-highlight mode (which has no edge set).
+    const dimEdge = (source: string, target: string) =>
+      conn
+        ? !conn.edgePairs.has(pairKey(source, target))
+        : highlightIds != null && (!highlightIds.has(source) || !highlightIds.has(target));
     const center = new Map<string, [number, number]>();
     const map = new Map<string, boolean>();
     for (const n of scene.nodes) {
@@ -291,13 +455,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       map.set(n.id, n.isFile);
     }
     isFile.current = map;
-    const nodes = scene.nodes.map((n) => ({
+    const nodes: VelloNode[] = scene.nodes.map((n) => ({
       id: n.id,
       x: n.x,
       y: n.y,
       w: n.width,
       h: n.height,
-      color: dim(n.id) ? DIM_RGB : hexToRgb(n.color),
+      color: dimNode(n.id) ? lerpRgb(hexToRgb(n.color), DIM_RGB, dimT) : hexToRgb(n.color),
+      outline: outlineFor(n.id),
       label: n.label,
       shape: n.shape,
       badge: n.isFile && n.symbolCount > 0 ? `+${n.symbolCount}` : "",
@@ -310,14 +475,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         const a = center.get(e.source);
         const b = center.get(e.target);
         if (!a || !b) return null;
-        const muted = dim(e.source) || dim(e.target);
+        const muted = dimEdge(e.source, e.target);
         return {
           id: e.id,
           x1: a[0],
           y1: a[1],
           x2: b[0],
           y2: b[1],
-          color: muted ? DIM_RGB : hexToRgb(e.color),
+          color: muted ? lerpRgb(hexToRgb(e.color), DIM_RGB, dimT) : hexToRgb(e.color),
           count: e.count,
         };
       })
@@ -333,7 +498,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       color: clusterColor(c.id),
     }));
     return JSON.stringify({ nodes, edges, clusters, routing: edgeRouting });
-  }, [scene, edgeRouting, highlightIds]);
+  }, [scene, edgeRouting, effectiveHighlight, conn, liveAnchors, highlightIds, dimT]);
 
   // One-time Vello/WebGPU setup + camera interaction.
   useEffect(() => {
@@ -599,25 +764,60 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       } catch {
         /* ignore */
       }
-      if (moved > 4 || !vcRef.current) return;
+      // A drag isn't a click — reset the double-click tracker so it can't pair into a double.
+      if (moved > 4 || !vcRef.current) {
+        lastClick.current = { id: "", time: 0 };
+        return;
+      }
       const rect = el.getBoundingClientRect();
       const id = vcRef.current.pick(
         (e.clientX - rect.left) * dpr.current,
         (e.clientY - rect.top) * dpr.current,
       );
-      if (id) {
-        if (id.startsWith("cluster:")) {
-          handlers.current.onToggleCollapse(id.slice("cluster:".length)); // collapse a directory
-        } else if (id.startsWith("edge:")) {
-          const edge = edgesById.current.get(id.slice("edge:".length));
-          if (edge) handlers.current.onSelectEdge(edge);
-        } else if (isAggregateId(id)) {
-          handlers.current.onToggleCollapse(clusterIdOfAggregate(id)); // expand an aggregate card
-        } else {
-          if (isFile.current.get(id)) handlers.current.onToggleExpand(id);
-          handlers.current.onSelect(id);
-        }
+      // Any action that isn't a plain card click resets the double-click tracker, so an unrelated
+      // click between two card clicks can't complete an accidental double-click sequence.
+      if (!id) {
+        lastClick.current = { id: "", time: 0 };
+        handlers.current.clearAnchors(); // empty space clears the connection highlight
+        return;
       }
+      if (id.startsWith("cluster:")) {
+        lastClick.current = { id: "", time: 0 };
+        handlers.current.onToggleCollapse(id.slice("cluster:".length)); // collapse a directory
+        return;
+      }
+      if (id.startsWith("edge:")) {
+        lastClick.current = { id: "", time: 0 };
+        const edge = edgesById.current.get(id.slice("edge:".length));
+        if (edge) handlers.current.onSelectEdge(edge);
+        return;
+      }
+      if (e.shiftKey) {
+        // Shift-click = path anchoring (first endpoint → second → fresh path); never expands.
+        lastClick.current = { id: "", time: 0 };
+        handlers.current.onAnchor(id, true);
+        return;
+      }
+      // Plain click on a card: a SINGLE click selects + lights the card and its direct neighbors;
+      // a DOUBLE click (two quick clicks on the same card) expands/collapses a file or aggregate.
+      // Keeping expand off the single click means one click never swaps the card out from under
+      // its own highlight.
+      const now = performance.now();
+      const prev = lastClick.current;
+      const isDouble = id === prev.id && now - prev.time < 300;
+      if (isDouble) {
+        lastClick.current = { id: "", time: 0 }; // reset so a quick 3rd click isn't another double
+        if (isAggregateId(id)) handlers.current.onToggleCollapse(clusterIdOfAggregate(id));
+        else if (isFile.current.get(id)) handlers.current.onToggleExpand(id);
+        return;
+      }
+      lastClick.current = { id, time: now };
+      if (!isAggregateId(id)) handlers.current.onSelect(id);
+      handlers.current.onAnchor(id, false); // light this card + its direct neighbors
+    };
+    // Esc clears the connection highlight (parallels clicking empty space).
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") handlers.current.clearAnchors();
     };
 
     // Minimap navigation: click or drag to recenter the camera on that part of the
@@ -673,6 +873,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         el.addEventListener("pointerdown", onDown);
         el.addEventListener("pointermove", onMove);
         el.addEventListener("pointerup", onUp);
+        window.addEventListener("keydown", onKeyDown);
         ro.observe(el);
         setReady(true);
         animate();
@@ -691,6 +892,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       el.removeEventListener("pointerdown", onDown);
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
+      window.removeEventListener("keydown", onKeyDown);
       mm?.removeEventListener("pointerdown", onMmDown);
       mm?.removeEventListener("pointermove", onMmMove);
       mm?.removeEventListener("pointerup", onMmUp);
@@ -700,27 +902,39 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Feed data when the scene changes, and re-fit the camera only when the scene
-  // changed for a fit-worthy reason (new graph/level/filters) — NOT when only the
-  // adaptive cut changed, so a recut preserves the user's zoom. With adaptiveLod
-  // off, fitSignature is undefined and this always fits: today's behavior.
+  // Feed data on every payload change, but re-fit the camera ONLY when the scene structure
+  // actually changed for a fit-worthy reason (new graph/level/filters) — not on an adaptive recut
+  // (which preserves the user's zoom), nor on a highlight/dim payload change that keeps the same
+  // scene (a click, the focus-fade).
   const prevFitSig = useRef<string | undefined>(undefined);
+  const prevScene = useRef<Scene | null>(null);
   useEffect(() => {
     const vc = vcRef.current;
     if (!ready || !vc) return;
     vc.set_data(payload);
-    if (shouldFit(fitSignature, prevFitSig.current)) {
+    // Re-fit only when a new layout for a fit-worthy structure has actually landed: the scene
+    // object changed, the layout is READY for the current structure (positions match it, not a
+    // half-applied scene mid-transition with new nodes still at 0,0), and the fit signature
+    // changed. Highlight/dim and the marching-ants phase keep the same scene; an adaptive recut
+    // keeps the same fitSignature — so none of them yank the camera. prevFitSig advances ONLY on
+    // an actual fit, so when positions lag the structure by a render the fit still fires the
+    // moment they arrive (instead of locking onto the degenerate intermediate scene).
+    const sceneChanged = scene !== prevScene.current;
+    prevScene.current = scene;
+    if (sceneChanged && layoutReady && shouldFit(fitSignature, prevFitSig.current)) {
       const fit = vc.fit();
       cam.current = { x: fit[0], y: fit[1], scale: fit[2] };
-      // Match the renderer's dynamic floor: allow zooming out to the fit scale (or the
-      // normal floor, whichever is smaller) so large graphs aren't stuck zoomed in.
-      minScale.current = Math.min(fit[2], 0.02);
+      // Allow zooming out to the fit scale (or the normal 0.02 floor, whichever is smaller) so
+      // large graphs aren't stuck zoomed in — but never below 0.004, so a stray/oversized fit
+      // can't let the user zoom out to a useless sub-pixel speck. (Adaptive LOD thins the card
+      // count at low zoom, so you never need to zoom past this to see the whole graph.)
+      minScale.current = Math.max(0.004, Math.min(fit[2], 0.02));
       lodBand.current = cameraBand(cam.current.scale);
+      prevFitSig.current = fitSignature;
     } else {
-      // Cut-only change: keep the camera where the user left it.
+      // Highlight/dim, an adaptive recut, or a layout not yet ready: keep the user's camera.
       vc.set_camera(cam.current.x, cam.current.y, cam.current.scale);
     }
-    prevFitSig.current = fitSignature;
     vc.set_selection(selectedId ?? undefined);
     vc.set_search(search);
     if (telemetry.isEnabled()) {
@@ -747,7 +961,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       vc.render();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, payload, fitSignature]);
+  }, [ready, payload, fitSignature, scene, layoutReady]);
 
   // Selection / search are cheap — just update + redraw.
   useEffect(() => {
@@ -831,6 +1045,26 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         }}
       />
       {layingOut && <LayoutOverlay />}
+      {connStatus && (
+        <Box
+          position="absolute"
+          top="3"
+          left="50%"
+          transform="translateX(-50%)"
+          maxW="90%"
+          truncate
+          fontSize="sm"
+          px="3"
+          py="1.5"
+          rounded="md"
+          borderWidth="1px"
+          borderColor="border"
+          bg={connStatus.ok ? "bg.panel" : "orange.subtle"}
+          color={connStatus.ok ? "fg" : "orange.fg"}
+        >
+          {connStatus.text}
+        </Box>
+      )}
       {fallbackNote && (
         <Box
           position="absolute"

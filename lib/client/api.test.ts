@@ -2,8 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { apiBase } from "./api";
 import { isTauri } from "./env";
 
+// These tests mutate the global `window` to exercise the SSR / browser / Tauri paths.
+// Capture the real (happy-dom) window and restore it after each test, so later test
+// files that need a DOM aren't left with a deleted or stubbed-out global.
+const realWindow = (globalThis as { window?: unknown }).window;
 afterEach(() => {
-  delete (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = realWindow;
 });
 
 test("apiBase defaults to the dev sidecar port", () => {
