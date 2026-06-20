@@ -23,7 +23,7 @@ import {
 } from "../layout";
 import { buildClusterTree, type ClusterTreeNode } from "./clusters";
 import { detectCommunities } from "./community";
-import { edgeKey } from "./ordering";
+import { edgeKey, fiedlerOrder } from "./ordering";
 import { candidateEngines, chooseEngine } from "./planner";
 import { stronglyConnectedComponents } from "./scc";
 import { type GraphShape, graphShape } from "./shape";
@@ -141,18 +141,15 @@ interface SimNode extends SimulationNodeDatum {
 }
 
 /** Force-directed placement of items (centers) via fixed synchronous ticks. Deterministic (no RNG). */
-function forceItems(
-  items: Item[],
-  edges: { source: string; target: string }[],
-  spacing: number,
-): Centers {
+function forceItems(items: Item[], edges: ItemEdge[], spacing: number): Centers {
   const centers: Centers = new Map();
   if (items.length === 0) return centers;
   const simNodes: SimNode[] = items.map((it) => ({ id: it.id }));
   const ids = new Set(items.map((it) => it.id));
-  const links = edges
+  type Link = { source: string; target: string; weight: number };
+  const links: Link[] = edges
     .filter((e) => ids.has(e.source) && ids.has(e.target))
-    .map((e) => ({ source: e.source, target: e.target }));
+    .map((e) => ({ source: e.source, target: e.target, weight: e.weight }));
   let radius = 60;
   for (const it of items) radius = Math.max(radius, Math.hypot(it.width, it.height) / 2 + 20);
 
@@ -160,10 +157,11 @@ function forceItems(
     .force("charge", forceManyBody().strength(-1200).distanceMax(2200))
     .force(
       "link",
-      forceLink<SimNode, { source: string; target: string }>(links)
+      forceLink<SimNode, Link>(links)
         .id((d) => d.id)
         .distance(radius * 2.2 * spacing)
-        .strength(0.4),
+        // Heavier subsystem relationships pull their boxes together harder than incidental ones.
+        .strength((l) => Math.min(0.8, 0.15 + 0.08 * Math.log2(1 + (l.weight ?? 0)))),
     )
     .force("center", forceCenter(0, 0))
     .force("collide", forceCollide(radius * spacing))
@@ -519,7 +517,14 @@ function layoutCluster(
       condItems.push({ id: comp.members[0], width: s.width, height: s.height });
       continue;
     }
-    const memberItems: Item[] = comp.members.map((id) => ({ id, ...sizeOf.get(id)! }));
+    // Spectrally order the cyclic boxes (Fiedler over the SCC's internal edges) so connected
+    // subsystems land adjacent on the ring, instead of placing them in arbitrary input order.
+    const memberSet = new Set(comp.members);
+    const sccEdges = sortedEdges.filter((e) => memberSet.has(e.source) && memberSet.has(e.target));
+    const memberItems: Item[] = fiedlerOrder(comp.members, sccEdges).map((id) => ({
+      id,
+      ...sizeOf.get(id)!,
+    }));
     const ring = circularItems(memberItems, spacing);
     let minX = Infinity;
     let minY = Infinity;
