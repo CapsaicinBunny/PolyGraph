@@ -79,7 +79,8 @@ export interface ConnectionHighlight {
   edgePairs: Set<string>;
   /** The shortest path (two connected anchors), else null. */
   path: string[] | null;
-  /** False only when two anchors have no path between them. */
+  /** True for 0–1 anchors or when two anchors have a path; false only when two anchors are
+   * unconnected. (`path` non-null ⟺ two connected anchors.) */
   connected: boolean;
 }
 

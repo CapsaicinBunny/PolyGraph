@@ -200,4 +200,11 @@ describe("connectionRoles (outline ring roles)", () => {
     expect(roles.get("x")).toBe("end");
     expect([...roles.values()].some((r) => r === "path")).toBe(false);
   });
+
+  test("two adjacent anchors (length-2 path) → start + end, no middle 'path' role", () => {
+    const roles = connectionRoles(["a", "b"], connectionHighlight(["a", "b"], adj));
+    expect(roles.get("a")).toBe("start");
+    expect(roles.get("b")).toBe("end");
+    expect([...roles.values()].some((r) => r === "path")).toBe(false);
+  });
 });

@@ -167,8 +167,9 @@ export function Explorer() {
 
   // Mirror telemetry to logs/session.ndjson on desktop so the LOD/render trace
   // survives a crash (no-op in the browser; Settings "Download session log" there).
-  // Also mark the app shell as mounted/hydrated — the first lifecycle breadcrumb after
-  // session-start, so the log shows how far startup got before any crash.
+  // Also mark the app shell as mounted/hydrated — a startup breadcrumb. (This child effect
+  // runs before the root ErrorBoundary's componentDidMount, so "mounted" actually lands just
+  // before "session-start" in the log; both bracket startup.)
   useEffect(() => {
     startSessionLogPersist();
     telemetry.event("app", "mounted", { tauri: isTauri() });

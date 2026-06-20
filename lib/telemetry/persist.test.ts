@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TelemetryEvent } from "./events";
-import { eventsSince } from "./persist";
+import { eventsSince, flushSessionLog } from "./persist";
 
 const ev = (t: number): TelemetryEvent => ({ t, category: "lod", level: "info", event: "cut" });
 
@@ -19,5 +19,13 @@ describe("eventsSince", () => {
     const events = [ev(1), ev(2)];
     expect(eventsSince(events, 2)).toHaveLength(0);
     expect(eventsSince([], 5)).toHaveLength(0);
+  });
+});
+
+describe("flushSessionLog", () => {
+  test("is a no-op (does not throw) when persistence never started", () => {
+    // The crash paths (ErrorBoundary, global-errors) call this unconditionally; outside Tauri
+    // startSessionLogPersist() bails, so the trigger is null and this must quietly do nothing.
+    expect(() => flushSessionLog()).not.toThrow();
   });
 });

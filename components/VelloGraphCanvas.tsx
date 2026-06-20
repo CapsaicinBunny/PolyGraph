@@ -96,8 +96,8 @@ export interface GraphViewProps {
    * Signature of everything that warrants re-framing the camera (graph, level,
    * filters) but NOT the cut. When it's unchanged across a scene update, the
    * camera is preserved instead of re-fitting — so an adaptive recut doesn't
-   * yank the view. Undefined falls back to always-fit; Explorer provides it
-   * whenever a graph is loaded.
+   * yank the view. When undefined the camera re-fits on every ready scene change;
+   * Explorer provides a signature whenever a graph is loaded.
    */
   fitSignature?: string;
 }
@@ -160,6 +160,25 @@ const ROLE_RGB: Record<ConnectionRole, [number, number, number]> = {
   end: [239, 68, 68], // red
   path: [234, 179, 8], // yellow
 };
+
+// The per-node shape the renderer deserializes (vello-renderer NodeData). Named so the object
+// literal below stays in sync with the Rust struct — a renamed/missing field or a wrong color
+// tuple is then a compile error here, not a silent "bad scene json" at runtime. `outline` is
+// optional: omitted (undefined) for non-highlighted nodes → serde reads it as None.
+interface VelloNode {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color: [number, number, number];
+  outline?: [number, number, number];
+  label: string;
+  shape: string;
+  badge: string;
+  lang: string;
+  lang_color: [number, number, number];
+}
 
 interface VelloHandle {
   set_data: (json: string) => void;
@@ -235,7 +254,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     ],
   );
 
-  const { scene, layingOut } = useScene(
+  const {
+    scene,
+    layingOut,
+    ready: layoutReady,
+  } = useScene(
     graph,
     expanded,
     filters,
@@ -432,7 +455,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       map.set(n.id, n.isFile);
     }
     isFile.current = map;
-    const nodes = scene.nodes.map((n) => ({
+    const nodes: VelloNode[] = scene.nodes.map((n) => ({
       id: n.id,
       x: n.x,
       y: n.y,
@@ -889,12 +912,16 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     const vc = vcRef.current;
     if (!ready || !vc) return;
     vc.set_data(payload);
-    // Re-fit only when the SCENE object itself changed (a new layout/filter result) AND the change
-    // is fit-worthy. The payload also changes for highlight/dim (a click, the focus-fade) and the
-    // marching-ants phase, all of which keep the same scene — so they never yank the camera.
+    // Re-fit only when a new layout for a fit-worthy structure has actually landed: the scene
+    // object changed, the layout is READY for the current structure (positions match it, not a
+    // half-applied scene mid-transition with new nodes still at 0,0), and the fit signature
+    // changed. Highlight/dim and the marching-ants phase keep the same scene; an adaptive recut
+    // keeps the same fitSignature — so none of them yank the camera. prevFitSig advances ONLY on
+    // an actual fit, so when positions lag the structure by a render the fit still fires the
+    // moment they arrive (instead of locking onto the degenerate intermediate scene).
     const sceneChanged = scene !== prevScene.current;
     prevScene.current = scene;
-    if (sceneChanged && shouldFit(fitSignature, prevFitSig.current)) {
+    if (sceneChanged && layoutReady && shouldFit(fitSignature, prevFitSig.current)) {
       const fit = vc.fit();
       cam.current = { x: fit[0], y: fit[1], scale: fit[2] };
       // Allow zooming out to the fit scale (or the normal 0.02 floor, whichever is smaller) so
@@ -903,11 +930,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       // count at low zoom, so you never need to zoom past this to see the whole graph.)
       minScale.current = Math.max(0.004, Math.min(fit[2], 0.02));
       lodBand.current = cameraBand(cam.current.scale);
+      prevFitSig.current = fitSignature;
     } else {
-      // Cut-only change: keep the camera where the user left it.
+      // Highlight/dim, an adaptive recut, or a layout not yet ready: keep the user's camera.
       vc.set_camera(cam.current.x, cam.current.y, cam.current.scale);
     }
-    prevFitSig.current = fitSignature;
     vc.set_selection(selectedId ?? undefined);
     vc.set_search(search);
     if (telemetry.isEnabled()) {
@@ -934,7 +961,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       vc.render();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, payload, fitSignature, scene]);
+  }, [ready, payload, fitSignature, scene, layoutReady]);
 
   // Selection / search are cheap — just update + redraw.
   useEffect(() => {

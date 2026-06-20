@@ -9,6 +9,7 @@
 // so the fallback must not depend on it.
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { isTauri } from "@/lib/client/env";
 import { telemetry } from "@/lib/telemetry";
 import { installGlobalErrorHandlers } from "@/lib/telemetry/global-errors";
 import { flushSessionLog } from "@/lib/telemetry/persist";
@@ -45,6 +46,23 @@ export class ErrorBoundary extends Component<Props, State> {
     flushSessionLog();
   }
 
+  // Export the in-memory telemetry buffer directly. The boundary has replaced the whole tree, so
+  // Settings (its usual "Download session log" button) is unmounted; this is the only way out, and
+  // on web there's no logs/session.ndjson at all (the disk mirror is desktop-only).
+  private downloadLog = (): void => {
+    try {
+      const blob = new Blob([telemetry.toNDJSON()], { type: "application/x-ndjson" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "polygraph-crash-log.ndjson";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      /* best-effort — the buffer is also on disk on desktop */
+    }
+  };
+
   render(): ReactNode {
     const { error } = this.state;
     if (!error) return this.props.children;
@@ -67,8 +85,15 @@ export class ErrorBoundary extends Component<Props, State> {
       >
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>PolyGraph hit an error.</h2>
         <p style={{ margin: 0, maxWidth: 560, opacity: 0.7, fontSize: 13, lineHeight: 1.5 }}>
-          The error was written to <code>logs/session.ndjson</code>. Reloading usually recovers; if
-          it keeps happening, please share that log.
+          Reloading usually recovers. If it keeps happening, download the session log below and
+          share it
+          {isTauri() ? (
+            <>
+              {" "}
+              (it's also at <code>logs/session.ndjson</code>)
+            </>
+          ) : null}
+          .
         </p>
         <pre
           style={{
@@ -87,21 +112,38 @@ export class ErrorBoundary extends Component<Props, State> {
         >
           {error.message}
         </pre>
-        <button
-          type="button"
-          onClick={() => window.location.reload()}
-          style={{
-            padding: "8px 18px",
-            borderRadius: 8,
-            border: "1px solid #2d6cdf",
-            background: "#1f4fb0",
-            color: "#fff",
-            fontSize: 14,
-            cursor: "pointer",
-          }}
-        >
-          Reload
-        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            type="button"
+            onClick={this.downloadLog}
+            style={{
+              padding: "8px 18px",
+              borderRadius: 8,
+              border: "1px solid #2d6cdf",
+              background: "transparent",
+              color: "#cdd6f4",
+              fontSize: 14,
+              cursor: "pointer",
+            }}
+          >
+            Download log
+          </button>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            style={{
+              padding: "8px 18px",
+              borderRadius: 8,
+              border: "1px solid #2d6cdf",
+              background: "#1f4fb0",
+              color: "#fff",
+              fontSize: 14,
+              cursor: "pointer",
+            }}
+          >
+            Reload
+          </button>
+        </div>
       </div>
     );
   }
