@@ -880,8 +880,9 @@ function backboneLayout(view: LayoutInput): Positions {
       positions.set(...topLeft(node, (i % cols) * 250, maxY + 200 + Math.floor(i / cols) * 110));
   });
 
-  // Final global pass: separate satellites whose fans overlap across different anchors.
-  relaxOverlaps(positions, view);
+  // Final global pass: separate satellites whose fans overlap across different anchors (expanding
+  // the layout if a dense core can't be separated at its current scale).
+  deOverlap(positions, view);
   return positions;
 }
 
@@ -959,9 +960,11 @@ const stressWork = (n: number, m: number, pivots: number): number =>
  * graph distance and can leave cards overlapping; this is the cheap O(n) cleanup (the dense
  * path gets cola's avoidOverlaps instead). Deterministic: ids sorted, each pair handled once.
  */
-function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): void {
+/** De-overlap cards in place. Returns true if it reached a clean state, false if it stopped on
+ * the work/pass budget with overlaps remaining (the caller can then expand + retry). */
+function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): boolean {
   const n = view.nodes.length;
-  if (n < 2) return;
+  if (n < 2) return true;
   // Index-based (typed arrays) so the O(pairs) inner loop avoids Map lookups. Nodes are
   // visited in sorted-id order for determinism (index order == id order after this sort).
   const ids = view.nodes.map((nd) => nd.id).sort();
@@ -984,12 +987,15 @@ function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): voi
   // accumulated displacement at the end. (Applying pushes immediately makes a card squeezed
   // between two others oscillate instead of settle.) Overlapping cards push each other outward,
   // so the layout expands until it fits. Breaks as soon as a pass is clean.
-  const PASSES = 200;
+  const PASSES = 600;
   // Hard ceiling on total pair-checks. Dense graphs cluster many cards into the same grid cells,
   // making a pass O(Σ cell²) → potentially O(n²); the cap keeps it bounded (residual overlap on
-  // pathologically dense inputs is an accepted trade for bounded time). This was the real 20s.
-  const MAX_CHECKS = 20_000_000;
+  // pathologically dense inputs is an accepted trade for bounded time). Raised once the loop went
+  // index-based (~4× faster per check): a hub-heavy stress layout needs more passes to expand its
+  // dense core, and ~100M fast checks still finishes well under the 8s worker timeout.
+  const MAX_CHECKS = 100_000_000;
   let checks = 0;
+  let converged = false;
   const dispX = new Float64Array(n);
   const dispY = new Float64Array(n);
   relax: for (let pass = 0; pass < PASSES; pass++) {
@@ -1029,7 +1035,10 @@ function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): voi
         }
       }
     }
-    if (!moved) break;
+    if (!moved) {
+      converged = true;
+      break;
+    }
     for (let i = 0; i < n; i++) {
       xs[i] += dispX[i];
       ys[i] += dispY[i];
@@ -1041,6 +1050,41 @@ function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): voi
       c.x = xs[i];
       c.y = ys[i];
     }
+  }
+  return converged;
+}
+
+/** Scale positions geometrically about their centroid — thins a layout too dense for overlap
+ * removal to separate at its current scale. */
+function expandAround(centers: Map<string, XYPosition>, factor: number): void {
+  let cx = 0;
+  let cy = 0;
+  let count = 0;
+  for (const c of centers.values()) {
+    cx += c.x;
+    cy += c.y;
+    count++;
+  }
+  if (count === 0) return;
+  cx /= count;
+  cy /= count;
+  for (const c of centers.values()) {
+    c.x = cx + (c.x - cx) * factor;
+    c.y = cy + (c.y - cy) * factor;
+  }
+}
+
+/**
+ * De-overlap in place, expanding the layout when relaxation can't separate a too-dense region.
+ * PivotMDS (and a hub's fan) can pack cards denser than the bounded Jacobi relax can pull apart
+ * at one scale; each expansion drops the local density geometrically so a few rounds converge to
+ * overlap-free. Deterministic (relax + centroid scale are both deterministic).
+ */
+function deOverlap(centers: Map<string, XYPosition>, view: LayoutInput): void {
+  if (relaxOverlaps(centers, view)) return;
+  for (let i = 0; i < 5; i++) {
+    expandAround(centers, 1.4);
+    if (relaxOverlaps(centers, view)) return;
   }
 }
 
@@ -1098,7 +1142,26 @@ function sparseStressLayout(view: LayoutInput, pivots: number): Positions {
     c.x *= scale;
     c.y *= scale;
   }
-  relaxOverlaps(centers, view);
+  // PivotMDS collapses symmetric nodes (e.g. all of a hub's leaves, equidistant from it and each
+  // other) onto near-identical points. The overlap relax can't pull a dense coincident pile apart
+  // within its pass budget, so deterministically fan each co-located cluster out in a golden-angle
+  // spiral first (sorted ids → stable); relax then only has to fine-tune. Without this, stress on
+  // hub-heavy graphs leaves hundreds of overlapping cards.
+  const bucket = new Map<string, number>();
+  for (const id of ids) {
+    const c = centers.get(id);
+    if (!c) continue;
+    const key = `${Math.round(c.x / 120)},${Math.round(c.y / 120)}`;
+    const k = bucket.get(key) ?? 0;
+    bucket.set(key, k + 1);
+    if (k > 0) {
+      const angle = k * 2.399963229; // golden angle
+      const r = 120 * Math.sqrt(k); // ~card-sized spacing so the spiral itself doesn't overlap
+      c.x += Math.cos(angle) * r;
+      c.y += Math.sin(angle) * r;
+    }
+  }
+  deOverlap(centers, view);
   for (const nd of view.nodes) {
     const c = centers.get(nd.id) ?? { x: 0, y: 0 };
     positions.set(...topLeft(nd, c.x, c.y));
