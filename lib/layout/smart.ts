@@ -258,15 +258,18 @@ function selectEngineAndLayout(
   direction: LayoutDirection,
   spacing: number,
   kindOf: Map<string, string>,
+  previousPositions: Map<string, XYPosition> | undefined,
 ): EngineChoice {
   const requestedEngine = chooseEngine(shape);
   const clusterNodes = nodeIds.map((id) => ({ id, kind: kindOf.get(id) ?? "" }));
+  // Engines that seed (force, dense stress) read previousPositions; the leaf box is then
+  // re-normalized, so the prior RELATIVE arrangement is kept while the box re-centers.
   const run = (engine: LayoutAlgorithm, fallbackReason: FallbackReason) => ({
     engine,
     fallbackReason,
     laid: layoutView(
       { nodes: clusterNodes, edges: clusterEdges },
-      { algorithm: engine, direction, density: spacing },
+      { algorithm: engine, direction, density: spacing, previousPositions },
     ),
   });
 
@@ -335,6 +338,7 @@ function layoutLeafCluster(
   edges: LayoutInput["edges"],
   spacing: number,
   isRoot: boolean,
+  previousPositions: Map<string, XYPosition> | undefined,
 ): ClusterLayout {
   const nodeIds = [...node.nodeIds].sort();
   if (nodeIds.length === 0) return { width: 0, height: 0, positions: new Map(), clusters: [] };
@@ -350,6 +354,7 @@ function layoutLeafCluster(
     direction,
     spacing,
     kindOf,
+    previousPositions,
   );
 
   // Normalize the engine's positions into the cluster's inset content origin and size the box
@@ -392,6 +397,7 @@ function layoutCluster(
   kindOf: Map<string, string>,
   edges: LayoutInput["edges"],
   spacing: number,
+  previousPositions: Map<string, XYPosition> | undefined,
 ): ClusterLayout {
   const isRoot = node.id === "";
   const pad = PADDING * spacing;
@@ -400,7 +406,7 @@ function layoutCluster(
   // A leaf cluster (no child containers) is laid out by the shape planner running a real
   // per-node engine. Container clusters keep the item-box placement below.
   if (childKeys.length === 0) {
-    return layoutLeafCluster(node, direction, kindOf, edges, spacing, isRoot);
+    return layoutLeafCluster(node, direction, kindOf, edges, spacing, isRoot, previousPositions);
   }
 
   // 1. Lay out child clusters first (bottom-up).
@@ -409,7 +415,16 @@ function layoutCluster(
     const child = node.children.get(key)!;
     childLayouts.set(
       child.id,
-      layoutCluster(child, depth + 1, direction, ancestry, kindOf, edges, spacing),
+      layoutCluster(
+        child,
+        depth + 1,
+        direction,
+        ancestry,
+        kindOf,
+        edges,
+        spacing,
+        previousPositions,
+      ),
     );
   }
 
@@ -574,6 +589,7 @@ export function smartLayout(
     groupBy?: GroupBy;
     density?: number;
     communityOf?: Map<string, string>;
+    previousPositions?: Map<string, XYPosition>;
   } = {},
 ): LayoutResult {
   const direction = options.direction ?? "TB";
@@ -609,6 +625,15 @@ export function smartLayout(
 
   const { root, ancestry } = buildClusterTree(view.nodes, groupOf);
   const kindOf = new Map(view.nodes.map((n) => [n.id, n.kind]));
-  const out = layoutCluster(root, -1, direction, ancestry, kindOf, view.edges, spacing);
+  const out = layoutCluster(
+    root,
+    -1,
+    direction,
+    ancestry,
+    kindOf,
+    view.edges,
+    spacing,
+    options.previousPositions,
+  );
   return { nodes: out.positions, clusters: out.clusters };
 }

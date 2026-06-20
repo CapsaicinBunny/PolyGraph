@@ -305,6 +305,24 @@ describe("grouped Smart runs the shape planner per leaf cluster", () => {
     expect(box.requestedEngine).toBe("layered");
     expect(box.engine).toBe("layered"); // scoring did NOT override the DAG's flow
   });
+
+  test("accepts + threads previousPositions into leaf clusters (deterministic with a seed)", () => {
+    // Plumbing check: grouped Smart takes previousPositions and passes it to the seeding
+    // engines (force/dense-stress) inside leaf clusters. (Engine seeding itself is covered in
+    // layout.test.ts.) Must stay deterministic with the seed.
+    const v = {
+      nodes: ["p/a.ts", "p/b.ts", "p/c.ts", "p/d.ts"].map((id) => N(id)),
+      edges: [E("p/a.ts", "p/b.ts"), E("p/b.ts", "p/c.ts"), E("p/c.ts", "p/d.ts")],
+    };
+    const previousPositions = new Map([
+      ["p/a.ts", { x: 0, y: 0 }],
+      ["p/b.ts", { x: 400, y: 0 }],
+    ]);
+    const a = smartLayout(v, { groupBy: "directory", previousPositions });
+    const b = smartLayout(v, { groupBy: "directory", previousPositions });
+    expect(a.nodes.size).toBe(4);
+    expect([...a.nodes.entries()]).toEqual([...b.nodes.entries()]);
+  });
 });
 
 describe("resolveEngineForBudget (budget guard, separate from chooseEngine)", () => {

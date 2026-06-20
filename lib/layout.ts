@@ -1116,6 +1116,7 @@ function smartOptions(options: LayoutOptions) {
     groupBy: options.groupBy,
     density: options.density,
     communityOf: options.communityOf,
+    previousPositions: options.previousPositions,
   };
 }
 
@@ -1213,6 +1214,7 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
         groupBy: options.groupBy,
         density: options.density,
         communityOf: options.communityOf,
+        previousPositions: options.previousPositions,
       }).nodes;
     case "tree":
       return cappedComponents(view, HEAVY_COMPONENT_CAP.tree, (sub) => treeLayout(sub, direction));
