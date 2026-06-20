@@ -104,6 +104,19 @@ function hexToRgb(hex: string): [number, number, number] {
   return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
 }
 
+/** Linear blend between two RGB colors (t in [0,1]). Used to fade the de-emphasis in. */
+function lerpRgb(
+  a: [number, number, number],
+  b: [number, number, number],
+  t: number,
+): [number, number, number] {
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * t),
+    Math.round(a[1] + (b[1] - a[1]) * t),
+    Math.round(a[2] + (b[2] - a[2]) * t),
+  ];
+}
+
 function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   const c = (1 - Math.abs(2 * l - 1)) * s;
   const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
@@ -262,6 +275,33 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     [liveAnchors, conn, labelById],
   );
 
+  // Focus animation: when the selection changes, fade the de-emphasis IN (dimmed cards/edges
+  // ramp from full colour → grey over ~180ms) so the highlight resolves smoothly instead of
+  // snapping. dimT 0 = no dim, 1 = full dim. Skipped on large scenes, where re-encoding the
+  // payload each frame would be costly (it just snaps to 1).
+  const [dimT, setDimT] = useState(1);
+  const highlightKey = conn ? `c:${liveAnchors.join("")}` : highlightIds ? "q" : "";
+  // animatable is a boolean (flips only at the size threshold), so it's safe in the deps — the
+  // ramp re-runs on a selection change or when the scene crosses the threshold, not every frame.
+  const animatable = scene.nodes.length <= 1200;
+  useEffect(() => {
+    if (!highlightKey || !animatable) {
+      setDimT(1);
+      return;
+    }
+    setDimT(0);
+    let raf = 0;
+    let start = 0;
+    const step = (ts: number) => {
+      if (start === 0) start = ts;
+      const t = Math.min(1, (ts - start) / 180);
+      setDimT(t);
+      if (t < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [highlightKey, animatable]);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const vcRef = useRef<VelloHandle | null>(null);
@@ -354,7 +394,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       y: n.y,
       w: n.width,
       h: n.height,
-      color: dimNode(n.id) ? DIM_RGB : hexToRgb(n.color),
+      color: dimNode(n.id) ? lerpRgb(hexToRgb(n.color), DIM_RGB, dimT) : hexToRgb(n.color),
       label: n.label,
       shape: n.shape,
       badge: n.isFile && n.symbolCount > 0 ? `+${n.symbolCount}` : "",
@@ -374,7 +414,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
           y1: a[1],
           x2: b[0],
           y2: b[1],
-          color: muted ? DIM_RGB : hexToRgb(e.color),
+          color: muted ? lerpRgb(hexToRgb(e.color), DIM_RGB, dimT) : hexToRgb(e.color),
           count: e.count,
         };
       })
@@ -390,7 +430,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       color: clusterColor(c.id),
     }));
     return JSON.stringify({ nodes, edges, clusters, routing: edgeRouting });
-  }, [scene, edgeRouting, effectiveHighlight, conn, highlightIds]);
+  }, [scene, edgeRouting, effectiveHighlight, conn, highlightIds, dimT]);
 
   // One-time Vello/WebGPU setup + camera interaction.
   useEffect(() => {
