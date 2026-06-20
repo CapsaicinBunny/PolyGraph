@@ -3,6 +3,8 @@
 // (verified research basis), so the score is crossings (primary) + a smaller overlap
 // penalty. Lower is better. Pure + deterministic. O(E² + N²) — callers gate by cluster size.
 
+import type { LayoutDirection } from "../layout";
+
 export interface Pt {
   x: number;
   y: number;
@@ -30,13 +32,16 @@ export function segmentsCross(a: Pt, b: Pt, c: Pt, d: Pt): boolean {
  * Score a candidate layout (lower = better). Weighted so the dimensions don't trade off
  * wrongly: node overlap is worst, then crossings, then flow violations, then a gentle
  * penalty for an extreme aspect ratio. The flow term (directed edges that run backward along
- * the layout's dominant axis) stops a clean-looking-but-flow-destroying engine — e.g. Force
- * on a DAG — from beating Layered on a one-crossing technicality. `edges` are directed.
+ * the REQUESTED direction) stops a clean-looking-but-flow-destroying engine — e.g. Force on a
+ * DAG — from beating Layered on a one-crossing technicality. `edges` are directed; pass
+ * flowWeight 0 to disable the flow term for heavily cyclic graphs (where "backward" is moot).
  */
 export function layoutScore(
   centers: Map<string, Pt>,
   sizes: Map<string, { w: number; h: number }>,
   edges: Edge[],
+  direction: LayoutDirection,
+  flowWeight = 4,
 ): number {
   const segs = edges
     .map((e) => ({ a: centers.get(e.source), b: centers.get(e.target), s: e.source, t: e.target }))
@@ -75,11 +80,21 @@ export function layoutScore(
     }
   }
 
-  // Flow violations: directed edges running backward along the dominant (more-spread) axis.
-  const horizontal = maxX - minX >= maxY - minY;
+  // Flow violations: directed edges running backward along the REQUESTED direction (not the
+  // bounding box — a TB layout that's wider than tall must still measure top-to-bottom).
   let backward = 0;
-  for (const seg of segs) {
-    if (horizontal ? seg.b.x < seg.a.x : seg.b.y < seg.a.y) backward += 1;
+  if (flowWeight > 0) {
+    for (const seg of segs) {
+      const bad =
+        direction === "LR"
+          ? seg.b.x < seg.a.x
+          : direction === "RL"
+            ? seg.b.x > seg.a.x
+            : direction === "BT"
+              ? seg.b.y > seg.a.y
+              : seg.b.y < seg.a.y; // TB (default)
+      if (bad) backward += 1;
+    }
   }
 
   const w = Math.max(1, maxX - minX);
@@ -87,5 +102,5 @@ export function layoutScore(
   const aspect = Math.max(w / h, h / w);
   const aspectPenalty = Math.max(0, aspect - 4) * 3; // only bite past ~4:1
 
-  return overlaps * 100 + crossings * 10 + backward * 4 + aspectPenalty;
+  return overlaps * 100 + crossings * 10 + backward * flowWeight + aspectPenalty;
 }

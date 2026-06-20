@@ -315,6 +315,9 @@ function selectEngineAndLayout(
     return { ...run(resolved[0].engine, resolved[0].fallbackReason), requestedEngine };
   }
 
+  // Disable the flow (backward-edge) term for substantially-cyclic clusters, where there's no
+  // meaningful dependency direction to violate.
+  const flowWeight = shape.sccNodeRatio > 0.3 ? 0 : 4;
   const scoreOf = (laid: Map<string, XYPosition>): number => {
     const centers = new Map<string, { x: number; y: number }>();
     const sizes = new Map<string, { w: number; h: number }>();
@@ -324,7 +327,7 @@ function selectEngineAndLayout(
       centers.set(id, { x: p.x + s.width / 2, y: p.y + s.height / 2 });
       sizes.set(id, { w: s.width, h: s.height });
     }
-    return layoutScore(centers, sizes, clusterEdges);
+    return layoutScore(centers, sizes, clusterEdges, direction, flowWeight);
   };
 
   // The planner's pick (resolved[0]) is the default; an alternative replaces it only if it
