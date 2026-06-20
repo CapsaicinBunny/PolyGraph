@@ -342,9 +342,14 @@ export function Explorer() {
       // can't draw, so seed the collapsed set with a directory depth that keeps the
       // initial scene to ~AUTO_COLLAPSE_MAX_CARDS aggregate cards. The user can expand
       // any aggregate from here. See docs/SCALE-100K.md.
-      setCollapsedClusters(
-        autoCollapseDirs(res.graph, AUTO_COLLAPSE_MAX_CARDS)?.collapsed ?? new Set(),
-      );
+      const seed = autoCollapseDirs(res.graph, AUTO_COLLAPSE_MAX_CARDS);
+      setCollapsedClusters(seed?.collapsed ?? new Set());
+      // Adaptive LOD only earns its keep when the graph is too big to draw whole
+      // (seed !== null). When it already fits, turn the camera-driven cut OFF — otherwise
+      // zooming into a small/medium project collapses on-screen directories as "too-small"
+      // (they never reach the open-px threshold) and the view shrinks instead of revealing
+      // detail. Big repos keep it on so the cut bounds the rendered card count.
+      setAdaptiveLod(seed !== null);
       setSelectedId(null);
       setSelectedEdge(null);
       setSearch("");
