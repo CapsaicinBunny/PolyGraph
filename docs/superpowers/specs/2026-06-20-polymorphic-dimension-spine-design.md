@@ -7,7 +7,10 @@ dimensions); and (b) a **representation-LOD** model so large graphs render as a 
 cut through a hierarchy of cached proxies* — not a sophisticated expand/collapse. Fast but
 safe.
 
-**Status:** Multi-phase north-star. **Revision 5** — Rev 4 frozen as the north-star; R5 adds the
+**Status:** Multi-phase north-star. **Revision 6 — FROZEN** (authoritative design; rated 9.6/10).
+R6 adds the final contract fixes: `defaultValue` on the descriptor; one canonical `LodBudget` +
+`hardLabels`; the bigint/radix edge-key spec; an O(1) `RuntimeLodCut` membership structure; a
+JSON-safe `FacetSelectionState`; and tiered `RepresentationBounds`. R5 added the
 **Constrained LOD Cut Solver** (Appendix A) and implementation-contract refinements: user intent
 *constrains* the cut (not composed after); hard/soft budgets; delta-error/cost scoring; atomic
 refine/coarsen; columnar representation runtime + DFS intervals; reserved proxy bounds + overflow
@@ -136,6 +139,7 @@ export interface DimensionDescriptor {
   values: DimensionValue[];                 // [] for open
   providerIds: string[];                    // merged contributors
   canonicalKey?: CanonicalFacetKey;         // §5 — validated against the core registry
+  defaultValue?: string;                    // implicit value when the facet is absent (no per-node entry)
   filterable: boolean;
   groupable: boolean;
   grouping: FacetGrouping;                  // §multi-valued
@@ -168,7 +172,10 @@ the **same** `DimensionIndex` from `(graph, catalog)`.
 - **No low-information facets** *(review)*: a descriptor may declare a `defaultValue`; a node
   **omits** the facet when its value equals it, and the index returns the default on absence —
   so `category:"feature"` (ubiquitous) is never materialized per node. The dual-write parity
-  invariant compares legacy fields against *facets-or-default*.
+  invariant compares legacy fields against *facets-or-default*. When `defaultValue` is set,
+  absence resolves to it and the node is **not** "missing" (`MissingPolicy` applies only without
+  a default); the default still appears in `present()` and contributes to counts/coverage —
+  represented as the **complement** of explicit postings, with no per-node entry.
 
 ### Descriptor merge *(review §6, §10)*
 Core/built-in wins metadata; provider values unioned; cardinality conflict upgrades to
@@ -194,8 +201,10 @@ Unvalidated claims stay namespaced (no accidental merge of semantically differen
 - **Filters** — one section per `filterable` `present()` descriptor; **sparse** selection
   *(review §4)*:
   ```ts
-  export interface FacetSelection { mode: "all" | "include" | "exclude"; values: Set<string>; }
-  // no map entry ⇒ all enabled; "all enabled except one" stores one value, not thousands.
+  // Durable (workspace JSON): array. Runtime (UI/scene gate): Set.
+  export interface FacetSelectionState   { mode: "all" | "include" | "exclude"; values: string[]; }
+  export interface RuntimeFacetSelection { mode: "all" | "include" | "exclude"; values: ReadonlySet<string>; }
+  // no entry ⇒ all enabled; "all except one" stores one value, not thousands.
   ```
   The scene gate honors `MissingPolicy.filter` (default `include`).
 - **Group-by eligibility** *(review §14)*: a `groupable` dim is offered only if `DimensionStats`
@@ -251,6 +260,9 @@ export type FacetGrouping =
 ### `Group by: None` keeps an internal hierarchy *(review §7)*
 No visible containers, but Smart still builds a synthetic reduction hierarchy (connected
 components → communities) so a 100k-node repo can't bypass the render budget. LOD runs on it.
+Every visible node — **including `NO_GROUP`** — gets a representation path in this *safety*
+hierarchy, so excluded/malformed grouping metadata can't let a node evade the budget. (The
+*semantic* facet hierarchy may still leave `NO_GROUP` unclassified; the safety hierarchy must not.)
 
 ### Three-layer collapse *(review §2, §3)*
 ```ts
@@ -333,8 +345,10 @@ Node LOD without edge LOD is still a hairball. Map each original endpoint to its
 representative and aggregate:
 ```ts
 representativeOf(originalNodeId, cut) → number   // walk ancestors from leafRepresentationByNode
-// Aggregation key bit-packs (srcRep,dstRep,edgeKind) into a 64-bit int — NO string keys in the
-// hot path (review): allocating ~500k template literals per generation would thrash GC.
+// Aggregation key: NO hot-path strings, and a JS number can't hold 64 bits safely. EITHER
+//   (initial)      bigint key = (BigInt(src)<<36n)|(BigInt(dst)<<8n)|BigInt(kind), in a Map; OR
+//   (kernel-scale) pack {sourceRep:Uint32, targetRep:Uint32, kind:Uint16} and RADIX-sort/group —
+//   aggregate without allocating a key per edge. Recommendation: bigint first, radix later.
 export interface LodEdge { source: number; target: number; kind: EdgeKind; count: number; exactCount: number; inferredCount: number; evidenceIndex?: number; }
 // evidenceIndex → a lazily queried aggregation table; originalEdgeIds are NOT in the hot scene
 // (would defeat aggregation), resolved only when the details panel opens. Edges whose endpoints
@@ -342,9 +356,9 @@ export interface LodEdge { source: number; target: number; kind: EdgeKind; count
 ```
 Independent budgets; under edge pressure: aggregate parallels → suppress proxy-internal edges
 → bundle cross-group → show only selected/path → density summaries.
-```ts
-export interface LodBudget { maxNodes: number; maxEdges: number; maxLabels: number; maxGpuBytes: number; maxLayoutWork: number; }
-```
+(The single canonical `LodBudget` — hard vs soft, incl. `hardLabels` — is in **Appendix A §B**;
+node / edge / label / GPU / layout-work are independent.)
+
 **Label LOD:** proxy label far → important child labels mid → full card labels near → selected
 always.
 
@@ -476,16 +490,18 @@ interface CutConstraints {
 function solveLodCut(h: RepresentationHierarchy, bootstrap: LodCut,
                      c: CutConstraints, cam: CameraState, b: LodBudget): LodCut;
 ```
-User-closed → proxy selected, descendants excluded. User-open → proxy not selectable, descend
+User-closed → select the requested proxy **when valid**; fall to an ancestor **only** if the
+proxy is unavailable or would violate a hard invariant; **never** silently use a more detailed
+descendant. Descendants of a closed proxy are excluded. User-open → proxy not selectable, descend
 ≥1 level. Parent-closed + descendant-open → **parent-closed wins** (matches precedence).
 `effectiveCollapsed` is a derived view only and never alters the solved cut.
 
 ### B. Hard vs soft budgets
 ```ts
 interface LodBudget {
-  maxGpuBytes: number; maxLayoutWork: number;                       // HARD — never exceeded
-  hardNodes: number; hardEdges: number;                            // HARD
-  targetNodes: number; targetEdges: number; targetLabels: number;  // SOFT
+  targetNodes: number; targetEdges: number; targetLabels: number;  // SOFT — auto may not exceed
+  hardNodes: number; hardEdges: number; hardLabels: number;        // HARD — nothing exceeds
+  maxGpuBytes: number; maxLayoutWork: number;                      // HARD
 }
 ```
 Automatic refinement never exceeds *target*; an explicit user-open may exceed targets up to the
@@ -496,16 +512,23 @@ large-graph safety system.
 
 ### C. Proxy bounds & overflow (the Space Paradox)
 ```ts
-interface RepresentationBounds { current: Rect; reserved: Rect; minScale: number; }
+interface RepresentationBounds {
+  current: Rect;
+  nextReserved: Rect;     // space for the NEXT legal refinement tier (NOT the full leaf extent)
+  growthEnvelope: Rect;   // capped envelope for several likely refinements, no parent relayout
+  minScale: number;
+}
 ```
-`reserved` is computed at hierarchy-build from the proxy's **full-detail descendant extent**
-(`structuralError` + hidden node/edge volume × packing factor) and occupies the parent's layout,
-so siblings are placed around the envelope from the start. Refinement is **gated by `reserved`**
-(over-reserve = over-budget = retain proxy). Overflow ladder, in order:
+**Tiered reservation** *(review)*: do **not** reserve a huge subtree's literal leaf-level extent
+at the repository level (that makes `drivers/` reserve continent-sized empty boxes). Reserve only
+the **next** tier (`nextReserved`) plus a capped `growthEnvelope` for a few likely refinements;
+recompute the local envelope **lazily** as deeper layouts become available; trigger a scoped
+ancestor relayout only when the envelope is exhausted. Refinement is **gated by the envelope**
+(over-envelope = over-budget = retain proxy). Overflow ladder, in order:
 1. compact/scale the local layout down to `minScale`;
 2. clip + local pan (the box becomes a viewport into its own larger local layout);
 3. borrow slack from under-filled sibling reserves;
-4. grow within the grandparent-reserved envelope;
+4. grow within `growthEnvelope`;
 5. scoped subtree relayout (**never** global) as the final fallback.
 
 ### D. Delta-error / delta-cost scoring
@@ -568,3 +591,26 @@ layout-work %; refinements & evictions this commit; proxy cache hit rate; cut-so
 rebuild ms. Plus per-rep **why-not-refined**: edge-budget / layout-work-budget / hard-GPU /
 forced-closed / children-unavailable / cache-pending. (Tuning `projectedError` blindly is otherwise
 hopeless.)
+
+### J. O(1) selected-representation membership
+`LodCut.selectedRepresentations: Uint32Array` is for equality/serialization; the hot
+`representativeOf` walk needs O(1) "is this rep selected?" without scanning, and without clearing
+a giant bitset every generation. Use an epoch map:
+```ts
+interface RuntimeLodCut { canonical: LodCut; selectedEpoch: Uint32Array; epoch: number; }
+const isSelected = (r: RuntimeLodCut, rep: number) => r.selectedEpoch[rep] === r.epoch;
+```
+
+### K. Material cut equality
+Equality is more than node selection — identical nodes with a different edge/label degradation
+stage still need a renderer update. Compare a signature:
+```ts
+interface CutSignature { selectedRepresentationsHash: bigint; edgeLodStage: number; labelLodStage: number; filterSignature: string; }
+```
+
+### L. Benchmark fixtures (before C1b)
+Fixtures: ~1k / ~25k / ~150k / ~1.3M nodes, plus **dense** (high edge/node), **deep** (many rep
+levels), and **wide** (thousands of sibling groups). Track per committed generation: cut-solve ms;
+edge remap+aggregate ms; allocations; memory high-water; proxy cache hit rate; rejected
+refinements; layout movement **outside** the refined subtree; and visible-information gained per
+added node/edge.
