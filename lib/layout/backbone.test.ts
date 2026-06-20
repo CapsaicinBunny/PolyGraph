@@ -37,6 +37,6 @@ describe("coreness (k-core decomposition)", () => {
   test("is deterministic regardless of input order", () => {
     const a = coreness(["c", "a", "b"], [E("b", "c"), E("a", "b"), E("c", "a")]);
     const b = coreness(["a", "b", "c"], [E("a", "b"), E("b", "c"), E("c", "a")]);
-    expect([...a.entries()].sort()).toEqual([...b.entries()].sort());
+    expect(a).toEqual(b); // Maps compare structurally (order-independent)
   });
 });

@@ -46,7 +46,7 @@ describe("buildArborescence", () => {
   test("is deterministic regardless of input order", () => {
     const a = buildArborescence(["c", "a", "r", "b"], [E("a", "c"), E("r", "a"), E("r", "b")]);
     const b = buildArborescence(["r", "a", "b", "c"], [E("r", "b"), E("r", "a"), E("a", "c")]);
-    expect([...a.parent.entries()].sort()).toEqual([...b.parent.entries()].sort());
+    expect(a.parent).toEqual(b.parent); // Maps compare structurally (order-independent)
   });
 });
 
