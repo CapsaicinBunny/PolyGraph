@@ -8,6 +8,8 @@ import { clusterIdOfAggregate, isAggregateId } from "@/lib/graph/collapse";
 import {
   buildAdjacency,
   connectionHighlight,
+  type ConnectionRole,
+  connectionRoles,
   connectionStatus,
   nextAnchors,
   pairKey,
@@ -94,7 +96,8 @@ export interface GraphViewProps {
    * Signature of everything that warrants re-framing the camera (graph, level,
    * filters) but NOT the cut. When it's unchanged across a scene update, the
    * camera is preserved instead of re-fitting — so an adaptive recut doesn't
-   * yank the view. Undefined (the default) always re-fits: today's behavior.
+   * yank the view. Undefined falls back to always-fit; Explorer provides it
+   * whenever a graph is loaded.
    */
   fitSignature?: string;
 }
@@ -150,12 +153,13 @@ function clusterColor(id: string): [number, number, number] {
 
 // Muted gray for nodes/edges outside the highlight set (readable in both themes).
 const DIM_RGB: [number, number, number] = [90, 99, 112];
-// Connection-highlight ring colors, drawn as an OUTLINE only (the card keeps its own
-// kind-color so its type still reads): the path's start, its destination, and the nodes
-// in between. Blue start matches the selection outline.
-const CONN_START_RGB: [number, number, number] = [59, 130, 246]; // blue
-const CONN_END_RGB: [number, number, number] = [239, 68, 68]; // red
-const CONN_PATH_RGB: [number, number, number] = [234, 179, 8]; // yellow
+// Connection-highlight ring color per path role, drawn as an OUTLINE only (the card keeps its own
+// kind-color so its type still reads). Blue start matches the selection outline.
+const ROLE_RGB: Record<ConnectionRole, [number, number, number]> = {
+  start: [59, 130, 246], // blue
+  end: [239, 68, 68], // red
+  path: [234, 179, 8], // yellow
+};
 
 interface VelloHandle {
   set_data: (json: string) => void;
@@ -407,19 +411,13 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const payload = useMemo(() => {
     // Mute everything outside the highlight set so the matches pop. Nodes dim by membership.
     const dimNode = (id: string) => effectiveHighlight != null && !effectiveHighlight.has(id);
-    // Connection roles → an outline ring (not a fill): first anchor = start (blue), last anchor
-    // = destination (red), nodes between them on the path = yellow. Outline-only keeps each
-    // card's kind-color intact, so the ring reads as "role" rather than "different type".
-    const connStart = conn ? liveAnchors[0] : undefined;
-    const connEnd =
-      conn && liveAnchors.length > 1 ? liveAnchors[liveAnchors.length - 1] : undefined;
-    const connMiddle = conn?.path && conn.path.length > 2 ? new Set(conn.path.slice(1, -1)) : null;
+    // Connection roles → an outline ring (not a fill): start (blue), destination (red), and the
+    // nodes between them on the path (yellow). Outline-only keeps each card's kind-color intact,
+    // so the ring reads as "role" rather than "different type". Empty map when nothing's anchored.
+    const roles = connectionRoles(liveAnchors, conn);
     const outlineFor = (id: string): [number, number, number] | undefined => {
-      if (!conn) return undefined;
-      if (id === connStart) return CONN_START_RGB;
-      if (id === connEnd) return CONN_END_RGB;
-      if (connMiddle?.has(id)) return CONN_PATH_RGB;
-      return undefined;
+      const role = roles.get(id);
+      return role ? ROLE_RGB[role] : undefined;
     };
     // Edges dim by EXACT pair in connection mode (so a chord between two lit nodes stays dim),
     // and by "both endpoints lit" in query-highlight mode (which has no edge set).
@@ -881,20 +879,19 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Feed data when the scene changes, and re-fit the camera only when the scene
-  // changed for a fit-worthy reason (new graph/level/filters) — NOT when only the
-  // adaptive cut changed, so a recut preserves the user's zoom. With adaptiveLod
-  // off, fitSignature is undefined and this always fits: today's behavior.
+  // Feed data on every payload change, but re-fit the camera ONLY when the scene structure
+  // actually changed for a fit-worthy reason (new graph/level/filters) — not on an adaptive recut
+  // (which preserves the user's zoom), nor on a highlight/dim payload change that keeps the same
+  // scene (a click, the focus-fade).
   const prevFitSig = useRef<string | undefined>(undefined);
   const prevScene = useRef<Scene | null>(null);
   useEffect(() => {
     const vc = vcRef.current;
     if (!ready || !vc) return;
     vc.set_data(payload);
-    // Only the SCENE STRUCTURE changing (new layout/filter) warrants a re-fit. The payload also
-    // changes for highlight/dim (a click, the focus-fade) and the marching-ants phase — those must
-    // NOT yank the camera. Critical when adaptiveLod is off, where fitSignature is undefined and
-    // shouldFit() is always true: without this gate every click re-fit to min zoom.
+    // Re-fit only when the SCENE object itself changed (a new layout/filter result) AND the change
+    // is fit-worthy. The payload also changes for highlight/dim (a click, the focus-fade) and the
+    // marching-ants phase, all of which keep the same scene — so they never yank the camera.
     const sceneChanged = scene !== prevScene.current;
     prevScene.current = scene;
     if (sceneChanged && shouldFit(fitSignature, prevFitSig.current)) {

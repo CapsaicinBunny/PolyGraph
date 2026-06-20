@@ -124,6 +124,30 @@ export function connectionHighlight(
   return { nodeIds: new Set([a, b]), edgePairs: new Set(), path: null, connected: false };
 }
 
+/** Outline role of a highlighted card, for the connection ring color (start=blue, end=red,
+ * path=yellow in the renderer). */
+export type ConnectionRole = "start" | "end" | "path";
+
+/**
+ * Role of each highlighted card: the first anchor is the path's `start`, the last anchor its
+ * `end`, and the nodes strictly between them on the path are `path`. Empty map when there's no
+ * highlight. Pure + order-safe — endpoints are set before middles, and a simple path can't repeat
+ * an endpoint, so the maps never collide.
+ */
+export function connectionRoles(
+  anchors: string[],
+  highlight: ConnectionHighlight | null,
+): Map<string, ConnectionRole> {
+  const roles = new Map<string, ConnectionRole>();
+  if (!highlight || anchors.length === 0) return roles;
+  roles.set(anchors[0], "start");
+  if (anchors.length > 1) roles.set(anchors[anchors.length - 1], "end");
+  if (highlight.path && highlight.path.length > 2) {
+    for (const id of highlight.path.slice(1, -1)) roles.set(id, "path");
+  }
+  return roles;
+}
+
 /**
  * The anchor state machine for a card click. Pure so the interaction is testable.
  * - plain click (shift=false) → just that card (select + highlight its neighbors).

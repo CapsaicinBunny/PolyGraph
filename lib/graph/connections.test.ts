@@ -3,6 +3,7 @@ import {
   buildAdjacency,
   connectionHighlight,
   connectionPath,
+  connectionRoles,
   connectionStatus,
   nextAnchors,
   pairKey,
@@ -170,5 +171,33 @@ describe("connectionHighlight", () => {
     const h = connectionHighlight(["A"], g);
     expect(h?.edgePairs.has(pairKey("A", "B"))).toBe(true);
     expect(h?.edgePairs.has(pairKey("B", "A"))).toBe(true); // order-independent
+  });
+});
+
+describe("connectionRoles (outline ring roles)", () => {
+  test("no highlight → empty map", () => {
+    expect(connectionRoles(["a"], null).size).toBe(0);
+    expect(connectionRoles([], connectionHighlight([], adj)).size).toBe(0);
+  });
+
+  test("one anchor → just a start", () => {
+    const roles = connectionRoles(["b"], connectionHighlight(["b"], adj));
+    expect(roles.get("b")).toBe("start");
+    expect([...roles.values()].filter((r) => r === "start")).toHaveLength(1);
+  });
+
+  test("two connected anchors → start, end, and the middles as path", () => {
+    const roles = connectionRoles(["a", "d"], connectionHighlight(["a", "d"], adj)); // a-b-c-d
+    expect(roles.get("a")).toBe("start");
+    expect(roles.get("d")).toBe("end");
+    expect(roles.get("b")).toBe("path");
+    expect(roles.get("c")).toBe("path");
+  });
+
+  test("two unconnected anchors → start and end, no path nodes", () => {
+    const roles = connectionRoles(["a", "x"], connectionHighlight(["a", "x"], adj));
+    expect(roles.get("a")).toBe("start");
+    expect(roles.get("x")).toBe("end");
+    expect([...roles.values()].some((r) => r === "path")).toBe(false);
   });
 });
