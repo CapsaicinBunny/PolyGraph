@@ -801,9 +801,22 @@ function backboneLayout(view: LayoutInput): Positions {
     const s = nodeSize(nodeById.get(id)?.kind ?? "");
     return { x: p.x + s.width / 2, y: p.y + s.height / 2 };
   };
+  // Core centroid: satellites fan OUTWARD from it (away from the dense core) so leaves don't
+  // land in the pockets between core nodes.
+  let cgx = 0;
+  let cgy = 0;
+  for (const id of coreSet) {
+    const c = centerOf(id);
+    cgx += c.x;
+    cgy += c.y;
+  }
+  const coreCount = Math.max(1, coreSet.size);
+  cgx /= coreCount;
+  cgy /= coreCount;
+
   const placed = new Set(coreSet);
   const fan = new Map<string, number>();
-  const SAT_SPACING = 130; // phyllotaxis spacing → nearest satellites ≈ a card apart
+  const SAT_SPACING = 150; // satellite spacing → nearest satellites ≈ a card apart
   const frontier = () =>
     ids
       .filter(
@@ -830,10 +843,12 @@ function backboneLayout(view: LayoutInput): Positions {
       const c = centerOf(anchor);
       const k = fan.get(anchor) ?? 0;
       fan.set(anchor, k + 1);
-      // Sunflower (phyllotaxis): radius grows with the satellite index, so a hub with
-      // many leaves fans them into a disk instead of crowding one fixed-radius ring.
-      const angle = (k + 1) * 2.39996; // golden angle
-      const r = SAT_SPACING * Math.sqrt(k + 1);
+      // Fan OUTWARD from the core centroid (away from the dense core) so leaves clear it,
+      // spread within the outward half by a golden-angle offset; radius grows with the index.
+      const outward = Math.atan2(c.y - cgy, c.x - cgx);
+      const spread = (((k * 2.39996) % (Math.PI * 2)) - Math.PI) * 0.4; // ±0.4π around outward
+      const angle = outward + spread;
+      const r = SAT_SPACING * (1.4 + Math.sqrt(k));
       positions.set(...topLeft(node, c.x + Math.cos(angle) * r, c.y + Math.sin(angle) * r));
       placed.add(id);
     }
@@ -925,13 +940,22 @@ function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): voi
   const sizeOf = new Map(view.nodes.map((nd) => [nd.id, nodeSize(nd.kind)]));
   const CELL = 260;
   const PAD = 16;
-  const PASSES = 12;
+  // Jacobi relaxation: each pass computes every pair's push from ONE snapshot and applies
+  // the accumulated displacement at the end. (Applying pushes immediately makes a card
+  // squeezed between two others oscillate instead of settle.) Overlapping cards push each
+  // other outward, so the layout expands until it fits. Breaks as soon as a pass is clean,
+  // so the high cap only costs more on genuinely-tangled cases.
+  const PASSES = 200;
+  const dispX = new Map<string, number>();
+  const dispY = new Map<string, number>();
   for (let pass = 0; pass < PASSES; pass++) {
     const grid = new Map<string, string[]>();
     for (const id of ids) {
       const c = centers.get(id)!;
       const key = `${Math.floor(c.x / CELL)},${Math.floor(c.y / CELL)}`;
       (grid.get(key) ?? grid.set(key, []).get(key))!.push(id);
+      dispX.set(id, 0);
+      dispY.set(id, 0);
     }
     let moved = false;
     for (const id of ids) {
@@ -949,24 +973,28 @@ function relaxOverlaps(centers: Map<string, XYPosition>, view: LayoutInput): voi
             const os = sizeOf.get(oid)!;
             const ox = (s.width + os.width) / 2 + PAD - Math.abs(o.x - c.x);
             const oy = (s.height + os.height) / 2 + PAD - Math.abs(o.y - c.y);
-            if (ox > 0 && oy > 0) {
-              // Separate along the axis of least penetration (push both halfway).
-              if (ox < oy) {
-                const push = ((o.x - c.x >= 0 ? 1 : -1) * ox) / 2;
-                c.x -= push;
-                o.x += push;
-              } else {
-                const push = ((o.y - c.y >= 0 ? 1 : -1) * oy) / 2;
-                c.y -= push;
-                o.y += push;
-              }
-              moved = true;
+            if (ox <= 0 || oy <= 0) continue;
+            // Separate along the axis of least penetration; accumulate (don't apply yet).
+            if (ox < oy) {
+              const push = ((o.x - c.x >= 0 ? 1 : -1) * ox) / 2;
+              dispX.set(id, dispX.get(id)! - push);
+              dispX.set(oid, dispX.get(oid)! + push);
+            } else {
+              const push = ((o.y - c.y >= 0 ? 1 : -1) * oy) / 2;
+              dispY.set(id, dispY.get(id)! - push);
+              dispY.set(oid, dispY.get(oid)! + push);
             }
+            moved = true;
           }
         }
       }
     }
     if (!moved) break;
+    for (const id of ids) {
+      const c = centers.get(id)!;
+      c.x += dispX.get(id)!;
+      c.y += dispY.get(id)!;
+    }
   }
 }
 

@@ -664,6 +664,23 @@ describe("heavy engines keep cards from overlapping", () => {
     const pos = layoutView({ nodes, edges }, { algorithm: "backbone" });
     expect(anyOverlap(pos, leaves)).toBe(false);
   });
+
+  test("backbone: a dense core + many leaves has no overlapping cards at all", () => {
+    // A 30-node near-clique core (force-laid, prone to clumping) + 120 leaves over it.
+    // The global overlap relax must separate the whole thing, not just one hub's fan.
+    const core = Array.from({ length: 30 }, (_, i) => `c${i}`);
+    const leaves = Array.from({ length: 120 }, (_, i) => `L${i}`);
+    const all = [...core, ...leaves];
+    const edges: LayoutInput["edges"] = [];
+    for (let i = 0; i < core.length; i++)
+      for (let j = i + 1; j < core.length; j++) edges.push(ed(core[i], core[j])); // clique
+    leaves.forEach((l, i) => edges.push(ed(core[i % core.length], l))); // leaves on core nodes
+    const pos = layoutView(
+      { nodes: all.map((id) => ({ id, kind: "file" })), edges },
+      { algorithm: "backbone" },
+    );
+    expect(anyOverlap(pos, all)).toBe(false);
+  });
 });
 
 describe("tree sibling ordering (subtree size + weight)", () => {
