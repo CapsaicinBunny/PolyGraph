@@ -84,7 +84,11 @@ function dagreItems(
       g.setEdge(e.source, e.target, { weight: w > 0 ? w : 1 });
     }
   }
-  dagre.layout(g);
+  try {
+    dagre.layout(g);
+  } catch {
+    return gridItems(items, spacing); // dagre throws on some graphs; tidy grid fallback
+  }
   for (const it of items) {
     const laid = g.node(it.id);
     centers.set(it.id, { x: laid?.x ?? 0, y: laid?.y ?? 0 }); // dagre node x/y is the center
