@@ -1,7 +1,15 @@
+use std::sync::Mutex;
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+/// Holds the analysis sidecar so it can be killed when the app exits.
+/// tauri-plugin-shell never terminates the sidecar on its own — `CommandChild` has
+/// no kill-on-drop, and Tauri exits via `process::exit` — so without an explicit
+/// kill the process is orphaned on window close and keeps its (often multi-GB,
+/// post-scan) memory until killed by hand.
+struct SidecarChild(Mutex<Option<CommandChild>>);
 
 /// Launch an external program (e.g. an editor or the file manager) detached from
 /// the app. The command + args are built by lib/editor/commands.ts on the JS
@@ -75,14 +83,15 @@ pub fn run() {
         .env("POLYGRAPH_CORE", core.to_string_lossy().to_string())
         .env("POLYGRAPH_PACKS", packs.to_string_lossy().to_string());
       let (mut rx, child) = sidecar.spawn()?;
+      // tauri-plugin-shell won't kill the sidecar for us, so hold the child in
+      // state and terminate it from the exit handler below instead of leaking it.
+      app.manage(SidecarChild(Mutex::new(Some(child))));
 
       // Read the sidecar's output. When it announces its loopback port, inject the
       // base URL so the webview's apiBase() targets it. If it dies before doing so,
       // surface a native error dialog instead of leaving a silently broken app.
-      // `child` is moved in so the process isn't dropped (killed) early.
       let handle = app.handle().clone();
       tauri::async_runtime::spawn(async move {
-        let _child = child;
         let mut port_seen = false;
         while let Some(event) = rx.recv().await {
           match event {
@@ -135,6 +144,21 @@ pub fn run() {
 
       Ok(())
     })
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application")
+    .run(|app_handle, event| {
+      // Kill the sidecar when the app exits so it can't outlive the window and
+      // strand its memory. `RunEvent::Exit` is the final teardown hook.
+      if let tauri::RunEvent::Exit = event {
+        if let Some(state) = app_handle.try_state::<SidecarChild>() {
+          if let Ok(mut guard) = state.0.lock() {
+            if let Some(child) = guard.take() {
+              if let Err(e) = child.kill() {
+                log::warn!("failed to kill sidecar on exit: {e}");
+              }
+            }
+          }
+        }
+      }
+    });
 }
