@@ -15,7 +15,12 @@ import {
   pairKey,
   pruneAnchors,
 } from "@/lib/graph/connections";
-import type { Scene, SceneEdge, SceneFilters } from "@/lib/graph/scene";
+import {
+  IncrementalSceneSession,
+  type Scene,
+  type SceneEdge,
+  type SceneFilters,
+} from "@/lib/graph/scene";
 import type { GraphModel } from "@/lib/graph/types";
 import type { PackageManifest } from "@/lib/graph/levels/types";
 import type { DimensionCatalog, FacetKey } from "@/lib/graph/dimensions";
@@ -156,6 +161,16 @@ export interface GraphViewProps {
   /** Dev: observe each committed representation cut (overlay / telemetry). */
   onRepLod?: (result: RepLodResult) => void;
   /**
+   * P1 incremental proxy materialization (design impl point 4 / Gap 9). When supplied AND the
+   * representation cut is active, each COMMITTED cut is folded by a persistent
+   * {@link IncrementalSceneSession}: the first cut runs the full O(N) fold, every later cut diffs
+   * against the prior committed cut and re-folds ONLY the changed subtrees + their incident
+   * boundary edges (cost proportional to the changed region, never O(all nodes + all edges)). The
+   * folded GraphModel is handed up here so the owner can adopt it as the render scene. Optional —
+   * omitted → the canvas only produces the cut (the existing `onCut` selection path is unchanged).
+   */
+  onProxyScene?: (scene: GraphModel) => void;
+  /**
    * Signature of everything that warrants re-framing the camera (graph, level,
    * filters) but NOT the cut. When it's unchanged across a scene update, the
    * camera is preserved instead of re-fitting — so an adaptive recut doesn't
@@ -295,6 +310,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     representationLod,
     intent,
     onRepLod,
+    onProxyScene,
     fitSignature,
   } = props;
 
@@ -500,6 +516,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // Reset on a grouping-mode switch (the rep id domain moves). The eviction controller that
   // was a standalone ref now lives INSIDE this runtime.
   const repRuntimeRef = useRef<RepresentationRuntime | undefined>(undefined);
+  // The PERSISTENT incremental materialization session (design impl point 4 / Gap 9). Paired with
+  // `repRuntimeRef`: rebuilt whenever the runtime is (a fresh hierarchy / post-filter projection),
+  // then driven each committed cut to re-fold ONLY the changed subtrees. Its `signature` mirrors
+  // the runtime's so the canvas can detect a stale session and rebuild it in lockstep. Null until
+  // the first committed representation cut, or whenever `onProxyScene` is absent (no consumer).
+  const proxySessionRef = useRef<{ session: IncrementalSceneSession; signature: string } | null>(
+    null,
+  );
   // Reference-identity tokens for the material signature: a monotonic id per distinct object
   // reference (graph / snapshot / visible-set / cost inputs). React hands a NEW reference on
   // a real change, so comparing references is a cheap, correct proxy for "did the material
@@ -552,6 +576,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     representationLod?: boolean;
     intent?: CollapseIntent;
     onRepLod?: (result: RepLodResult) => void;
+    onProxyScene?: (scene: GraphModel) => void;
     graph: GraphModel;
     directoryRepSnapshot: CompactGroupingSnapshot | null;
     // POST-FILTER visible base-node ids (Gap 7): the rep cut builds its hierarchy from this
@@ -570,6 +595,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     representationLod,
     intent,
     onRepLod,
+    onProxyScene,
     graph,
     directoryRepSnapshot,
     visibleNodeIds,
@@ -583,6 +609,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.representationLod = representationLod;
   lod.current.intent = intent;
   lod.current.onRepLod = onRepLod;
+  lod.current.onProxyScene = onProxyScene;
   lod.current.graph = graph;
   lod.current.directoryRepSnapshot = directoryRepSnapshot;
   lod.current.visibleNodeIds = visibleNodeIds;
@@ -598,6 +625,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   if (lod.current.groupBy !== groupBy) {
     lod.current.rawCut = new Set();
     repRuntimeRef.current = undefined;
+    proxySessionRef.current = null; // the rep id domain moved — start a fresh fold session
   }
   lod.current.groupBy = groupBy;
   lod.current.groupingSnapshot = groupingSnapshot ?? null;
@@ -934,7 +962,26 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         lastRep.current = result;
         l.onRepLod?.(result);
         // Only a committed generation drives a scene rebuild — hand up the open selection.
-        if (result.committed) l.onCut(l.groupBy, result.openSelection);
+        if (result.committed) {
+          l.onCut(l.groupBy, result.openSelection);
+          // P1 INCREMENTAL materialization (design impl point 4 / Gap 9). Drive the persistent
+          // fold session from the committed cut: the first committed cut runs the full fold, each
+          // later one re-folds ONLY the changed subtrees (cost ∝ changed region). Rebuild the
+          // session in lockstep with the runtime (same material signature → same hierarchy / node
+          // ordinals; `l.graph` is the post-filter graph in `repNodeIds` ordinal order). Gated on a
+          // consumer — no `onProxyScene`, no fold work.
+          if (l.onProxyScene) {
+            let entry = proxySessionRef.current;
+            if (!entry || entry.signature !== sig) {
+              entry = {
+                session: new IncrementalSceneSession(l.graph, runtime.hierarchy, { visibleNode }),
+                signature: sig,
+              };
+              proxySessionRef.current = entry;
+            }
+            l.onProxyScene(entry.session.recut(result.cut));
+          }
+        }
         return;
       }
 

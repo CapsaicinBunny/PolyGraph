@@ -21,6 +21,9 @@ import { clientCatalog } from "./client-catalog";
 import { collapseClusters } from "./collapse";
 import {
   buildProxyEdgeInputs,
+  type CutDiff,
+  diffCuts,
+  IncrementalMaterializer,
   type MaterializeCut,
   materializeProxyScene,
 } from "./proxy-materialize";
@@ -522,6 +525,64 @@ export function materializeRepresentationScene(
     visibleNode: options.visibleNode,
     edgeInputs,
   });
+}
+
+/**
+ * A persistent incremental materialization session (design impl point 4 / Gap 9). Built ONCE per
+ * material signature (alongside the persistent RepresentationRuntime — Gap 4) and reused across
+ * camera recuts: each committed cut is folded by {@link recut}, which diffs against the prior cut
+ * and re-folds ONLY the changed subtrees + their incident boundary edges via the
+ * {@link IncrementalMaterializer}. The FULL O(N) fold runs once (the first cut); subsequent recuts
+ * cost proportional to the changed region, never O(all nodes + all edges).
+ *
+ * The session owns the prior selected-rep set so the caller only hands it the NEXT cut.
+ */
+export class IncrementalSceneSession {
+  private readonly mat: IncrementalMaterializer;
+  private readonly repCount: number;
+  private prevSelected: Uint32Array | null = null;
+
+  constructor(
+    graph: GraphModel,
+    hierarchy: RepresentationHierarchy,
+    options: { visibleNode?: (ordinal: number) => boolean } = {},
+  ) {
+    const ordinalOfNode = new Map<string, number>();
+    for (let i = 0; i < graph.nodes.length; i++) ordinalOfNode.set(graph.nodes[i].id, i);
+    const edgeInputs = buildProxyEdgeInputs(graph, (id) => ordinalOfNode.get(id));
+    this.mat = new IncrementalMaterializer({
+      hierarchy,
+      cut: { selectedRepresentations: new Uint32Array(0) },
+      graph,
+      visibleNode: options.visibleNode,
+      edgeInputs,
+    });
+    this.repCount = hierarchy.repCount;
+  }
+
+  /**
+   * Fold the next committed cut. The first call runs the full baseline fold; every later call
+   * diffs against the prior cut and updates only the changed region. Returns the folded scene.
+   */
+  recut(cut: MaterializeCut): GraphModel {
+    const next = Uint32Array.from(cut.selectedRepresentations as ArrayLike<number>);
+    let scene: GraphModel;
+    if (this.prevSelected === null) {
+      scene = this.mat.materializeFull(cut);
+    } else {
+      const diff = diffCuts(this.prevSelected, next, this.repCount);
+      scene = this.mat.applyDiff(cut, diff);
+    }
+    this.prevSelected = next;
+    return scene;
+  }
+
+  /** The CutDiff that the next {@link recut} would apply (without folding). For telemetry/tests. */
+  peekDiff(cut: MaterializeCut): CutDiff | null {
+    if (this.prevSelected === null) return null;
+    const next = Uint32Array.from(cut.selectedRepresentations as ArrayLike<number>);
+    return diffCuts(this.prevSelected, next, this.repCount);
+  }
 }
 
 /** Apply computed positions + cluster boxes to a structure, producing a renderable scene. */
