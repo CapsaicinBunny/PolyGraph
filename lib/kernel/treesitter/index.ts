@@ -32,6 +32,28 @@ function fileOf(nodeId: string): string {
   return hash === -1 ? nodeId : nodeId.slice(0, hash);
 }
 
+/**
+ * Strip null/undefined/"" values from every node's facets, in place. The native core
+ * can emit a facet key whose capture resolved to nothing (e.g. an unclassifiable
+ * `@facet.runtime` on generated/wasm-bindgen code), which serializes as `null`. Left
+ * in, that null interns as a dimension "value" and crashes value-keyed styling once
+ * JSON crosses the worker/sidecar boundary. Only rewrites nodes that actually carry a
+ * bad value, so the clean hot path stays allocation-free.
+ */
+function sanitizeNodeFacets(nodes: GraphNode[]): void {
+  for (const node of nodes) {
+    const facets = node.facets;
+    if (!facets) continue;
+    for (const key of Object.keys(facets)) {
+      const values = facets[key];
+      if (!values.some((v) => v == null || v === "")) continue;
+      const clean = values.filter((v) => v != null && v !== "");
+      if (clean.length) facets[key] = clean;
+      else delete facets[key];
+    }
+  }
+}
+
 export async function createTreeSitterProvider(packId: string): Promise<LanguageProvider> {
   const pack = await loadPack(packId);
   // Fail fast here if the native core is missing so the registry can fall back.
@@ -73,6 +95,7 @@ export async function createTreeSitterProvider(packId: string): Promise<Language
       // facetSchema is present even if an older core didn't echo it.
       const facetSchema =
         out.facetSchema ?? (pack.facetSchema.length ? pack.facetSchema : undefined);
+      sanitizeNodeFacets(out.nodes);
       return { nodes: out.nodes, edges, errors: out.errors, facetSchema };
     },
   };

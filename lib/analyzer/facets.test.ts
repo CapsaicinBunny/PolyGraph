@@ -46,6 +46,23 @@ describe("file facets", () => {
     expect(node(graph, "ok.ts")?.runtimes ?? []).not.toContain("node");
   });
 
+  test("identifiers colliding with Object.prototype keys are not mistaken for runtimes", () => {
+    // Regression: the runtime table was a plain object, so `TABLE[id.getText()]` for a
+    // value-position identifier named `toString`/`valueOf`/`constructor`/… resolved an
+    // inherited Object.prototype *function* (truthy) and stored it as a bogus runtime.
+    // In memory that's a function; JSON.stringify turns it into `null` across the wire,
+    // which then crashed value-keyed styling. Generated glue (wasm-bindgen) is full of
+    // such identifiers. Every runtime must be a real Runtime string, never a function.
+    const { graph } = analyzeSources({
+      "glue.ts": `export function g() {
+        return [toString, valueOf, constructor, hasOwnProperty, isPrototypeOf, propertyIsEnumerable];
+      }`,
+    });
+    const runtimes = node(graph, "glue.ts")?.runtimes ?? [];
+    expect(runtimes).toEqual([]);
+    expect(runtimes.every((r) => typeof r === "string")).toBe(true);
+  });
+
   test("category: a component is UI, a plain function is a feature", () => {
     const { graph } = analyzeSources({
       "App.tsx": `export function App() { return <div/>; }`,

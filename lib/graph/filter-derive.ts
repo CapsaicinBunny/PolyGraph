@@ -59,9 +59,10 @@ const MAX_LARGEST_BUCKET = 0.98;
 
 /** Deterministic readable hex color for a value with no declared color. */
 function fallbackColor(value: string): string {
+  const str = value ?? ""; // defensive: never read .length off a null/undefined value
   let h = 2166136261;
-  for (let i = 0; i < value.length; i++) {
-    h ^= value.charCodeAt(i);
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   const hue = (h >>> 0) % 360;

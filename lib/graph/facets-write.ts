@@ -52,11 +52,16 @@ function writeLegacy(node: GraphNode, key: string, values: string[]): void {
  * (so `category: "feature"` is never stored). Empty `values` is a no-op.
  */
 export function writeFacet(node: GraphNode, key: string, values: string[]): void {
-  if (values.length === 0) return;
+  // Drop null/undefined/"" values at the single storage chokepoint. A provider that
+  // emits an undefined (e.g. a runtime it could not classify) must never persist it:
+  // JSON.stringify turns an array-`undefined` into `null` across the worker/sidecar
+  // boundary, and a null "value" then crashes value-keyed styling on the client.
+  const clean = values.filter((v) => v != null && v !== "");
+  if (clean.length === 0) return;
 
-  writeLegacy(node, key, values);
+  writeLegacy(node, key, clean);
 
-  const isDefault = values.length === 1 && values[0] === FACET_DEFAULTS[key];
+  const isDefault = clean.length === 1 && clean[0] === FACET_DEFAULTS[key];
   if (isDefault) {
     // The default is never materialized; clear any earlier non-default facet for
     // this key so the facet never lags behind the (just-updated) legacy field.
@@ -64,7 +69,7 @@ export function writeFacet(node: GraphNode, key: string, values: string[]): void
     return;
   }
 
-  (node.facets ??= {})[key] = values;
+  (node.facets ??= {})[key] = clean;
 }
 
 /** The string value(s) a node carries for a facet, resolving absence to the default. */

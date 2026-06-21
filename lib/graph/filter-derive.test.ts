@@ -55,6 +55,23 @@ function catalog(extra: DimensionDescriptor[]): DimensionCatalog {
   return { descriptors: [...STRUCTURAL_DESCRIPTORS, ...extra] };
 }
 
+test("a null facet value (a JSON-boundary undefined→null) is dropped, never crashes styling", () => {
+  // An analyzer-emitted `undefined` in a facet array becomes `null` once JSON.stringify
+  // crosses the worker/sidecar boundary (facets.env = [null]). The index must drop it so
+  // deriveFilterDimensions' fallbackColor never reads `.length` off a null value — the
+  // crash that took down every scan in the packaged app.
+  const withNull = fileNode("a.ts");
+  withNull.facets = { env: [null as unknown as string] };
+  const real = fileNode("b.ts");
+  writeFacet(real, "env", ["client"]);
+  const graph: GraphModel = { nodes: [withNull, real], edges: [] };
+  const cat = catalog([ENV]);
+  const index = buildDimensionIndex(graph, cat);
+  const dims = deriveFilterDimensions(graph, cat, index);
+  const env = dims.find((d) => d.key === "env");
+  expect(env?.values.map((v) => v.value)).toEqual(["client"]);
+});
+
 test("derives one dimension per filterable facet, excluding kind/folder/language by default", () => {
   const ui = sym("src/a.ts#C", "class");
   writeFacet(ui, "category", ["ui"]);

@@ -34,15 +34,20 @@ export const NODE_BUILTINS = new Set([
 ]);
 
 // Global identifiers that imply a runtime when used as a value (not a property name).
-const RUNTIME_GLOBALS: Record<string, Runtime> = {
-  Bun: "bun",
-  Deno: "deno",
-  process: "node",
-  Buffer: "node",
-  __dirname: "node",
-  __filename: "node",
-  require: "node",
-};
+// A Map, not an object literal: a plain-object lookup like `OBJ[id.getText()]` resolves
+// inherited Object.prototype members (`toString`, `constructor`, `valueOf`, `__proto__`,
+// `hasOwnProperty`, …) to truthy functions, which would then be added as bogus "runtimes"
+// — generated code (e.g. wasm-bindgen glue) is full of such identifiers. `Map.get` only
+// matches own entries, so no prototype member can leak in.
+const RUNTIME_GLOBALS = new Map<string, Runtime>([
+  ["Bun", "bun"],
+  ["Deno", "deno"],
+  ["process", "node"],
+  ["Buffer", "node"],
+  ["__dirname", "node"],
+  ["__filename", "node"],
+  ["require", "node"],
+]);
 
 export interface FileFacets {
   environment?: Environment;
@@ -103,7 +108,7 @@ export function fileFacets(file: SourceFile): FileFacets {
   }
 
   for (const id of file.getDescendantsOfKind(SyntaxKind.Identifier)) {
-    const runtime = RUNTIME_GLOBALS[id.getText()];
+    const runtime = RUNTIME_GLOBALS.get(id.getText());
     if (runtime && isValuePosition(id)) runtimes.add(runtime);
   }
 

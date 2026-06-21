@@ -62,7 +62,10 @@ function adapt(node: GraphNode, descriptor: DimensionDescriptor): string[] {
     if (descriptor.key === "folder") return [topFolderOf(node.filePath)];
     return [];
   }
-  const stored = node.facets?.[descriptor.key];
+  // Drop null/undefined/"" values defensively: an analyzer-emitted `undefined` becomes
+  // `null` when JSON.stringify crosses the sidecar→client boundary, and a null "value"
+  // would intern and crash downstream styling (fallbackColor reads value.length).
+  const stored = node.facets?.[descriptor.key]?.filter((v) => v != null && v !== "");
   if (stored && stored.length > 0) return stored;
   return descriptor.defaultValue !== undefined ? [descriptor.defaultValue] : [];
 }
@@ -120,7 +123,7 @@ export function buildDimensionIndex(graph: GraphModel, catalog: DimensionCatalog
       // Facet dims read the raw stored value(s); absence falls to the complement.
       const raw =
         descriptor.dimension === "facet"
-          ? (nodes[ordinal].facets?.[descriptor.key] ?? [])
+          ? (nodes[ordinal].facets?.[descriptor.key]?.filter((v) => v != null && v !== "") ?? [])
           : adapt(nodes[ordinal], descriptor);
       for (const value of raw) {
         accum[intern(value)].push(ordinal);
