@@ -44,6 +44,8 @@ export interface GroupingHierarchy {
   groupOfNode(nodeId: string): GroupId | null;
   /** The bare layout ClusterBox id for this group — the LOD/layout agreement key. */
   boxKey(id: GroupId): string;
+  /** Human label for a group (e.g. the last path segment for a directory). */
+  label(id: GroupId): string;
 }
 
 /**
@@ -77,6 +79,12 @@ export function directoryGrouping(graph: GraphModel): GroupingHierarchy {
     // have no directory group → null.
     groupOfNode: (nodeId) => groupByNode.get(nodeId) ?? null,
     boxKey: boxKeyOf,
+    // The directory's last path segment ("a/b/c" → "c"). The snapshot's groupLabels.
+    label: (id) => {
+      const path = boxKeyOf(id);
+      const slash = path.lastIndexOf("/");
+      return slash === -1 ? path : path.slice(slash + 1);
+    },
   };
 }
 
