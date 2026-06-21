@@ -82,6 +82,38 @@ describe("P4 parity bench — representation cut vs C1a oracle, all modes × fil
         expect(r.intentValid).toBe(true);
       });
 
+      // P4 STRESS METRICS (the eight readouts) + the three asserted invariants. Metrics 1–4 are
+      // checked through the cutover block below (refineNodes/Edges, maxFanout, bootstrap≤hard);
+      // these assert the four P3-orchestration readouts are present + sane AND that the three
+      // invariants the task names hold for this mode.
+      test(`${label}: eight stress metrics present + the three invariants hold`, () => {
+        const r = row();
+        // ── the four orchestration readouts are real numbers (not NaN / negative) ──
+        // 5 — rejected explicit opens by budget category: a finite histogram that sums to total.
+        const rej = r.rejectedOpens;
+        expect(rej.total).toBe(rej.cards + rej.edges + rej.labels + rej.gpu + rej.layout);
+        expect(rej.total).toBeGreaterThanOrEqual(0);
+        // 6 — camera→commit ms: a finite, non-negative latency.
+        expect(Number.isFinite(r.cameraToCommitMs)).toBe(true);
+        expect(r.cameraToCommitMs).toBeGreaterThanOrEqual(0);
+        // 7 — stale jobs discarded: the harness drives ONE gen-superseded result → exactly 1.
+        expect(r.staleLayoutJobsDiscarded).toBe(1);
+        // 8 — peak cache bytes: a positive footprint (proxies were laid out + cached).
+        expect(r.peakLayoutCacheBytes).toBeGreaterThan(0);
+
+        // ── INVARIANT 1 — a single-group refine scans work bounded by the changed subtree,
+        // NOT the whole graph (Gap 9). The metric is the collector's verdict; cross-check it
+        // against the raw scan: strictly fewer original nodes than the full set.
+        expect(r.refineBoundedBySubtree).toBe(true);
+        expect(r.refineNodesScanned).toBeLessThan(r.totalNodes);
+        // ── INVARIANT 2 — fan-out ≤ MAX_FANOUT (B1 invariant b).
+        expect(r.fanoutWithinBound).toBe(true);
+        expect(r.maxFanout).toBeLessThanOrEqual(MAX_FANOUT);
+        // ── INVARIANT 3 — the bootstrap (coarsest) cut ≤ hardCards (B1 invariant a).
+        expect(r.bootstrapFeasible).toBe(true);
+        expect(r.bootstrapCards).toBeLessThanOrEqual(r.hardCards);
+      });
+
       // Metric 8 — the CUTOVER CONDITION, the essential freeze gate. Every sub-condition must
       // hold for this mode: progressive refinement through bounded proxy tiers, WITHOUT
       // rescanning the whole graph, exceeding finite hard budgets, or triggering a global layout.
@@ -113,5 +145,22 @@ describe("P4 parity bench — representation cut vs C1a oracle, all modes × fil
     expect(rows.every((r) => r.cutover)).toBe(true);
     expect(rows.every((r) => r.cardsParity === "≤(better)")).toBe(true);
     expect(rows.reduce((s, r) => s + r.repGlobalMoves, 0)).toBe(0);
+  });
+
+  // The eight stress metrics must hold their invariants in EVERY mode (the gate the task names),
+  // and the rejected-opens path must be genuinely exercised somewhere (a forced open under a
+  // tight budget DID hit a finite ceiling and surfaced a "Detail limited" naming the category) —
+  // otherwise metric 5 would be a free pass even if the arbitration path were dead.
+  test("STRESS-METRICS VERDICT: invariants hold in every mode + the rejection path is exercised", () => {
+    expect(rows.every((r) => r.refineBoundedBySubtree)).toBe(true);
+    expect(rows.every((r) => r.fanoutWithinBound)).toBe(true);
+    expect(rows.every((r) => r.bootstrapFeasible)).toBe(true);
+    // at least one mode rejected an explicit open by the CARDS ceiling (the tight-budget probe).
+    expect(rows.some((r) => r.rejectedOpens.total > 0)).toBe(true);
+    expect(rows.some((r) => r.rejectedOpens.cards > 0)).toBe(true);
+    // every mode discarded exactly the one stale job the harness drove (B3 rule 6 is live).
+    expect(rows.every((r) => r.staleLayoutJobsDiscarded === 1)).toBe(true);
+    // every mode's bounded cache reported a positive peak footprint (metric 8 wired).
+    expect(rows.every((r) => r.peakLayoutCacheBytes > 0)).toBe(true);
   });
 });

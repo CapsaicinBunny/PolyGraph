@@ -51,6 +51,18 @@ import {
 } from "../lib/graph/lod-representation-cut";
 import { computeGroupCut, groupLodSelection } from "../lib/graph/group-cut";
 import { bootstrapCut } from "../lib/graph/lod-cut-solver";
+import {
+  collectStressMetrics,
+  rejectedOpensByCategory,
+  type RejectedOpensByCategory,
+  type RepLodStressMetrics,
+} from "../lib/graph/lod-observability";
+import {
+  BoundedLayoutCache,
+  estimateLayoutBytes,
+  ReadinessController,
+} from "../lib/graph/readiness";
+import type { CachedLocalLayout } from "../lib/graph/local-layout";
 import { globalRelayoutReason, type GlobalLayoutInputs } from "../lib/graph/global-relayout";
 import {
   type CutDiff,
@@ -206,6 +218,27 @@ function edgeOrdinalInputs(
   return { edgeIndexInputs, proxyEdgeInputs };
 }
 
+/**
+ * A deterministic synthetic cached local layout for metric 8's cache-memory probe. `n` child
+ * positions + one cluster box — the same SHAPE a real engine emits (minus world placement), so
+ * `estimateLayoutBytes` (the cache's own accounting) sizes it exactly as it would a live layout.
+ */
+function synthLayout(n: number): CachedLocalLayout {
+  const positions = new Map<string, { x: number; y: number }>();
+  for (let i = 0; i < n; i++) positions.set(`c${i}`, { x: i * 10, y: 0 });
+  const layout: CachedLocalLayout = {
+    positions,
+    clusters: [
+      { id: "g", x: 0, y: 0, width: n * 10, height: 100 },
+    ] as CachedLocalLayout["clusters"],
+    width: n * 10,
+    height: 100,
+  };
+  // touch estimateLayoutBytes so an import-time refactor of the size model is caught by the bench.
+  void estimateLayoutBytes(layout);
+  return layout;
+}
+
 /** Every visible node represented exactly once (the antichain / parity invariant). */
 function validAntichain(r: RepLodResult, visibleCount: number): boolean {
   const { hierarchy, cut } = r;
@@ -339,6 +372,18 @@ export interface ParityRow {
   noWholeGraphRescan: boolean; // refine touched ≪ the whole graph
   globalRelayoutOnCamera: boolean; // a pure camera move triggers a global relayout (must be false)
   cutover: boolean; // all cutover sub-conditions hold
+  // ── the eight P4 STRESS METRICS (spec P4 "New stress metrics") ──
+  // 1+2 (nodes/edges scanned) reuse refineNodesScanned/refineEdgesScanned above; 3 (max fanout)
+  // reuses maxFanout; 4 (bootstrap vs hard) reuses bootstrapCards/hardCards. The four below are
+  // the P3-orchestration-driven metrics this harness now exercises + reports:
+  rejectedOpens: RejectedOpensByCategory; // 5 — rejected explicit opens, by budget category
+  cameraToCommitMs: number; // 6 — time from a camera move to the committed refinement
+  staleLayoutJobsDiscarded: number; // 7 — async layout results dropped as stale (gen ≠ live)
+  peakLayoutCacheBytes: number; // 8 — peak local-layout cache footprint over the session
+  // the three asserted invariants, rolled up from collectStressMetrics:
+  refineBoundedBySubtree: boolean; // single-group refine bounded by the changed subtree
+  fanoutWithinBound: boolean; // max fan-out ≤ MAX_FANOUT
+  bootstrapFeasible: boolean; // bootstrap cut ≤ hardCards
 }
 
 /** A pure camera-move GlobalLayoutInputs pair (everything material identical). */
@@ -596,6 +641,101 @@ export async function benchMode(
   // Bootstrap (coarsest) cut card cost — must be ≤ hardCards (B1 invariant a: a high-orphan /
   // huge-flat-community graph must START budget-feasible, since refinement only ADDS cards).
   const bootstrapCards = bootstrapCut(first.repRuntime.hierarchy).cardCost;
+
+  // ── P4 stress metrics 5–8: the P3-orchestration readouts (rejected opens, camera→commit
+  // latency, stale jobs, peak cache memory). These exercise the SAME P3 layers the live canvas
+  // drives — the solver's forced-open arbitration (LimitedDetail), the IncrementalMaterializer's
+  // commit, the ReadinessController's staleness verdict, and the BoundedLayoutCache's byte cap —
+  // so the bench reports real numbers, not placeholders. ──
+
+  // Metric 5 — REJECTED explicit opens by budget category. Force-open EVERY root group at a
+  // TIGHT card budget the opens jointly bust: the solver honors what fits in arbitration order
+  // and retains the rest at the nearest proxy, emitting one LimitedDetail per rejected open
+  // naming the limiting budget. (At the production budget nothing is rejected — the tight budget
+  // is what makes this metric exercise the arbitration path, exactly as a dense real repo would.)
+  const allOpenIntent: CollapseIntent = new Map();
+  for (let i = 0; i < snap.roots.length; i++) {
+    allOpenIntent.set(snap.groupIds[snap.roots[i]], "open");
+  }
+  const tightOpts = { ...OPTS, maxCards: 3, nodeBudget: 3 };
+  const rejected = buildSceneRepresentationCut({
+    ...baseInput,
+    boxes: boxesFor(snap),
+    cam: camIn,
+    intent: allOpenIntent,
+    options: tightOpts,
+    runtime: undefined, // a fresh runtime: the tight budget is a different material? no — camera/
+    // intent/budget drive a recut, not a rebuild; pass no runtime so this solve is independent
+    // of `first` and cannot perturb the timed runtime above.
+  });
+
+  // Metric 6 — time from CAMERA MOVE to COMMITTED refinement. Time the work between a camera
+  // move producing a pending refinement and the IncrementalMaterializer committing it: the
+  // single-group refine (re-open `foldRep`, the dual of the coarsen measured above). This is the
+  // P3 perf objective's "cached refinement < 16 ms" — the cached path, no async layout.
+  let cameraToCommitMs = 0;
+  if (foldRep !== -1) {
+    const refineDiff: CutDiff = diffCuts(
+      Uint32Array.from(coarsenedSel),
+      Uint32Array.from(fineSel),
+      repCount,
+    );
+    const timed = await timeIt(() => {
+      const m = new IncrementalMaterializer(materialIn);
+      // prime to the coarsened scene (untimed setup is amortized across iters but cheap), then
+      // commit the one-group refine — the camera→commit critical path.
+      m.applyDiff(
+        { selectedRepresentations: Uint32Array.from(coarsenedSel) },
+        diffCuts([], Uint32Array.from(coarsenedSel), repCount),
+      );
+      m.applyDiff({ selectedRepresentations: Uint32Array.from(fineSel) }, refineDiff);
+    }, 5);
+    cameraToCommitMs = timed.median;
+  }
+
+  // Metric 7 — STALE local-layout jobs discarded (B3 rule 6). Drive the ReadinessController
+  // through a generation bump: a refine-miss issues an async layout at gen N; the camera moves
+  // on (gen N+1) before the worker returns; the late result is judged stale and dropped. Count
+  // the results the controller refused to commit because their generation was superseded.
+  let staleLayoutJobsDiscarded = 0;
+  {
+    const ctrl = new ReadinessController();
+    const root = foldRep === -1 ? (anyInternal === -1 ? 0 : anyInternal) : foldRep;
+    ctrl.beginGeneration(1);
+    ctrl.track(root, 1); // async layout issued at gen 1
+    ctrl.beginGeneration(2); // camera moved on → the gen-1 request is now obsolete
+    // The worker's gen-1 result lands AFTER the cut advanced to gen 2 → not committable.
+    const verdict = ctrl.resolve(root, 1);
+    if (verdict === "stale-generation" || verdict === "cancelled") staleLayoutJobsDiscarded++;
+  }
+
+  // Metric 8 — PEAK local-layout cache MEMORY (P3 "cache memory limit / LRU"). Fill a bounded
+  // cache with one synthetic local layout per refinable proxy, sampling the high-water byte mark
+  // after each insert. The cache's byte cap bounds the peak; this reports the peak actually
+  // reached for THIS mode's proxy population (real layouts are larger, but the harness has no
+  // engine — the synthetic entry's size is deterministic and the metric is the cache's own
+  // byteSize accounting, which the live path uses verbatim).
+  let peakLayoutCacheBytes = 0;
+  {
+    const cache = new BoundedLayoutCache();
+    for (let rep = 0; rep < repCount; rep++) {
+      if (cols.firstChildByRep[rep] === -1) continue; // only proxies get a local layout
+      const layout = synthLayout(subtreeLeaves(rep));
+      cache.set(`${mode}:${rep}`, layout);
+      if (cache.byteSize > peakLayoutCacheBytes) peakLayoutCacheBytes = cache.byteSize;
+    }
+  }
+
+  // Fold metrics 1–8 + invariants through the observability collector (the single source the
+  // canvas overlay also reads), seeding it with the counters this harness just measured.
+  const stress: RepLodStressMetrics = collectStressMetrics(first, MAX_FANOUT, bootstrapCards, {
+    materializeCounter: counter,
+    cameraToCommitMs,
+    staleLayoutJobsDiscarded,
+    peakLayoutCacheBytes,
+    totalOriginalEdges: totalEdges,
+  });
+
   const validAntichainOk =
     validAntichain(first, visibleCount) &&
     cameraMoves.every((m) => validAntichain(m, visibleCount));
@@ -658,6 +798,14 @@ export async function benchMode(
     noWholeGraphRescan,
     globalRelayoutOnCamera,
     cutover,
+    // ── stress metrics 5–8 + invariants ──
+    rejectedOpens: rejectedOpensByCategory(rejected.limitedDetails),
+    cameraToCommitMs,
+    staleLayoutJobsDiscarded,
+    peakLayoutCacheBytes,
+    refineBoundedBySubtree: stress.refineBoundedBySubtree,
+    fanoutWithinBound: stress.fanoutWithinBound,
+    bootstrapFeasible: stress.bootstrapFeasible,
   };
 }
 
@@ -676,6 +824,21 @@ export async function runParityBench(progress?: (line: string) => void): Promise
     }
   }
   return rows;
+}
+
+/** "✓"/"✗" for a boolean cell. */
+function tick(b: boolean): string {
+  return b ? "✓" : "✗";
+}
+
+/** A compact "cards=N edges=M …" summary of the rejected-opens histogram (metric 5). */
+function rejectedSummary(h: RejectedOpensByCategory): string {
+  if (h.total === 0) return "0";
+  const parts: string[] = [];
+  for (const k of ["cards", "edges", "labels", "gpu", "layout"] as const) {
+    if (h[k] > 0) parts.push(`${k}=${h[k]}`);
+  }
+  return `${h.total} (${parts.join(" ")})`;
 }
 
 /** console.table() the readable comparison + cutover tables + the one-line verdict. */
@@ -712,6 +875,25 @@ export function printParityReport(rows: ParityRow[]): void {
       "refine edges/all": `${r.refineEdgesScanned}/${r.totalEdges}`,
       "intent descends": r.intentDescends ? "✓" : "✗",
       CUTOVER: r.cutover ? "✓" : "✗",
+    })),
+  );
+
+  // ── the eight P4 STRESS METRICS, per mode × filter (spec P4 "New stress metrics") ──
+  console.log("\n=== P4 STRESS METRICS (the eight P4 readouts + invariants) ===\n");
+  console.table(
+    rows.map((r) => ({
+      mode: `${r.mode}${r.filtered ? " ·filt" : ""}`,
+      "1·nodes/recut": `${r.refineNodesScanned}/${r.totalNodes}`,
+      "2·edges/recut": `${r.refineEdgesScanned}/${r.totalEdges}`,
+      "3·maxFanout": r.maxFanout,
+      "4·boot/hard": `${r.bootstrapCards}/${r.hardCards}`,
+      "5·rejected (by cat)": rejectedSummary(r.rejectedOpens),
+      "6·cam→commit ms": round(r.cameraToCommitMs),
+      "7·stale jobs": r.staleLayoutJobsDiscarded,
+      "8·peak cache B": r.peakLayoutCacheBytes,
+      "inv: bounded/fanout/boot": `${tick(r.refineBoundedBySubtree)}${tick(
+        r.fanoutWithinBound,
+      )}${tick(r.bootstrapFeasible)}`,
     })),
   );
 
