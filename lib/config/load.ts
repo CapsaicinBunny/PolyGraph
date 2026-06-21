@@ -5,6 +5,7 @@
 
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
+import { canonicalFacetKey } from "../graph/facet-aliases";
 import type { DimensionIndex } from "../graph/dimension-index";
 import type { Environment, NodeCategory, NodeKind, NodeRole } from "../graph/types";
 import {
@@ -316,13 +317,18 @@ export function validateConfigAgainstIndex(
   const problems: ConfigValidationProblem[] = [];
 
   for (const { selector, where } of selectorsOf(config)) {
-    for (const [key, values] of Object.entries(selector.facets)) {
+    for (const [rawKey, values] of Object.entries(selector.facets)) {
+      // Resolve documented aliases (environment→env, lang→language) before the registry
+      // lookup, so a config using the query spelling validates against the canonical
+      // dimension instead of being flagged "unknown". The diagnostic `where` keeps the
+      // author's original spelling.
+      const key = canonicalFacetKey(rawKey);
       const descriptor = index.descriptor(key);
       if (!descriptor) {
         problems.push({
           severity,
-          where: `${where}.facets.${key}`,
-          message: `Unknown dimension "${key}" — not contributed by any provider in this graph`,
+          where: `${where}.facets.${rawKey}`,
+          message: `Unknown dimension "${rawKey}" — not contributed by any provider in this graph`,
         });
         continue;
       }
@@ -339,7 +345,7 @@ export function validateConfigAgainstIndex(
         if (!admissible.has(value)) {
           problems.push({
             severity,
-            where: `${where}.facets.${key}`,
+            where: `${where}.facets.${rawKey}`,
             message: `Value "${value}" is outside the closed domain of dimension "${key}" (allowed: ${[...admissible].sort().join(", ")})`,
           });
         }

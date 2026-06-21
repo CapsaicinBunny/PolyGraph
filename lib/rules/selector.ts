@@ -9,6 +9,7 @@
 // fallback so legacy-only nodes still match. The loader mirrors the legacy typed
 // selector fields into `facets`, so this one path covers both old and new configs.
 
+import { canonicalFacetKey } from "../graph/facet-aliases";
 import { FACET_DEFAULTS } from "../graph/facets-write";
 import { canonicalLanguageKey, fileLanguage, topFolderOf } from "../graph/filters";
 import type { GraphNode } from "../graph/types";
@@ -42,7 +43,10 @@ function legacyFacetValues(node: GraphNode, key: string): string[] {
  * the legacy typed field, then the descriptor default — so the result is stable
  * whether a node was written via `writeFacet` or with legacy fields only.
  */
-function nodeFacetValues(node: GraphNode, key: string): string[] {
+function nodeFacetValues(node: GraphNode, rawKey: string): string[] {
+  // Resolve documented aliases (environment→env, lang→language) so a config using the
+  // query spelling matches here too — the same resolution the query evaluator applies.
+  const key = canonicalFacetKey(rawKey);
   if (key === "kind") return [node.kind];
   // The structural `language` value space is the badge code (e.g. "RS"). Selector
   // values are canonicalized to the same space in `matchNode`, so a config may use
@@ -63,9 +67,12 @@ export function matchNode(selector: NodeSelector, node: GraphNode): boolean {
   // value(s) for the key must intersect the selector's values (OR). The `language`
   // key compares in the canonical badge-code space (human names mapped, lowercased)
   // so a selector value of "rust" matches an "RS" node — consistent with the query.
-  for (const [key, wanted] of Object.entries(selector.facets)) {
+  for (const [rawKey, wanted] of Object.entries(selector.facets)) {
     if (wanted.length === 0) continue; // empty constraint → ignored
-    const have = nodeFacetValues(node, key);
+    // Resolve documented aliases so the language branch (and value resolution) fire for the
+    // aliased spelling too (e.g. `lang` → `language`).
+    const key = canonicalFacetKey(rawKey);
+    const have = nodeFacetValues(node, rawKey);
     const matched =
       key === "language"
         ? have.some((h) => {

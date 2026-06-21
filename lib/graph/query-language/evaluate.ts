@@ -3,6 +3,7 @@
 // `depends-on` is a single multi-source reverse BFS rather than a per-node walk.
 
 import type { DimensionIndex } from "../dimension-index";
+import { canonicalFacetKey } from "../facet-aliases";
 import { canonicalLanguageKey, fileLanguage } from "../filters";
 import type { GraphModel, GraphNode } from "../types";
 import { buildMetrics, type MetricsIndex } from "./metrics";
@@ -31,15 +32,9 @@ export interface EvalOptions {
   dimensions?: DimensionIndex;
 }
 
-/**
- * Query field names that alias onto a different catalog key. `environment` is the
- * legacy spelling of the `env` dimension; `lang` of `language`. (`role`, `category`,
- * `runtime`, `kind`, `env`, `language` already equal their catalog keys.)
- */
-const FACET_KEY_ALIASES: Record<string, string> = {
-  environment: "env",
-  lang: "language",
-};
+// Query field aliases (environment→env, lang→language) come from the shared
+// ../facet-aliases module, so the query language, rule selectors, and config validation
+// all resolve the documented aliases identically (review bug d).
 
 /**
  * Built-in query fields handled by their own (richer) logic — numeric/structural —
@@ -137,7 +132,7 @@ function matchFacetViaIndex(
   field: string,
   value: string,
 ): boolean | undefined {
-  const key = FACET_KEY_ALIASES[field] ?? field;
+  const key = canonicalFacetKey(field);
   if (!index.descriptor(key)) return undefined; // not a registered dimension
   const v = value.toLowerCase();
   for (const id of index.valuesOfOrdinal(ordinal, key)) {
