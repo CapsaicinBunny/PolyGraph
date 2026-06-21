@@ -1,0 +1,254 @@
+// The six read-only PolyGraph operations the MCP tools expose, as plain async
+// functions returning structured data. Deliberately free of any MCP/SDK types so
+// they're unit-testable directly against a fixture; mcp/server.ts wraps each one.
+
+import { join } from "node:path";
+import { scanRevision, scanTarget, WORKING_TREE } from "../lib/cli/scan";
+import { loadConfigFile } from "../lib/config/load";
+import { diffGraphs } from "../lib/diff/diff";
+import { analyzeInsights, unresolvedToInsights } from "../lib/graph/insights";
+import { runQuery } from "../lib/graph/query-language";
+import type { GraphNode } from "../lib/graph/types";
+import { evaluate } from "../lib/rules/engine";
+import { getScan, rootKey } from "./cache";
+import { type BriefNode, briefNode, edgeConfidence, errMsg, histogram } from "./format";
+
+const LIST_CAP = 100;
+const EDGE_CAP = 50;
+const NODE_CAP = 30;
+
+// --- scan -------------------------------------------------------------------
+
+export type ScanSummary = {
+  root: string;
+  fileCount: number;
+  skipped: number;
+  nodeCount: number;
+  edgeCount: number;
+  parseWarnings: number;
+  unresolved: number;
+  nodeKinds: Record<string, number>;
+  edgeKinds: Record<string, number>;
+  edgeConfidence: Record<string, number>;
+  packages: { id: string; ecosystem: string }[];
+  scanMs: number;
+  analyzeMs: number;
+};
+
+export async function scanSummary(path: string): Promise<ScanSummary> {
+  const d = await getScan(path, { refresh: true });
+  return {
+    root: d.root,
+    fileCount: d.fileCount,
+    skipped: d.skipped,
+    nodeCount: d.graph.nodes.length,
+    edgeCount: d.graph.edges.length,
+    parseWarnings: d.errors.length,
+    unresolved: d.unresolved.length,
+    nodeKinds: histogram(d.graph.nodes.map((n) => n.kind)),
+    edgeKinds: histogram(d.graph.edges.map((e) => e.kind)),
+    edgeConfidence: histogram(d.graph.edges.map(edgeConfidence)),
+    packages: d.manifests.slice(0, LIST_CAP).map((m) => ({ id: m.id, ecosystem: m.ecosystem })),
+    scanMs: Math.round(d.timings.scanMs),
+    analyzeMs: Math.round(d.timings.analyzeMs),
+  };
+}
+
+// --- query ------------------------------------------------------------------
+
+export type QueryNodes = {
+  query: string;
+  matchCount: number;
+  returned: number;
+  empty: boolean;
+  error?: string;
+  nodes: BriefNode[];
+};
+
+export async function queryNodes(path: string, query: string, limit = 50): Promise<QueryNodes> {
+  const d = await getScan(path);
+  const r = runQuery(d.graph, query);
+  if (r.error) {
+    return { query, matchCount: 0, returned: 0, empty: r.empty, error: r.error, nodes: [] };
+  }
+  const byId = new Map(d.graph.nodes.map((n) => [n.id, n]));
+  const nodes = [...r.nodeIds]
+    .map((id) => byId.get(id))
+    .filter((n): n is GraphNode => n !== undefined)
+    .slice(0, limit)
+    .map(briefNode);
+  return { query, matchCount: r.nodeIds.size, returned: nodes.length, empty: r.empty, nodes };
+}
+
+// --- node -------------------------------------------------------------------
+
+export type NodeDetail = {
+  node: GraphNode;
+  dependencyCount: number;
+  dependentCount: number;
+  dependencies: {
+    kind: string;
+    target: string;
+    targetLabel: string;
+    count: number;
+    confidence: string;
+  }[];
+  dependents: {
+    kind: string;
+    source: string;
+    sourceLabel: string;
+    count: number;
+    confidence: string;
+  }[];
+};
+
+export async function nodeDetail(path: string, id: string): Promise<NodeDetail> {
+  const d = await getScan(path);
+  const node = d.graph.nodes.find((n) => n.id === id);
+  if (!node) {
+    const hint = id.includes("#") ? (id.split("#").pop() ?? id) : id;
+    throw new Error(
+      `No node with id "${id}". Find ids with polygraph_query — e.g. {"query":"label:${hint}"} or {"query":"path:**/<file>"}.`,
+    );
+  }
+  const labelById = new Map(d.graph.nodes.map((n) => [n.id, n.label]));
+  const out = d.graph.edges.filter((e) => e.source === id);
+  const inc = d.graph.edges.filter((e) => e.target === id);
+  return {
+    node,
+    dependencyCount: out.length,
+    dependentCount: inc.length,
+    dependencies: out.slice(0, EDGE_CAP).map((e) => ({
+      kind: e.kind,
+      target: e.target,
+      targetLabel: labelById.get(e.target) ?? e.target,
+      count: e.count,
+      confidence: edgeConfidence(e),
+    })),
+    dependents: inc.slice(0, EDGE_CAP).map((e) => ({
+      kind: e.kind,
+      source: e.source,
+      sourceLabel: labelById.get(e.source) ?? e.source,
+      count: e.count,
+      confidence: edgeConfidence(e),
+    })),
+  };
+}
+
+// --- insights ---------------------------------------------------------------
+
+export type InsightList = {
+  total: number;
+  byKind: Record<string, number>;
+  insights: { kind: string; severity: string; title: string; detail: string; nodeIds: string[] }[];
+};
+
+export async function listInsights(
+  path: string,
+  severity?: "info" | "warning",
+): Promise<InsightList> {
+  const d = await getScan(path);
+  let insights = [...analyzeInsights(d.graph), ...unresolvedToInsights(d.unresolved)];
+  if (severity) insights = insights.filter((i) => i.severity === severity);
+  return {
+    total: insights.length,
+    byKind: histogram(insights.map((i) => i.kind)),
+    insights: insights.slice(0, LIST_CAP).map((i) => ({
+      kind: i.kind,
+      severity: i.severity,
+      title: i.title,
+      detail: i.detail,
+      nodeIds: i.nodeIds.slice(0, 10),
+    })),
+  };
+}
+
+// --- check ------------------------------------------------------------------
+
+export type CheckResult = {
+  config: string;
+  total: number;
+  errors: number;
+  warnings: number;
+  violations: {
+    ruleName: string;
+    kind: string;
+    severity: string;
+    message: string;
+    filePath: string;
+    line: number;
+  }[];
+};
+
+export async function checkRules(path: string, configPath?: string): Promise<CheckResult> {
+  const cfg = configPath ?? join(rootKey(path), ".polygraph.yml");
+  const config = await loadConfigFile(cfg).catch((err: unknown) => {
+    throw new Error(
+      `Could not load PolyGraph config at "${cfg}": ${errMsg(err)}. Pass {"config":"<path>"} or add a .polygraph.yml.`,
+    );
+  });
+  const d = await getScan(path);
+  const violations = evaluate(config, d.graph);
+  return {
+    config: cfg,
+    total: violations.length,
+    errors: violations.filter((v) => v.severity === "error").length,
+    warnings: violations.filter((v) => v.severity === "warning").length,
+    violations: violations.slice(0, LIST_CAP).map((v) => ({
+      ruleName: v.ruleName,
+      kind: v.kind,
+      severity: v.severity,
+      message: v.message,
+      filePath: v.location.filePath,
+      line: v.location.line,
+    })),
+  };
+}
+
+// --- diff -------------------------------------------------------------------
+
+export type DiffResult = {
+  base: string;
+  head: string;
+  summary: {
+    nodesAdded: number;
+    nodesRemoved: number;
+    nodesChanged: number;
+    edgesAdded: number;
+    edgesRemoved: number;
+    newCycles: number;
+    removedCycles: number;
+  };
+  addedNodes: BriefNode[];
+  removedNodes: BriefNode[];
+  newCycles: { members: string[] }[];
+  blastRadius: { label: string; delta: number }[];
+};
+
+export async function diffRevisions(
+  path: string,
+  base: string,
+  head?: string,
+): Promise<DiffResult> {
+  const root = rootKey(path);
+  try {
+    const before = await scanRevision(root, base);
+    const after = await scanTarget(root, head ?? WORKING_TREE);
+    const diff = diffGraphs(before.graph, after.graph, before.label, after.label);
+    return {
+      base: diff.base,
+      head: diff.head,
+      summary: diff.summary,
+      addedNodes: diff.nodes.added.slice(0, NODE_CAP).map(briefNode),
+      removedNodes: diff.nodes.removed.slice(0, NODE_CAP).map(briefNode),
+      newCycles: diff.newCycles.slice(0, 10).map((c) => ({ members: c.labels })),
+      blastRadius: diff.blastRadiusDeltas
+        .slice(0, 10)
+        .map((b) => ({ label: b.label, delta: b.delta })),
+    };
+  } catch (err) {
+    throw new Error(
+      `Could not diff "${root}": ${errMsg(err)}. Diff needs a git repo and valid revisions (a base, and optionally a head — omit head to compare against the working tree).`,
+    );
+  }
+}

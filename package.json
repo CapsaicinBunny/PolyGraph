@@ -4,7 +4,8 @@
   "private": true,
   "license": "Apache-2.0 OR MIT",
   "bin": {
-    "polygraph": "cli/index.ts"
+    "polygraph": "cli/index.ts",
+    "polygraph-mcp": "mcp/server.ts"
   },
   "type": "module",
   "scripts": {
@@ -14,8 +15,10 @@
     "dev": "bun scripts/dev.mjs",
     "dev:next": "next dev -p 3003",
     "dev:sidecar": "bun run sidecar/server.ts",
+    "mcp": "bun run mcp/server.ts",
     "build": "next build",
     "build:sidecar": "bun build --compile sidecar/server.ts --outfile dist/polygraph-sidecar",
+    "build:mcp": "bun build --compile mcp/server.ts --outfile dist/polygraph-mcp",
     "tauri": "tauri",
     "tauri:sidecar": "bun scripts/build-sidecar.mjs",
     "start": "bunx serve out",
@@ -35,6 +38,7 @@
     "@chakra-ui/react": "^3.36.1",
     "@dagrejs/dagre": "^3.1.1",
     "@emotion/react": "^11.14.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "d3-force": "^3.0.0",
@@ -46,7 +50,8 @@
     "shiki": "^4.4.3",
     "ts-morph": "^28.0.0",
     "webcola": "^3.4.0",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.11.6",
