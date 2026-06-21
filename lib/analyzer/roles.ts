@@ -3,28 +3,34 @@ import type { NodeRole } from "../graph/types";
 
 export type Framework = "react" | "vue" | "angular" | "svelte" | "ecs";
 
+// These lookup tables are Maps, not object literals: every key below is matched
+// against a parsed identifier (decorator name, factory-call name), so a plain-object
+// `TABLE[name]` would resolve inherited Object.prototype members (`toString`,
+// `constructor`, `__proto__`, …) to truthy functions and return one as a NodeRole.
+// `Map.get` only matches own entries. See lib/analyzer/facets.ts for the same fix.
+
 // ECS framework factory functions (ECS-specific `define*` idiom).
-const ECS_FACTORIES: Record<string, NodeRole> = {
-  defineSystem: "ecs-system",
-  defineQuery: "ecs-system",
-  defineEntity: "ecs-entity",
-};
+const ECS_FACTORIES = new Map<string, NodeRole>([
+  ["defineSystem", "ecs-system"],
+  ["defineQuery", "ecs-system"],
+  ["defineEntity", "ecs-entity"],
+]);
 
 // Angular's PascalCase class decorators are distinctive and definitive.
-const ANGULAR_DECORATORS: Record<string, NodeRole> = {
-  Component: "angular-component",
-  Directive: "angular-directive",
-  Pipe: "angular-pipe",
-  Injectable: "angular-service",
-  NgModule: "angular-module",
-};
+const ANGULAR_DECORATORS = new Map<string, NodeRole>([
+  ["Component", "angular-component"],
+  ["Directive", "angular-directive"],
+  ["Pipe", "angular-pipe"],
+  ["Injectable", "angular-service"],
+  ["NgModule", "angular-module"],
+]);
 
 // becsy/ape-ecs style lowercase decorators.
-const ECS_DECORATORS: Record<string, NodeRole> = {
-  component: "ecs-component",
-  system: "ecs-system",
-  entity: "ecs-entity",
-};
+const ECS_DECORATORS = new Map<string, NodeRole>([
+  ["component", "ecs-component"],
+  ["system", "ecs-system"],
+  ["entity", "ecs-entity"],
+]);
 
 /** Infer the framework of a file from its extension, then its imports. */
 export function detectFramework(file: SourceFile): Framework | undefined {
@@ -54,9 +60,10 @@ function decoratorRole(decl: Node): NodeRole | undefined {
   if (!Node.isDecoratable(decl)) return undefined;
   for (const dec of decl.getDecorators()) {
     const name = dec.getName();
-    if (ANGULAR_DECORATORS[name]) return ANGULAR_DECORATORS[name]; // exact PascalCase = Angular
-    const lower = name.toLowerCase();
-    if (ECS_DECORATORS[lower]) return ECS_DECORATORS[lower];
+    const angular = ANGULAR_DECORATORS.get(name);
+    if (angular) return angular; // exact PascalCase = Angular
+    const ecs = ECS_DECORATORS.get(name.toLowerCase());
+    if (ecs) return ecs;
   }
   return undefined;
 }
@@ -96,7 +103,8 @@ export function variableRole(
         ? expr.getName()
         : undefined;
     if (fnName) {
-      if (ECS_FACTORIES[fnName]) return ECS_FACTORIES[fnName];
+      const factory = ECS_FACTORIES.get(fnName);
+      if (factory) return factory;
       // defineComponent is Vue's primary API and bitECS's; disambiguate by framework.
       if (fnName === "defineComponent")
         return framework === "ecs" ? "ecs-component" : "vue-component";

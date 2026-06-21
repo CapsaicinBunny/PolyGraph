@@ -56,6 +56,22 @@ describe("external nodes", () => {
     expect(node(graph, "external:module:lodash")?.dependencyType).toBe("undeclared");
   });
 
+  test("a property access on an Object.prototype-named identifier is not a bogus external API node", () => {
+    // Regression: RUNTIME_GLOBALS was a plain object, so `RUNTIME_GLOBALS[obj.getText()]`
+    // resolved inherited Object.prototype members (`toString`, `constructor`, `valueOf`,
+    // …) to truthy functions — the `!externalKind` guard passed and a *function* was
+    // stored as node.externalKind, which becomes null over the JSON wire and crashes
+    // node styling (nodeStyle(...).color). No such node may be produced.
+    const { graph } = analyzeSources({
+      "x.ts": `export function g(o: { x: number }) {
+        return [toString.call(o), constructor.name, valueOf.apply(o), hasOwnProperty.length];
+      }`,
+    });
+    const externals = graph.nodes.filter((n) => n.kind === "external");
+    expect(externals.some((n) => n.id.startsWith("external:api:toString"))).toBe(false);
+    expect(externals.every((n) => typeof n.externalKind === "string")).toBe(true);
+  });
+
   test("Bun / Deno / process API usage becomes external API nodes", () => {
     const { graph } = analyzeSources({
       "b.ts": `export function serve() { return Bun.serve({}); }`,
