@@ -5,11 +5,7 @@ import { FILTERABLE_EDGE_KINDS } from "./visual";
 import type { FacetKey } from "./dimensions";
 import type { FacetSelection } from "./facet-selection";
 import { writeFacet } from "./facets-write";
-import {
-  mergeDescriptors,
-  STRUCTURAL_DESCRIPTORS,
-  type DimensionCatalog,
-} from "./dimensions";
+import { mergeDescriptors, STRUCTURAL_DESCRIPTORS, type DimensionCatalog } from "./dimensions";
 import { TS_FACET_DESCRIPTORS } from "../analyzer/facet-schema";
 import { buildSceneStructure, type SceneFilters } from "./scene";
 
@@ -332,8 +328,20 @@ test("the layout signature includes catalog identity (distinct catalogs cannot c
     STRUCTURAL_DESCRIPTORS,
     TS_FACET_DESCRIPTORS,
   ]).catalog;
-  const args = [graph, new Set<string>(), filters(), "force", "LR", new Set<string>(),
-    "directory", 1, false, null, null, false] as const;
+  const args = [
+    graph,
+    new Set<string>(),
+    filters(),
+    "force",
+    "LR",
+    new Set<string>(),
+    "directory",
+    1,
+    false,
+    null,
+    null,
+    false,
+  ] as const;
   const sigA = buildSceneStructure(...args, catalogA).signature;
   const sigB = buildSceneStructure(...args, catalogB).signature;
   expect(sigA).not.toBe(sigB);

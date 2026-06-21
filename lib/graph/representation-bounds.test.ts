@@ -1,15 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { directoryGrouping } from "./grouping";
 import { buildGroupingSnapshot } from "./grouping-snapshot";
-import {
-  buildRepresentationHierarchy,
-  type RepresentationHierarchy,
-} from "./representation";
+import { buildRepresentationHierarchy, type RepresentationHierarchy } from "./representation";
 import {
   computeRepresentationBounds,
   DEFAULT_BOUNDS_OPTIONS,
   representationBoundsOf,
-  type RepresentationBounds,
 } from "./representation-bounds";
 import type { GraphModel } from "./types";
 

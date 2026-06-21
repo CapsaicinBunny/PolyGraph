@@ -13,4 +13,10 @@
  * optional `facets` map from the pack's `@facet` captures, and `facetSchema`
  * echoes the descriptors so the kernel needn't re-load the pack.
  */
-export declare function analyze(grammar: string, querySrc: string, importStyle: string, filesJson: string, facetSchemaJson: string): Promise<string>
+export declare function analyze(
+  grammar: string,
+  querySrc: string,
+  importStyle: string,
+  filesJson: string,
+  facetSchemaJson: string,
+): Promise<string>;

@@ -41,7 +41,12 @@ export function representationBoundsOf(
   rep: number,
 ): RepresentationBounds {
   return {
-    current: { x: cols.boundsX[rep], y: cols.boundsY[rep], w: cols.boundsW[rep], h: cols.boundsH[rep] },
+    current: {
+      x: cols.boundsX[rep],
+      y: cols.boundsY[rep],
+      w: cols.boundsW[rep],
+      h: cols.boundsH[rep],
+    },
     nextReserved: {
       x: cols.reservedX[rep],
       y: cols.reservedY[rep],

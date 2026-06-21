@@ -71,7 +71,8 @@ export async function createTreeSitterProvider(packId: string): Promise<Language
       // into AnalyzeResult.dimensions (the catalog handshake). Prefer the schema
       // the core echoed; fall back to the pack's own (identical) copy so the
       // facetSchema is present even if an older core didn't echo it.
-      const facetSchema = out.facetSchema ?? (pack.facetSchema.length ? pack.facetSchema : undefined);
+      const facetSchema =
+        out.facetSchema ?? (pack.facetSchema.length ? pack.facetSchema : undefined);
       return { nodes: out.nodes, edges, errors: out.errors, facetSchema };
     },
   };

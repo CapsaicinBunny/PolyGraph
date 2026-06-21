@@ -96,18 +96,22 @@ function buildFacetSchema(meta: PackMeta): DimensionDescriptor[] {
   const facets = meta.facets ?? [];
   return facets.map((facet) => {
     if (!facet.key) throw new Error(`pack "${meta.id}": a facet is missing its "key"`);
-    if (!facet.label) throw new Error(`pack "${meta.id}": facet "${facet.key}" is missing a "label"`);
+    if (!facet.label)
+      throw new Error(`pack "${meta.id}": facet "${facet.key}" is missing a "label"`);
     const cardinality = facet.cardinality ?? "single";
     const grouping = toFacetGrouping(facet.grouping, cardinality);
     const values: DimensionValue[] = (facet.values ?? []).map((v) => {
-      if (!v.value) throw new Error(`pack "${meta.id}": facet "${facet.key}" has a value with no "value"`);
+      if (!v.value)
+        throw new Error(`pack "${meta.id}": facet "${facet.key}" has a value with no "value"`);
       if (!v.label)
-        throw new Error(`pack "${meta.id}": facet "${facet.key}" value "${v.value}" is missing a "label"`);
+        throw new Error(
+          `pack "${meta.id}": facet "${facet.key}" value "${v.value}" is missing a "label"`,
+        );
       return { value: v.value, label: v.label, color: v.color, glyph: v.glyph };
     });
     // Multi-valued facets default to non-groupable (containment can't pick one
     // group); single-valued ones are groupable. Either can be overridden.
-    const groupable = facet.groupable ?? (grouping.mode !== "disabled");
+    const groupable = facet.groupable ?? grouping.mode !== "disabled";
     return {
       key: facet.key,
       label: facet.label,

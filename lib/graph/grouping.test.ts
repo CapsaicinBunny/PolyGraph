@@ -156,13 +156,7 @@ describe("ancestorDirectoryGroupIds — strict ancestors, outermost-first", () =
 describe("allDirectoryGroupIds — the bootstrap safety universe", () => {
   test("is every directory (namespaced), excluding the synthetic root", () => {
     expect(allDirectoryGroupIds(graph)).toEqual(
-      new Set([
-        "directory:a",
-        "directory:a/x",
-        "directory:a/y",
-        "directory:b",
-        "directory:b/z",
-      ]),
+      new Set(["directory:a", "directory:a/x", "directory:a/y", "directory:b", "directory:b/z"]),
     );
   });
 
