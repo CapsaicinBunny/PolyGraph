@@ -3,6 +3,8 @@ import {
   type FacetSelection,
   facetAllows,
   serializeFacetSelections,
+  setFacetValues,
+  toggleFacetValue,
   valueEnabled,
 } from "./facet-selection";
 
@@ -91,4 +93,59 @@ test("serializeFacetSelections: differs when a value is excluded", () => {
     ["env", { mode: "exclude", values: new Set(["client"]) }],
   ]);
   expect(serializeFacetSelections(none)).not.toBe(serializeFacetSelections(excludeOne));
+});
+
+test("toggleFacetValue: disabling one value of an all-enabled facet stores just that value (sparse)", () => {
+  const next = toggleFacetValue(new Map(), "env", "client");
+  const sel = next.get("env")!;
+  expect(sel.mode).toBe("exclude");
+  expect([...sel.values]).toEqual(["client"]);
+  // the other value is still enabled
+  expect(valueEnabled(next, "env", "server")).toBe(true);
+  expect(valueEnabled(next, "env", "client")).toBe(false);
+});
+
+test("toggleFacetValue: re-enabling the last excluded value clears the entry (back to all)", () => {
+  const facets = new Map<string, FacetSelection>([
+    ["env", { mode: "exclude", values: new Set(["client"]) }],
+  ]);
+  const next = toggleFacetValue(facets, "env", "client");
+  expect(next.has("env")).toBe(false); // normalized away — all enabled again
+});
+
+test("toggleFacetValue: does not mutate the input map", () => {
+  const facets = new Map<string, FacetSelection>();
+  toggleFacetValue(facets, "env", "client");
+  expect(facets.size).toBe(0);
+});
+
+test("toggleFacetValue: within include mode, removing a value keeps include mode", () => {
+  const facets = new Map<string, FacetSelection>([
+    ["kind", { mode: "include", values: new Set(["class", "function"]) }],
+  ]);
+  const next = toggleFacetValue(facets, "kind", "function");
+  expect(next.get("kind")?.mode).toBe("include");
+  expect([...(next.get("kind")?.values ?? [])]).toEqual(["class"]);
+});
+
+test("setFacetValues off for the whole present domain disables every value (none)", () => {
+  const next = setFacetValues(new Map(), "env", ["client", "server"], false);
+  expect(valueEnabled(next, "env", "client")).toBe(false);
+  expect(valueEnabled(next, "env", "server")).toBe(false);
+});
+
+test("setFacetValues on for an excluded set re-enables and clears the entry", () => {
+  const facets = new Map<string, FacetSelection>([
+    ["env", { mode: "exclude", values: new Set(["client", "server"]) }],
+  ]);
+  const next = setFacetValues(facets, "env", ["client", "server"], true);
+  expect(next.has("env")).toBe(false);
+});
+
+test("setFacetValues toggles only a subset (a Node-types layer), leaving others enabled", () => {
+  // Disable just the 'class','function' layer; 'interface' (not in the set) stays on.
+  const next = setFacetValues(new Map(), "kind", ["class", "function"], false);
+  expect(valueEnabled(next, "kind", "class")).toBe(false);
+  expect(valueEnabled(next, "kind", "function")).toBe(false);
+  expect(valueEnabled(next, "kind", "interface")).toBe(true);
 });

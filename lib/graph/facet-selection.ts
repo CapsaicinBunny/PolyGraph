@@ -50,6 +50,63 @@ export function facetAllows(
   return false;
 }
 
+/** Set one value's enabled state in a facet's selection, returning the new selection. */
+function withValue(sel: FacetSelection | undefined, value: string, on: boolean): FacetSelection {
+  // Default (no entry) is "all enabled", modeled as an empty exclude set.
+  const mode = sel?.mode === "include" ? "include" : "exclude";
+  const values = new Set(sel?.values ?? []);
+  if (mode === "exclude") {
+    // exclude lists the DISABLED values: disabling adds, enabling removes.
+    if (on) values.delete(value);
+    else values.add(value);
+  } else {
+    // include lists the ENABLED values: enabling adds, disabling removes.
+    if (on) values.add(value);
+    else values.delete(value);
+  }
+  return { mode, values };
+}
+
+/** Drop a now-no-op (all-enabled) selection so the map stays sparse. */
+function normalized(
+  facets: Map<FacetKey, FacetSelection>,
+  key: FacetKey,
+  sel: FacetSelection,
+): Map<FacetKey, FacetSelection> {
+  // An empty exclude set means nothing is disabled ⇒ all enabled ⇒ no entry.
+  if (sel.mode === "exclude" && sel.values.size === 0) facets.delete(key);
+  else facets.set(key, sel);
+  return facets;
+}
+
+/**
+ * Toggle one value of a facet on/off, returning a NEW sparse map. Disabling a
+ * value of an otherwise-all-enabled facet stores just that one value (the
+ * "all except one" case); re-enabling the last disabled value clears the entry.
+ */
+export function toggleFacetValue(
+  facets: ReadonlyMap<FacetKey, FacetSelection>,
+  key: FacetKey,
+  value: string,
+): Map<FacetKey, FacetSelection> {
+  const next = new Map(facets);
+  const currentlyOn = valueEnabled(facets, key, value);
+  return normalized(next, key, withValue(facets.get(key), value, !currentlyOn));
+}
+
+/** Enable/disable a set of a facet's values at once, returning a NEW sparse map. */
+export function setFacetValues(
+  facets: ReadonlyMap<FacetKey, FacetSelection>,
+  key: FacetKey,
+  values: readonly string[],
+  on: boolean,
+): Map<FacetKey, FacetSelection> {
+  const next = new Map(facets);
+  let sel = facets.get(key);
+  for (const value of values) sel = withValue(sel, value, on);
+  return normalized(next, key, sel ?? { mode: "exclude", values: new Set() });
+}
+
 /**
  * Whether a selection actually constrains anything — an `all`-mode or
  * empty-`include`-less selection is a no-op equal to having no entry. Used so a
