@@ -97,6 +97,14 @@ export interface GraphNode {
   line: number;
   /** Owning file node id, used for collapse/expand. Equals `id` for file nodes. */
   parentFile: string;
+  // Legacy typed facet fields (role/category/environment/runtimes). The spec ends
+  // Phase D with "remove legacy named fields", but removal is intentionally DEFERRED
+  // to Phase E: the matchers (rules/selector.ts, query-language/evaluate.ts) still
+  // read these as a fallback for legacy-only nodes whose `facets` is unset, and only
+  // the TS provider dual-writes `facets` today. Per the spec's own sequencing
+  // ("Legacy fields are removed only after every consumer reads facets"), they stay
+  // until Phase E populates `facets` for non-TS (Rust/Go/…) nodes too. Until then,
+  // every write goes through `writeFacet`, which keeps these in lock-step with `facets`.
   /** Detected architectural role, if any (ECS / React). */
   role?: NodeRole;
   /** UI (renders something) vs feature (logic/data). */
