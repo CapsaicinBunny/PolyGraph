@@ -177,4 +177,94 @@ describe("scene grouping snapshot — per mode (Phase C1a)", () => {
     );
     expect(s.options.groupingSnapshot).toBeUndefined();
   });
+
+  // Regression (review bug c): a `facet:*` mode whose grouping resolves to null must NOT
+  // fall through to the DIRECTORY cluster tree (laying the graph out by folders while the
+  // UI claims it's grouped by the facet). It must emit a flat, boxless ('none'-like)
+  // snapshot instead.
+  test("facet mode with a DISABLED (multi-valued) grouping → flat boxless snapshot, not directory", () => {
+    // `tags` is a multi-valued facet whose grouping is `disabled` → facetGrouping returns null.
+    const tagsSchema = [
+      {
+        key: "tags",
+        label: "Tags",
+        dimension: "facet" as const,
+        cardinality: "multi" as const,
+        domain: "open" as const,
+        values: [],
+        providerIds: ["core"],
+        filterable: true,
+        groupable: false,
+        grouping: { mode: "disabled" as const },
+        missing: { filter: "include" as const, group: "unclassified" as const },
+      },
+    ];
+    const catalog: DimensionCatalog = mergeDescriptors([
+      STRUCTURAL_DESCRIPTORS,
+      tagsSchema,
+    ]).catalog;
+    const graph: GraphModel = {
+      // Real directory structure (src/, lib/) — if the bug fell through to directory, the
+      // cluster tree would carry "src"/"lib" boxes.
+      nodes: [
+        withFacet("src/a.ts", { tags: ["x", "y"] }),
+        withFacet("src/b.ts", { tags: ["y"] }),
+        withFacet("lib/c.ts", { tags: ["z"] }),
+      ],
+      edges: [],
+    };
+    const s = buildSceneStructure(
+      graph,
+      new Set(),
+      filters(["src", "lib", "/"], ["TS"]),
+      "smart",
+      "LR",
+      new Set(),
+      "facet:tags",
+      1,
+      false,
+      null,
+      null,
+      false,
+      catalog,
+    );
+    const snap = s.options.groupingSnapshot!;
+    expect(snap).toBeTruthy();
+    expect(snap.modeKey).toBe("facet:tags");
+    // Flat boxless: ZERO groups, every node NO_GROUP — NOT the directory tree.
+    expect(snap.groupIds.length).toBe(0);
+    for (const g of snap.directGroupByNode) expect(g).toBe(NO_GROUP);
+    // The rebuilt cluster tree has NO containers (no "src"/"lib" directory boxes leaked in).
+    const { root } = buildClusterTreeFromSnapshot(s.layoutInput.nodes, snap);
+    expect([...root.children.values()].length).toBe(0);
+  });
+
+  test("facet mode whose key is ABSENT from the catalog → flat boxless snapshot, not directory", () => {
+    // No descriptor for "env" in this catalog → the facet hierarchy can't be built.
+    const catalog: DimensionCatalog = mergeDescriptors([STRUCTURAL_DESCRIPTORS]).catalog;
+    const graph: GraphModel = {
+      nodes: [file("src/a.ts"), file("lib/b.ts")],
+      edges: [],
+    };
+    const s = buildSceneStructure(
+      graph,
+      new Set(),
+      filters(["src", "lib", "/"], ["TS"]),
+      "smart",
+      "LR",
+      new Set(),
+      "facet:env",
+      1,
+      false,
+      null,
+      null,
+      false,
+      catalog,
+    );
+    const snap = s.options.groupingSnapshot!;
+    expect(snap.modeKey).toBe("facet:env");
+    expect(snap.groupIds.length).toBe(0); // boxless, NOT directory's src/lib boxes
+    const { root } = buildClusterTreeFromSnapshot(s.layoutInput.nodes, snap);
+    expect([...root.children.values()].length).toBe(0);
+  });
 });
