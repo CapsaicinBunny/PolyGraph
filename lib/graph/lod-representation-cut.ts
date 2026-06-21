@@ -430,10 +430,15 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
     refinements: 0,
     limited: [],
   };
+  // The persistent cut-aware edge index (design B2) drives the solver's marginal edge gate:
+  // a refine is priced by its ACTUAL quotient-graph Δedges, not the inert additive per-rep
+  // edgeCost. Present only when the caller supplied `edges` (the index is built on the runtime).
+  const edgeIndex = runtime.edgeIndex;
   const t0 = nowMs();
   let cut = solveLodCut(hierarchy, bootstrapCut(hierarchy), constraints, camState, budget, {
     canRefine,
     diagnostics: limitSink,
+    edgeIndex,
   });
 
   // 4b. Deadband retention + bounded offscreen-auto-open eviction (Phase C1c bug b). The
@@ -491,7 +496,7 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
         { forceClosed: nextClosed, forceOpen: nextOpen },
         camState,
         budget,
-        { canRefine, diagnostics: limitSink },
+        { canRefine, diagnostics: limitSink, edgeIndex },
       );
     }
   }

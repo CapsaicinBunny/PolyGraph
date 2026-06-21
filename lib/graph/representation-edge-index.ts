@@ -111,6 +111,28 @@ export interface RepresentationEdgeIndex {
   pairReps: Uint32Array;
   /** original edge ordinals (indices into the input) grouped by lowest relevant rep pair. */
   originalEdgeOrdinals: Uint32Array;
+  /**
+   * The SOURCE endpoint LEAF rep of each indexed edge, aligned 1:1 with
+   * {@link originalEdgeOrdinals} (same CSR layout). Needed to resolve an edge endpoint's
+   * representative UNDER AN ARBITRARY CUT (walk from the leaf up to the first selected rep) —
+   * the stored {@link pairReps} live at the lowest-relevant-pair TIER, which is ABOVE the cut
+   * whenever the selection is finer than that tier, so they cannot be walked UP to recover the
+   * leaf's representative. The leaf reps can, so the quotient-edge count is correct for every cut.
+   */
+  edgeSrcLeaf: Uint32Array;
+  /** The TARGET endpoint LEAF rep of each indexed edge (aligned with {@link originalEdgeOrdinals}). */
+  edgeDstLeaf: Uint32Array;
+  /**
+   * Incidence CSR keyed by REP: `incidentEntries[incidentOffsets[r] .. incidentOffsets[r+1])` are
+   * the indexed-edge entry indices (into {@link edgeSrcLeaf}/{@link edgeDstLeaf}) whose lowest-
+   * relevant rep PAIR has `r` as one of its two reps. Each indexed edge is registered under BOTH
+   * pair-reps. This lets the solver enumerate the edges that CHANGE when a proxy refines — local
+   * to the refined region (the parent's own pairs + its direct children's pairs + its ancestor-
+   * chain pairs), without scanning all indexed edges — and compute the true marginal quotient Δ.
+   */
+  incidentOffsets: Uint32Array;
+  /** indexed-edge entry indices grouped by incident rep (see {@link incidentOffsets}). */
+  incidentEntries: Uint32Array;
   /** rep count the boundary CSR is sized to (== hierarchy.repCount). */
   repCount: number;
   /** distinct lowest-relevant rep pairs (== rangeOffsets.length - 1). */
@@ -176,8 +198,12 @@ export function buildRepresentationEdgeIndex(
   // weight (OUT side); the IN side is the transpose. Ranges keyed by the sorted pair.
   const outAgg = new Map<string, { from: number; to: number; kind: number; count: number }>();
   const inAgg = new Map<string, { to: number; from: number; count: number }>();
-  // sorted "min|max" pair key → the original edge ordinals crossing that boundary.
-  const rangeByPair = new Map<string, { min: number; max: number; ordinals: number[] }>();
+  // sorted "min|max" pair key → the original edge ordinals crossing that boundary, each carrying
+  // its two ENDPOINT LEAF REPS (so a finer cut can resolve the endpoints' representatives).
+  const rangeByPair = new Map<
+    string,
+    { min: number; max: number; ordinals: number[]; srcLeaf: number[]; dstLeaf: number[] }
+  >();
 
   const w = (e: EdgeIndexInput) => e.weight ?? 1;
 
@@ -218,8 +244,13 @@ export function buildRepresentationEdgeIndex(
     const max = a < b ? b : a;
     const rk = `${min}|${max}`;
     const r = rangeByPair.get(rk);
-    if (r) r.ordinals.push(i);
-    else rangeByPair.set(rk, { min, max, ordinals: [i] });
+    if (r) {
+      r.ordinals.push(i);
+      r.srcLeaf.push(lu);
+      r.dstLeaf.push(lv);
+    } else {
+      rangeByPair.set(rk, { min, max, ordinals: [i], srcLeaf: [lu], dstLeaf: [lv] });
+    }
   }
 
   // ── Materialize the OUT boundary CSR (sorted by from, then to, then kind) ──────
@@ -272,12 +303,45 @@ export function buildRepresentationEdgeIndex(
   }
   rangeOffsets[pairCount] = total;
   const originalEdgeOrdinals = new Uint32Array(total);
+  const edgeSrcLeaf = new Uint32Array(total);
+  const edgeDstLeaf = new Uint32Array(total);
+  // Per-entry pair index (which pair each indexed-edge entry belongs to) — drives the incidence CSR.
+  const entryPair = new Uint32Array(total);
   {
     let at = 0;
-    for (const p of pairs) {
-      // Keep each range in ascending original-ordinal order (deterministic round-trip).
-      p.ordinals.sort((x, y) => x - y);
-      for (const ord of p.ordinals) originalEdgeOrdinals[at++] = ord;
+    for (let k = 0; k < pairCount; k++) {
+      const p = pairs[k];
+      // Keep each range in ascending original-ordinal order (deterministic round-trip). Sort the
+      // ordinals AND their parallel endpoint-leaf arrays together via a permutation so the three
+      // columns stay aligned (a per-array sort would desync the leaves from their ordinals).
+      const order = p.ordinals.map((_, idx) => idx).sort((x, y) => p.ordinals[x] - p.ordinals[y]);
+      for (const oi of order) {
+        originalEdgeOrdinals[at] = p.ordinals[oi];
+        edgeSrcLeaf[at] = p.srcLeaf[oi];
+        edgeDstLeaf[at] = p.dstLeaf[oi];
+        entryPair[at] = k;
+        at++;
+      }
+    }
+  }
+
+  // ── Materialize the incidence CSR (each entry registered under BOTH its pair-reps) ──
+  const incidentOffsets = new Uint32Array(repCount + 1);
+  for (let i = 0; i < total; i++) {
+    const k = entryPair[i];
+    incidentOffsets[pairReps[2 * k] + 1]++;
+    incidentOffsets[pairReps[2 * k + 1] + 1]++;
+  }
+  for (let r = 0; r < repCount; r++) incidentOffsets[r + 1] += incidentOffsets[r];
+  const incidentEntries = new Uint32Array(total * 2);
+  {
+    const cursor = incidentOffsets.slice(0, repCount);
+    for (let i = 0; i < total; i++) {
+      const k = entryPair[i];
+      const a = pairReps[2 * k];
+      const b = pairReps[2 * k + 1];
+      incidentEntries[cursor[a]++] = i;
+      incidentEntries[cursor[b]++] = i;
     }
   }
 
@@ -292,6 +356,10 @@ export function buildRepresentationEdgeIndex(
     rangeOffsets,
     pairReps,
     originalEdgeOrdinals,
+    edgeSrcLeaf,
+    edgeDstLeaf,
+    incidentOffsets,
+    incidentEntries,
     repCount,
     pairCount,
   };

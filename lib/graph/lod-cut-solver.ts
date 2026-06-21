@@ -16,6 +16,7 @@
 
 import type { RepresentationColumns, RepresentationHierarchy } from "./representation";
 import { isRepAncestor } from "./representation";
+import type { RepresentationEdgeIndex } from "./representation-edge-index";
 
 /**
  * The authoritative camera-driven LOD result: a valid antichain plus its aggregated
@@ -386,6 +387,18 @@ export interface SolveDiagnostics {
 export interface SolveGate {
   canRefine?: (rep: number) => boolean;
   diagnostics?: SolveDiagnostics;
+  /**
+   * The persistent cut-aware edge index (design B2 + impl note (a)). When supplied, the
+   * solver's edge gate prices a `parent → children` refinement by its ACTUAL marginal delta
+   * in the active quotient graph — the cross-boundary edges that become newly-visible when
+   * the children are co-selected — rather than the inert additive per-rep `edgeCost` (which
+   * defaults to 0, making the edge budget effectively dead). `refineAtomic` consults this Δ
+   * so a node-cheap refinement that EXPLODES the visible edge count is rejected by `hardEdges`
+   * (auto refinement) / capped by it (forced opens). The delta is computed from the children's
+   * boundary summaries, so it stays LOCAL to the refined region (no scan of all ~1.3M edges).
+   * Omitted → the legacy additive per-rep edge cost stands in (the prior behavior).
+   */
+  edgeIndex?: RepresentationEdgeIndex;
 }
 
 /**
@@ -427,7 +440,7 @@ export function solveLodCut(
     constraints.arbitration,
   );
   for (const rep of orderedOpens) {
-    const limited = forceOpenRep(cols, selected, rep, cur, budget);
+    const limited = forceOpenRep(cols, selected, rep, cur, budget, gate?.edgeIndex);
     if (limited && gate?.diagnostics) gate.diagnostics.limited.push(limited);
   }
 
@@ -445,7 +458,13 @@ export function solveLodCut(
   // `cur` from the post-constraint `selected` so the budget pressure is accurate (§D/E).
   const live = sumCost(cols, [...selected]);
   cur.cards = live.cards;
-  cur.edges = live.edges;
+  // EDGE dimension (design B2): with a cut-aware edge index the running edge cost is the
+  // visible QUOTIENT-graph edge count of the CURRENT selection, not the additive per-rep sum
+  // (which is the inert default 0). A forceClosed/forceOpen pass can move the selection
+  // arbitrarily, so recompute the quotient edge count directly from `selected` here — it is
+  // O(boundary entries over the selected reps), still local to the active tiers. Without an
+  // index, fall back to the additive sum (the legacy behavior).
+  cur.edges = gate?.edgeIndex ? quotientEdgeCount(gate.edgeIndex, cols, selected) : live.edges;
   cur.labels = live.labels;
   cur.gpu = live.gpu;
   cur.layout = live.layout;
@@ -455,7 +474,14 @@ export function solveLodCut(
   //    cut within soft budget; otherwise it is skipped (the prior cut is unchanged).
   refineUnderBudget(h, selected, cam, budget, constraints, gate, cur);
 
-  return cutFromSelection(h, selected, bootstrap.generation);
+  const result = cutFromSelection(h, selected, bootstrap.generation);
+  // `cutFromSelection` sums the ADDITIVE per-rep edgeCost (the inert default 0). When a cut-aware
+  // edge index drove the solve, the meaningful figure is the visible QUOTIENT-graph edge count —
+  // which `cur.edges` has tracked exactly (seeded from the post-constraint selection, advanced by
+  // each refine's marginal Δedges). Surface it as the cut's `edgeCost` so the budget readouts /
+  // observability overlay report the real cut-dependent edge load, not 0 (design B2).
+  if (gate?.edgeIndex) result.edgeCost = cur.edges;
+  return result;
 }
 
 /**
@@ -472,6 +498,7 @@ function forceOpenRep(
   rep: number,
   cur: CostVec,
   budget: LodBudget,
+  edgeIndex: RepresentationEdgeIndex | undefined,
 ): LimitedDetail | null {
   if (cols.firstChildByRep[rep] === -1) return null; // a leaf can't be opened further
   let guard = cols.parentByRep.length + 1;
@@ -488,11 +515,11 @@ function forceOpenRep(
     // can't be refined safely, STOP and surface "Detail limited": retain the nearest legal
     // proxy (`covering`) and name the finite ceiling that blocked the descent — rather than
     // expanding to the whole graph (design "Finite budget model" + "forced-open arbitration").
-    if (!refineAtomic(cols, selected, covering, budget, "hard", cur)) {
+    if (!refineAtomic(cols, selected, covering, budget, "hard", cur, edgeIndex)) {
       return {
         requestedRep: rep,
         resolvedRep: covering,
-        limitingBudget: limitingBudgetOf(cols, covering, cur, budget),
+        limitingBudget: limitingBudgetOf(cols, selected, covering, cur, budget, edgeIndex),
       };
     }
     // Loop: after refining, a child may again cover rep — keep descending until rep is
@@ -510,14 +537,24 @@ function forceOpenRep(
  */
 function limitingBudgetOf(
   cols: RepresentationColumns,
+  selected: ReadonlySet<number>,
   rep: number,
   cur: CostVec,
   budget: LodBudget,
+  edgeIndex: RepresentationEdgeIndex | undefined,
 ): LimitedDetail["limitingBudget"] {
   const delta = marginalRefineDelta(cols, rep);
+  // The EDGE dimension's delta is the cut-aware quotient-graph marginal when an index is
+  // present (design B2), NOT the additive per-rep edgeCost — so an open blocked by an edge
+  // explosion is correctly attributed to the `edges` budget. `marginalRefineDelta` carries
+  // the additive edge delta only; recompute the edge delta here from the index (against the
+  // live cut, since the marginal quotient Δ is cut-dependent).
+  const edgeDelta = edgeIndex
+    ? marginalQuotientEdgeDelta(edgeIndex, cols, selected, rep)
+    : delta.edges;
   if (cur.cards + delta.cards > budget.hardCards) return "cards";
   if (cur.layout + delta.layout > budget.hardLayoutCost) return "layout";
-  if (cur.edges + delta.edges > budget.hardEdges) return "edges";
+  if (cur.edges + edgeDelta > budget.hardEdges) return "edges";
   if (cur.labels + delta.labels > budget.hardLabels) return "labels";
   if (cur.gpu + delta.gpu > budget.maxGpuBytes) return "gpu";
   return "cards"; // defensive: some ceiling blocked it; cards is the user-visible default
@@ -585,7 +622,7 @@ function refineUnderBudget(
       if (blocked.has(r)) continue; // already rejected this solve → don't reconsider
       if (isForceClosedHere(cols, constraints, r)) continue; // closed at/above r → frozen
       if (canRefine && !canRefine(r)) continue; // screen-space / legibility gate
-      const p = refinePriority(cols, cam, r, remaining);
+      const p = refinePriority(cols, cam, selected, r, remaining, gate?.edgeIndex);
       if (p > bestPriority) {
         bestPriority = p;
         best = r;
@@ -595,7 +632,7 @@ function refineUnderBudget(
     // Refine the best within the SOFT budget. If it doesn't fit, BLOCK it and continue:
     // a smaller candidate may still fit the remaining budget. Stopping here would strand
     // substantial budget behind a single oversized proxy.
-    if (!refineAtomic(cols, selected, best, budget, "soft", cur)) {
+    if (!refineAtomic(cols, selected, best, budget, "soft", cur, gate?.edgeIndex)) {
       blocked.add(best);
       continue;
     }
@@ -627,6 +664,7 @@ function refineAtomic(
   budget: LodBudget,
   ceiling: "soft" | "hard",
   cur: CostVec,
+  edgeIndex: RepresentationEdgeIndex | undefined,
 ): boolean {
   if (cols.firstChildByRep[rep] === -1) return false;
   if (!selected.has(rep)) return false;
@@ -648,6 +686,15 @@ function refineAtomic(
   delta.edges -= cols.edgeCost[rep];
   delta.labels -= cols.labelCost[rep];
   delta.gpu -= cols.gpuByteCost[rep];
+
+  // EDGE budget (design B2): when a cut-aware edge index is present, the edge delta is the
+  // ACTUAL marginal change in the active quotient graph — the cross-boundary edges among `rep`'s
+  // children that become newly-visible once both children are co-selected (two siblings that
+  // shared one aggregated edge under the parent become two distinct quotient edges when opened).
+  // This REPLACES the inert additive per-rep `edgeCost` (default 0): a node-cheap refine that
+  // explodes boundary edges is now charged its real Δedges and rejected by the ceiling. The
+  // delta reads only the children's boundary summaries → local to the refined region.
+  if (edgeIndex) delta.edges = marginalQuotientEdgeDelta(edgeIndex, cols, selected, rep);
 
   const next: CostVec = {
     cards: cur.cards + delta.cards,
@@ -704,8 +751,10 @@ function withinCeiling(cost: CostVec, budget: LodBudget, ceiling: "soft" | "hard
 function refinePriority(
   cols: RepresentationColumns,
   cam: CameraState,
+  selected: ReadonlySet<number>,
   rep: number,
   remaining: CostVec,
+  edgeIndex: RepresentationEdgeIndex | undefined,
 ): number {
   const EPSILON = 1e-6;
   // deltaError ≈ the error this proxy hides (resolved by refining it). geometricError is
@@ -718,6 +767,10 @@ function refinePriority(
   // marginal delta separates them: refining a 2000-child proxy adds ~2000 cards, a 2-child
   // proxy adds ~2.
   const delta = marginalRefineDelta(cols, rep);
+  // The EDGE dim of the normalized cost reads the cut-aware quotient delta (design B2) when an
+  // index is present — so a refine that explodes cross-child edges is deprioritized exactly as
+  // the edge budget fills, matching what refineAtomic will charge (priority + charge agree).
+  if (edgeIndex) delta.edges = marginalQuotientEdgeDelta(edgeIndex, cols, selected, rep);
   const normCost = normalizedCost(delta, remaining);
   const visibility = visibilityWeight(cols, cam, rep);
   return (deltaError * visibility) / Math.max(EPSILON, normCost);
@@ -749,6 +802,159 @@ function marginalRefineDelta(cols: RepresentationColumns, rep: number): CostVec 
   // Same delta refineAtomic commits — cards (childCount − 1) and layout (Σ child − parent)
   // are distinct dimensions (design "Finite budget model").
   return { cards, layout, edges, labels, gpu };
+}
+
+/**
+ * The TRUE marginal QUOTIENT-graph edge delta of refining `parent` (currently the selected
+ * representative) into its direct children (design B2 "Marginal edge delta"):
+ * `Δedges = edgesAfter − edgesBefore`, evaluated against the LIVE `selected` cut and computed
+ * LOCALLY from the edge index — no scan of all edges.
+ *
+ * The earlier "distinct cross-child boundary pairs" formula was WRONG: it only counted edges
+ * INTERNAL to `parent` that cross between two direct children, and it dismissed the external-split
+ * term as a corner case. In fact that term is dominant — an edge from a node under `parent` to an
+ * EXTERNAL co-selected rep `X` is represented `{parent, X}` BEFORE the refine and `{childOf(parent),
+ * X}` AFTER, and several children each connecting to `X` yield several distinct new quotient edges.
+ * Across a multi-tier refinement the boundary-pair sum diverged badly from the real quotient count
+ * (e.g. a 64-leaf clique under intermediate tiers: 993 summed vs 2016 actual), so a cross-subtree
+ * explosion slipped straight past `hardEdges` — defeating B2's whole purpose.
+ *
+ * CORRECT + LOCAL. Refining `parent` changes the representative ONLY of nodes under `parent` (from
+ * `parent` to the appropriate direct child). So the only quotient edges that change are those with
+ * AT LEAST ONE endpoint under `parent` — and every such indexed edge is registered in the index's
+ * incidence CSR under `parent`, under one of `parent`'s direct children (internal cross-child
+ * edges), or under an ANCESTOR of `parent` (edges whose lowest-relevant pair sits above `parent`).
+ * We gather exactly those candidate edges (bounded by `parent`'s fan-out + ancestor depth, NOT all
+ * edges), count their DISTINCT representative pairs BEFORE (parent-side endpoint → `parent`) and
+ * AFTER (parent-side endpoint → its direct child), and return after − before. Pairs touching the
+ * changed region are disjoint from every unaffected edge's pair, so this local Δ equals the exact
+ * global quotient delta.
+ */
+function marginalQuotientEdgeDelta(
+  index: RepresentationEdgeIndex,
+  cols: RepresentationColumns,
+  selected: ReadonlySet<number>,
+  parent: number,
+): number {
+  const { incidentOffsets, incidentEntries, edgeSrcLeaf, edgeDstLeaf } = index;
+  if (parent + 1 >= incidentOffsets.length) return 0; // stale index vs hierarchy — defensive
+
+  // Gather the candidate reps whose incidence slices hold every edge that can change: `parent`
+  // itself, each direct child (internal cross-child edges), and the ancestor chain (external
+  // edges whose lowest-relevant pair sits above `parent`). De-duped so an edge entry registered
+  // under two candidate reps is visited once via the `seenEntry` guard below.
+  const candidateReps: number[] = [parent];
+  for (let c = cols.firstChildByRep[parent]; c !== -1; c = cols.nextSiblingByRep[c]) {
+    candidateReps.push(c);
+  }
+  {
+    let anc = cols.parentByRep[parent];
+    let guard = cols.parentByRep.length + 1;
+    while (anc >= 0 && guard-- > 0) {
+      candidateReps.push(anc);
+      anc = cols.parentByRep[anc];
+    }
+  }
+
+  // The direct child of `parent` that represents a leaf endpoint AFTER the refine (the leaf's
+  // ancestor-or-self whose parent is `parent`), or -1 if the leaf is not under `parent`.
+  const childUnderParent = (leaf: number): number => {
+    let cur = leaf;
+    let guard = cols.parentByRep.length + 1;
+    while (cur >= 0 && guard-- > 0) {
+      if (cols.parentByRep[cur] === parent) return cur;
+      cur = cols.parentByRep[cur];
+    }
+    return -1;
+  };
+
+  const before = new Set<number>();
+  const after = new Set<number>();
+  const seenEntry = new Set<number>();
+  for (const r of candidateReps) {
+    if (r + 1 >= incidentOffsets.length) continue;
+    const start = incidentOffsets[r];
+    const end = incidentOffsets[r + 1];
+    for (let i = start; i < end; i++) {
+      const entry = incidentEntries[i];
+      if (seenEntry.has(entry)) continue;
+      seenEntry.add(entry);
+      const su = edgeSrcLeaf[entry];
+      const sv = edgeDstLeaf[entry];
+      // BEFORE: representatives under the current cut (parent stands in for nodes under it).
+      const bu = selectedRepOf(cols, selected, su);
+      const bv = selectedRepOf(cols, selected, sv);
+      // AFTER: a parent-side endpoint moves from `parent` to its direct child; the other side
+      // (external, or the other direct child) keeps its current representative.
+      const au = bu === parent ? childUnderParent(su) : bu;
+      const av = bv === parent ? childUnderParent(sv) : bv;
+      addPairKey(before, bu, bv);
+      addPairKey(after, au, av);
+    }
+  }
+  return after.size - before.size;
+}
+
+/** Add the canonical unordered (min,max) rep-pair key to `set`, skipping unrepresented/self pairs. */
+function addPairKey(set: Set<number>, ra: number, rb: number): void {
+  if (ra === -1 || rb === -1 || ra === rb) return;
+  const lo = ra < rb ? ra : rb;
+  const hi = ra < rb ? rb : ra;
+  // Rep ids are < 2^26 at kernel scale, so a 26-bit shift packs the pair collision-free.
+  set.add(lo * 0x4000000 + hi);
+}
+
+/**
+ * The total visible QUOTIENT-graph edge count of the current `selected` antichain (design B2).
+ * Used to seed the running edge cost (and to re-seed it after a forceClosed/forceOpen pass moves
+ * the selection arbitrarily). A quotient edge exists between two selected reps when some original
+ * edge's two endpoints are represented by two DISTINCT selected reps under the cut.
+ *
+ * Resolved from each indexed edge's two ENDPOINT LEAF reps ({@link RepresentationEdgeIndex.edgeSrcLeaf}/
+ * {@link RepresentationEdgeIndex.edgeDstLeaf}) — NOT the stored {@link RepresentationEdgeIndex.pairReps},
+ * which sit at the lowest-relevant-pair TIER. The earlier pairReps-based count walked those tier
+ * reps UPWARD and so SILENTLY UNDERCOUNTED every cut finer than the pair tier (e.g. a clique under
+ * intermediate tiers: the pair reps are intermediate proxies, never selected once the cut reaches
+ * leaves, so they resolved to -1 and were dropped). Walking from the LEAF endpoints is correct for
+ * ANY cut. O(indexedEdges · depth) — bounded by the indexed (post-filter) edges, not the raw graph;
+ * for the bootstrap (single super-root) cut this is 0.
+ */
+function quotientEdgeCount(
+  index: RepresentationEdgeIndex,
+  cols: RepresentationColumns,
+  selected: ReadonlySet<number>,
+): number {
+  const seen = new Set<number>();
+  const { edgeSrcLeaf, edgeDstLeaf } = index;
+  const m = edgeSrcLeaf.length;
+  let count = 0;
+  for (let i = 0; i < m; i++) {
+    const ra = selectedRepOf(cols, selected, edgeSrcLeaf[i]);
+    const rb = selectedRepOf(cols, selected, edgeDstLeaf[i]);
+    if (ra === -1 || rb === -1 || ra === rb) continue; // unrepresented, or folded into one rep
+    const lo = ra < rb ? ra : rb;
+    const hi = ra < rb ? rb : ra;
+    const key = lo * 0x4000000 + hi;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    count += 1;
+  }
+  return count;
+}
+
+/** The selected ancestor-or-self of `rep` (the rep that represents it under the cut), or -1. */
+function selectedRepOf(
+  cols: RepresentationColumns,
+  selected: ReadonlySet<number>,
+  rep: number,
+): number {
+  let cur = rep;
+  let guard = cols.parentByRep.length + 1;
+  while (cur >= 0 && guard-- > 0) {
+    if (selected.has(cur)) return cur;
+    cur = cols.parentByRep[cur];
+  }
+  return -1;
 }
 
 /** max over dims of delta[d] / max(1, remaining[d]) (Appendix A §D). */
