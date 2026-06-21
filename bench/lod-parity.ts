@@ -1,20 +1,21 @@
-// LOD parity / cutover bench (spec P4 + the CUTOVER CONDITION). The single human-facing
-// report that must read clean BEFORE C1a (`computeGroupCut` / `lod-cut.ts` / `group-cut.ts`)
-// is deleted. It compares the REPRESENTATION CUT (`buildSceneRepresentationCut` — the new
-// authority) against the C1a oracle (`computeGroupCut` — the path being retired) on real
-// fixture-shaped synthetic graphs, at EQUAL node budget, across:
+// LOD cutover / stress bench (spec P4 + the CUTOVER CONDITION). The single human-facing
+// report for the REPRESENTATION CUT (`buildSceneRepresentationCut` — the sole LOD authority).
+// The C1a oracle (`computeGroupCut` / `lod-cut.ts` / `group-cut.ts`) has been DELETED (spec P5)
+// now that the cutover was PROVEN, so this bench no longer compares against it — it asserts the
+// rep cut's cutover + stress metrics in ABSOLUTE terms on real fixture-shaped synthetic graphs,
+// at the production node budget, across:
 //
 //   • ALL grouping modes:   Directory · Community · Package · facet · None
 //   • FILTERED graphs:      a post-filter mask (every other node hidden)
 //   • BOTH camera motions:  zoom-out → zoom-in (refine) AND a pan (same zoom, new region)
 //
-// It MEASURES + ASSERTS the eight P4 parity metrics and the cutover condition, then
-// console.table()s a readable comparison so a human can confirm parity:
+// It MEASURES + ASSERTS the eight P4 metrics and the cutover condition, then console.table()s a
+// readable report so a human can confirm the cut behaves:
 //
-//   1. committed visible cards         rep-cut equal-or-BETTER (≥) than C1a at equal budget
-//   2. edge count / aggregation        finite + sane (≤ hardEdges, within an order of C1a)
+//   1. committed visible cards         finite + ≤ hardCards, a valid antichain (real aggregation)
+//   2. edge count / aggregation        finite + sane (≤ hardEdges)
 //   3. cut-solve ms                    the antichain solve
-//   4. scene-build ms                  proxy materialization (rep cut) vs C1a edge aggregate
+//   4. scene-build ms                  proxy materialization (the rep cut's downstream work)
 //   5. layout ms                       (stable proxy bounds — engine-independent, built once)
 //   6. # camera-induced GLOBAL layout moves   must be ~0 for the rep cut (persistent runtime)
 //   7. intent correctness              a forced-open group descends; the cut stays valid
@@ -27,7 +28,7 @@
 // This is the standalone runnable harness (a `bun run` entry); the SAME assertions are
 // gated in `lib/graph/lod-parity-bench.test.ts` so CI proves the cutover, not just the eye.
 //
-//   bun run bench:parity      # measure + print the comparison table + cutover verdict
+//   bun run bench:parity      # measure + print the report + cutover verdict
 //
 // Numbers are deterministic (fixed synthetic graphs, no scanning). Writes
 // bench/results/lod-parity.json.
@@ -49,7 +50,6 @@ import {
   LOD_BUDGET,
   type RepLodResult,
 } from "../lib/graph/lod-representation-cut";
-import { computeGroupCut, groupLodSelection } from "../lib/graph/group-cut";
 import { bootstrapCut } from "../lib/graph/lod-cut-solver";
 import {
   collectStressMetrics,
@@ -276,66 +276,6 @@ function maxFanout(r: RepLodResult): number {
   return max;
 }
 
-/** The C1a oracle's committed visible-card count at equal budget (open members + collapsed cards). */
-function c1aVisibleCards(
-  snap: ReturnType<typeof buildGroupingSnapshot>,
-  graph: GraphModel,
-  nodeIds: readonly string[],
-  cam: Camera,
-): number {
-  const collapsed = computeGroupCut(snap, boxesFor(snap), cam, vp, OPTS, nodeIds);
-  // Visible cards = collapsed aggregate cards + the nodes in OPEN groups (rendered as themselves).
-  const open = groupLodSelection(collapsed, snap);
-  let openNodes = 0;
-  for (let i = 0; i < snap.directGroupByNode.length; i++) {
-    const g = snap.directGroupByNode[i];
-    if (g < 0) {
-      openNodes++; // ungrouped node renders as itself
-      continue;
-    }
-    if (open.has(snap.groupIds[g])) openNodes++;
-  }
-  return collapsed.size + openNodes;
-}
-
-/** The quotient edge count of a collapsed C1a set (for the edge-count sanity comparison). */
-function c1aEdgeCount(
-  snap: ReturnType<typeof buildGroupingSnapshot>,
-  graph: GraphModel,
-  nodeIds: readonly string[],
-  cam: Camera,
-): number {
-  const collapsed = computeGroupCut(snap, boxesFor(snap), cam, vp, OPTS, nodeIds);
-  const open = groupLodSelection(collapsed, snap);
-  const ordOf = new Map<string, number>();
-  nodeIds.forEach((id, i) => ordOf.set(id, i));
-  // scene id of a node: its own id when its group is open / ungrouped, else its nearest
-  // collapsed ancestor group's box key.
-  const sceneIdOf = (ord: number): string => {
-    const g = snap.directGroupByNode[ord];
-    if (g < 0 || open.has(snap.groupIds[g])) return nodeIds[ord];
-    // walk up to the collapsed ancestor box key.
-    let cur = g;
-    let guard = snap.groupIds.length + 1;
-    while (cur !== -1 && guard-- > 0) {
-      if (collapsed.has(snap.boxKeyByGroup[cur])) return snap.boxKeyByGroup[cur];
-      cur = snap.parentByGroup[cur];
-    }
-    return snap.boxKeyByGroup[g];
-  };
-  const pairs = new Set<string>();
-  for (const e of graph.edges) {
-    const s = ordOf.get(e.source);
-    const t = ordOf.get(e.target);
-    if (s === undefined || t === undefined) continue;
-    const a = sceneIdOf(s);
-    const b = sceneIdOf(t);
-    if (a === b) continue;
-    pairs.add(a < b ? `${a}${b}` : `${b}${a}`);
-  }
-  return pairs.size;
-}
-
 export interface ParityRow {
   mode: Mode;
   filtered: boolean;
@@ -344,22 +284,19 @@ export interface ParityRow {
   maxFanout: number;
   bootstrapCards: number; // coarsest-cut card cost (must be ≤ hardCards — feasible bootstrap)
   hardCards: number;
-  // committed visible cards (metric 1)
+  // committed visible cards (metric 1) — absolute: finite, ≤ hardCards, a valid antichain
   repCardsZoomIn: number;
-  c1aCardsZoomIn: number;
-  cardsParity: "≤(better)" | "worse";
+  cardsWithinBudget: "✓(bounded)" | "over"; // rep cards ≤ hardCards AND a valid antichain
   // edges (metric 2)
   repEdges: number;
-  c1aEdges: number;
   edgesFinite: boolean;
   // timings (metrics 3–5), ms
   cutSolveMs: number;
   sceneBuildMs: number;
   layoutMs: number;
-  c1aCutMs: number;
   // global layout moves (metric 6)
   repGlobalMoves: number;
-  c1aRescans: number;
+  cameraMoveCount: number; // camera moves the persistent runtime absorbed without a rebuild
   // intent correctness (metric 7)
   intentDescends: boolean;
   intentValid: boolean;
@@ -485,14 +422,6 @@ export async function benchMode(
   // time a full runtime rebuild (the material-change cost) as the layout-prep cost; a camera
   // recut does NOT pay this (that is the whole point of metric 6).
   const layout = await timeIt(() => run(camIn), 3);
-
-  // ── C1a oracle at EQUAL budget ──
-  const c1aCardsZoomIn = c1aVisibleCards(snap, graph, nodeIds, camIn);
-  const c1aEdges = c1aEdgeCount(snap, graph, nodeIds, camIn);
-  const c1aCut = await timeIt(
-    () => computeGroupCut(snap, boxesFor(snap), camIn, vp, OPTS, nodeIds),
-    5,
-  );
 
   // ── rep-cut committed visible cards + edges (metrics 1, 2) ──
   const repCardsZoomIn = first.cut.selectedRepresentations.length;
@@ -772,22 +701,18 @@ export async function benchMode(
     bootstrapCards,
     hardCards: first.budget.hardCards,
     repCardsZoomIn,
-    c1aCardsZoomIn,
-    // "Equal-or-better" for an LOD cut = renders FEWER-OR-EQUAL cards at equal budget while
-    // staying a valid antichain (more real aggregation, not more sprawl). C1a does NOT fold
-    // Package/facet nodes into cards (spec reality-check #1), so it sprawls to one card per
-    // node there; the rep cut aggregates them — strictly better. Parity holds iff the rep
-    // cut is ≤ C1a AND valid.
-    cardsParity: repCardsZoomIn <= c1aCardsZoomIn && validAntichainOk ? "≤(better)" : "worse",
+    // The C1a oracle is gone (spec P5): the cut's quality is now asserted in ABSOLUTE terms —
+    // the committed card count is BOUNDED (≤ hardCards) AND the cut is a valid antichain (every
+    // visible node represented exactly once, real aggregation rather than sprawl).
+    cardsWithinBudget:
+      repCardsZoomIn <= first.budget.hardCards && validAntichainOk ? "✓(bounded)" : "over",
     repEdges,
-    c1aEdges,
     edgesFinite,
     cutSolveMs: cutSolve.median,
     sceneBuildMs: sceneBuild.median,
     layoutMs: layout.median,
-    c1aCutMs: c1aCut.median,
     repGlobalMoves,
-    c1aRescans: cameraMoveCount, // C1a rebuilds its groupTree (O(N)) on EACH camera move
+    cameraMoveCount, // camera moves the persistent runtime absorbed without an O(N) rebuild
     intentDescends,
     intentValid,
     validAntichain: validAntichainOk,
@@ -841,28 +766,27 @@ function rejectedSummary(h: RejectedOpensByCategory): string {
   return `${h.total} (${parts.join(" ")})`;
 }
 
-/** console.table() the readable comparison + cutover tables + the one-line verdict. */
+/** console.table() the readable cut report + cutover tables + the one-line verdict. */
 export function printParityReport(rows: ParityRow[]): void {
-  // ── headline: committed visible cards + edges + timings + cutover, per mode × filter ──
-  console.log("\n=== LOD PARITY: representation cut vs C1a oracle (EQUAL node budget) ===\n");
+  // ── headline: committed visible cards + edges + timings, per mode × filter ──
+  console.log("\n=== LOD REPRESENTATION CUT — committed scene at the production budget ===\n");
   console.table(
     rows.map((r) => ({
       mode: `${r.mode}${r.filtered ? " ·filt" : ""}`,
       nodes: r.nodes,
       reps: r.reps,
       "cards rep": r.repCardsZoomIn,
-      "cards C1a": r.c1aCardsZoomIn,
-      parity: r.cardsParity,
+      "≤ hard": `${r.repCardsZoomIn}≤${r.hardCards}`,
+      bounded: r.cardsWithinBudget,
       "edges rep": r.repEdges,
-      "edges C1a": r.c1aEdges,
       "solve ms": round(r.cutSolveMs),
       "scene ms": round(r.sceneBuildMs),
-      "C1a ms": round(r.c1aCutMs),
+      "layout ms": round(r.layoutMs),
     })),
   );
 
-  // ── the CUTOVER table: the conditions that must ALL hold before C1a deletion ──
-  console.log("\n=== CUTOVER CONDITION (must all be ✓ before deleting C1a) ===\n");
+  // ── the CUTOVER table: the conditions that must ALL hold (re-proven each run) ──
+  console.log("\n=== CUTOVER CONDITION (every cell must be ✓) ===\n");
   console.table(
     rows.map((r) => ({
       mode: `${r.mode}${r.filtered ? " ·filt" : ""}`,
@@ -898,10 +822,10 @@ export function printParityReport(rows: ParityRow[]): void {
   );
 
   const allCutover = rows.every((r) => r.cutover);
-  const allParity = rows.every((r) => r.cardsParity === "≤(better)");
+  const allBounded = rows.every((r) => r.cardsWithinBudget === "✓(bounded)");
   console.log(
     `\nVERDICT: cutover ${allCutover ? "✓ READY" : "✗ NOT READY"} · ` +
-      `card parity ${allParity ? "✓ rep ≤ C1a (equal-or-better) in every mode" : "✗ a mode regressed"} · ` +
+      `cards ${allBounded ? "✓ bounded (≤ hardCards) + valid antichain in every mode" : "✗ a mode exceeded budget"} · ` +
       `rep camera-induced global layout moves: ${rows.reduce((s, r) => s + r.repGlobalMoves, 0)} (target 0)\n`,
   );
 }

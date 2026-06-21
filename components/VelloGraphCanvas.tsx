@@ -37,9 +37,6 @@ import type { CollapseIntent, GroupId } from "@/lib/graph/collapse-model";
 import type { CompactGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
 import { buildGroupingSnapshot, NO_GROUP } from "@/lib/graph/grouping-snapshot";
 import { directoryGrouping, syntheticNoneGrouping } from "@/lib/graph/grouping";
-import { directoryLodSelection } from "@/lib/graph/lod-selection";
-import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
-import { computeGroupCut, groupCutEquals, groupLodSelection } from "@/lib/graph/group-cut";
 import {
   type RepLodResult,
   type RepresentationRuntime,
@@ -148,17 +145,17 @@ export interface GraphViewProps {
    */
   onCommunityOf?: (communityOf: Map<string, string> | null) => void;
   /**
-   * The active grouping mode's CUT snapshot (full, over the rendered graph). Directory
-   * keeps its dedicated DirNode cut (null here); every OTHER mode supplies a snapshot so
-   * the camera runs the mode-agnostic computeGroupCut. Null disables the generic cut.
+   * The active grouping mode's CUT snapshot (full, over the rendered graph). Directory uses
+   * the canvas-built directoryRepSnapshot (null here); every OTHER mode supplies a snapshot
+   * the representation cut runs over. Null leaves the rep cut inert for that mode.
    */
   groupingSnapshot?: CompactGroupingSnapshot | null;
   /**
-   * Phase C1b: when true (AND adaptiveLod is on AND a groupingSnapshot exists), the camera
-   * runs the REPRESENTATION cut — a budgeted valid antichain through the proxy hierarchy
-   * (Appendix A) — instead of the C1a collapse-shaped computeGroupCut. The result still
-   * flows through `onCut` as a GroupLodSelection, so the render path is unchanged. Gated
-   * (default off) so the C1a path stays the byte-identical fallback.
+   * When true (AND adaptiveLod is on AND a groupingSnapshot exists), the camera runs the
+   * REPRESENTATION cut — a budgeted valid antichain through the proxy hierarchy (Appendix A),
+   * the sole LOD authority now that C1a is retired (spec P5). The result flows through `onCut`
+   * as a GroupLodSelection, so the render path is unchanged. When off, the recut is inert (the
+   * bootstrap seed bounds the first frame meanwhile).
    */
   representationLod?: boolean;
   /**
@@ -612,13 +609,6 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     onCut?: (modeKey: string, selection: Set<GroupId>) => void;
     dirTree: DirNode;
     scene: Scene;
-    // The RAW collapsed cut this canvas last handed up (computeCut's bare-path frontier) —
-    // the cut-domain. Deliberately NOT the effective `collapsedClusters` prop, which is the
-    // COMPOSED set and carries redundant deeper entries under any collapsed non-leaf dir.
-    // Every cut-domain comparison (hysteresis prevCut, the no-op skip-guard, telemetry
-    // deltas) must use this, or it diverges from the pre-C0 raw-cut-vs-raw-cut semantics.
-    // Owned by the canvas: persists across renders, written only when a cut is produced.
-    rawCut: Set<string>;
     expanded: Set<string>;
     symbolCount: Map<string, number>;
     groupBy: GroupBy;
@@ -639,7 +629,6 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     onCut,
     dirTree,
     scene,
-    rawCut: new Set(),
     expanded,
     symbolCount,
     groupBy,
@@ -665,17 +654,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.graph = graph;
   lod.current.directoryRepSnapshot = directoryRepSnapshot;
   lod.current.visibleNodeIds = visibleNodeIds;
-  // On a grouping-mode switch, drop the raw cut: it holds the PREVIOUS mode's box keys
-  // (e.g. directory paths while now in Community), which live in a disjoint key domain.
-  // Carrying it over makes the first post-switch cut read every group as "was open" and
-  // apply the relaxed hysteresis threshold to all of them. Reset so hysteresis compares
-  // within the active mode's key domain (the fit effect resets lodBand but not rawCut).
-  // Also drop the persistent representation runtime so the new mode rebuilds its hierarchy
-  // and starts a fresh generation chain. (The runtime's material signature includes the
-  // mode key, so it would rebuild anyway; clearing the ref also frees the old eviction
-  // controller, whose tracked rep ids belong to the OLD mode's disjoint id domain.)
+  // On a grouping-mode switch, drop the persistent representation runtime so the new mode
+  // rebuilds its hierarchy and starts a fresh generation chain. (The runtime's material
+  // signature includes the mode key, so it would rebuild anyway; clearing the ref also frees
+  // the old eviction controller, whose tracked rep ids belong to the OLD mode's disjoint id
+  // domain.)
   if (lod.current.groupBy !== groupBy) {
-    lod.current.rawCut = new Set();
     repRuntimeRef.current = undefined;
     proxySessionRef.current = null; // the rep id domain moved — start a fresh fold session
     // The generation chain + the in-flight async requests belong to the OLD mode's rep id
@@ -919,7 +903,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     // `trigger` separates the two camera gestures (design Gap 8 — "Eviction LRU ignores
     // panning"; "zoom → band/deadband refine; pan → visibility/LRU only"):
     //   • "wheel" — a ZOOM gesture: may REFINE to a higher band (advances lodBand). Monotonic
-    //     (never re-collapses on zoom-out); the C1a fallback paths below also gate on this.
+    //     (never re-collapses on zoom-out).
     //   • "pan"  — a DRAG gesture: refreshes on-screen VISIBILITY + the eviction LRU at the
     //     SAME band WITHOUT advancing lodBand (no forced deeper refinement). Before this, the
     //     recut fired only from the wheel handler and the band guard rejected any non-zoom
@@ -935,20 +919,20 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       // alone. (Generalized from the old groupBy!=="directory" + zero-cluster guards: the
       // cut now runs in EVERY mode via boxKey, fixing the bug where changing the group mode
       // disabled LOD.)
-      // Box geometry the cut measures from. Once the rep cut is authoritative, the rendered scene
+      // Box geometry the cut measures from. The rep cut is authoritative, so the rendered scene
       // is the materializer's proxy cards — a collapsed group is a generic `«proxy»` card, NOT an
       // `isAggregateId` directory card — so read collapsed-group bounds via `proxyBoxes` (rep →
       // group → box key through the prior cut's hierarchy). Open groups still come from
-      // scene.clusters in both. Before the first committed cut (no hierarchy yet) the C1a base
+      // scene.clusters. Before the first committed cut (no hierarchy yet) the bootstrap-seeded base
       // structure is what's rendered, so the directory-aggregate `sceneBoxes` is correct.
       const prevHier = lastRep.current?.hierarchy;
       const boxes =
         l.representationLod && prevHier ? proxyBoxes(l.scene, prevHier) : sceneBoxes(l.scene);
-      // The C1a fallback cuts measure ONLY from live boxes, so with none they would wrongly collapse
-      // the whole view — keep the early-return for them. The representation path no longer depends
-      // on live boxes: it carries STABLE, layout-independent proxy bounds (design Gap 3 / P2), so it
-      // OPERATES under box-less engines (Grid / classic / None) where `boxes.size === 0`. So only
-      // bail here when the representation path will NOT run (representationLod off or no snapshot).
+      // The rep cut does not depend on live boxes: it carries STABLE, layout-independent proxy
+      // bounds (design Gap 3 / P2), so it OPERATES under box-less engines (Grid / classic / None)
+      // where `boxes.size === 0`. With the C1a fallback cuts retired (spec P5), there is no
+      // box-measuring cut left to protect, so the recut is simply inert when the rep cut will NOT
+      // run — bail here only in that case (representationLod off or no snapshot).
       const repSnap = l.groupingSnapshot ?? l.directoryRepSnapshot;
       const willRunRepCut = l.representationLod && !!repSnap;
       if (boxes.size === 0 && !willRunRepCut) return;
@@ -962,15 +946,10 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       // collapse-all; the solver still caps the open set at maxCards.
       const decision = decideRecut(trigger, band, lodBand.current);
       if (decision.skip) return;
-      const prevBand = lodBand.current;
       // Only a refine advances the band; a pan-end visibility recut leaves it untouched.
       if (decision.mode === "refine" && decision.nextRefinedBand !== undefined) {
         lodBand.current = decision.nextRefinedBand;
       }
-      // The C1a fallback cuts (computeCut / computeGroupCut) are zoom-refine ONLY — they have no
-      // eviction LRU to update on a pan. A pan-end recut therefore drives just the representation
-      // path; skip the legacy paths so a pan never re-runs a zoom-shaped cut.
-      const visibilityOnly = decision.mode === "visibility";
       const vp = { w: canvas.width, h: canvas.height };
       // An expanded file pulls its symbols into the layout too, so cost it as
       // 1 + symbols; collapsed/unexpanded files are a single node. Bounding the cut on
@@ -1128,100 +1107,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         return;
       }
 
-      // Below here are the C1a fallback cuts (representationLod off). They are zoom-refine
-      // ONLY — they carry no eviction LRU, so a pan-end recut has nothing to update in them.
-      // Stop here on a visibility-only (pan) recut so a pan never re-runs a zoom-shaped cut.
-      if (visibilityOnly) return;
-
-      // Non-directory modes: run the mode-agnostic cut over the active grouping snapshot,
-      // matching boxes by boxKey, and hand up the GroupLodSelection FOR that mode. (No
-      // telemetry trace path — that detailed per-dir trace is Directory-specific.) Skip
-      // when the raw cut is unchanged (cut-domain vs cut-domain), as the Directory path does.
-      if (l.groupBy !== "directory") {
-        const snap = l.groupingSnapshot;
-        if (!snap) return; // no snapshot (e.g. "none") → the cut is inert this mode
-        const next = computeGroupCut(
-          snap,
-          boxes,
-          c,
-          vp,
-          {
-            openPx: LOD_OPEN_PX,
-            maxCards: LOD_MAX_CARDS,
-            prevCut: l.rawCut,
-            nodeBudget: LOD_NODE_BUDGET,
-            nodeCost,
-          },
-          graph.nodes.map((n) => n.id),
-        );
-        if (!groupCutEquals(next, l.rawCut)) {
-          l.rawCut = next;
-          l.onCut(l.groupBy, groupLodSelection(next, snap));
-        }
-        return;
-      }
-
-      const cutOpts = {
-        openPx: LOD_OPEN_PX,
-        maxCards: LOD_MAX_CARDS,
-        // Hysteresis is a CUT-domain decision: compare against the raw cut we last
-        // produced, NOT the effective collapsedClusters prop. The effective set's redundant
-        // deeper entries (a dir listed under a collapsed ancestor) would flip wasOpen() to
-        // false and apply the full openPx threshold instead of the relaxed openPx*hysteresis.
-        prevCut: l.rawCut,
-        nodeBudget: LOD_NODE_BUDGET,
-        nodeCost,
-      };
-      let next: Set<string>;
-      // When telemetry is on, take the traced path and log everything about this cut
-      // (per-dir decisions, deltas, timings); otherwise the cheap one.
-      if (telemetry.isEnabled()) {
-        const t0 = performance.now();
-        const r = computeCutTraced(l.dirTree, boxes, c, vp, cutOpts);
-        const computeMs = performance.now() - t0;
-        next = r.cut;
-        // Compare cut-domain to cut-domain (raw vs raw). The effective collapsedClusters
-        // prop is a superset and can never equal the raw cut whenever a non-leaf dir is
-        // collapsed, which would mis-report `changed` and the opened/collapsed deltas.
-        const changed = !cutEquals(next, l.rawCut);
-        telemetry.event("lod", "cut", {
-          trigger: "zoom",
-          cam: { x: c.x, y: c.y, scale: c.scale },
-          band,
-          prevBand,
-          viewport: vp,
-          openPx: LOD_OPEN_PX,
-          maxCards: LOD_MAX_CARDS,
-          dirsEvaluated: r.dirsEvaluated,
-          dirsOnScreen: r.dirsOnScreen,
-          cutSize: next.size,
-          prevCutSize: l.rawCut.size,
-          cards: r.cards,
-          computeMs,
-          changed,
-          opened: [...l.rawCut].filter((p) => !next.has(p)), // collapsed → open
-          collapsed: [...next].filter((p) => !l.rawCut.has(p)), // open → collapsed
-          trace: r.trace,
-        });
-        telemetry.metric("lod.computeMs", computeMs);
-        telemetry.metric("lod.cutSize", next.size);
-        telemetry.metric("lod.cards", r.cards);
-        telemetry.count("lod.recomputes");
-        if (changed) telemetry.count("lod.cutChanges");
-      } else {
-        next = computeCut(l.dirTree, boxes, c, vp, cutOpts);
-      }
-      // The cut is still measured/decided exactly as before (a bare-path collapsed set);
-      // we only change what we HAND UP. Skip when the raw cut is unchanged from the one we
-      // last produced (cut-domain vs cut-domain — NOT against the effective collapsedClusters
-      // prop, which the raw cut would never equal once any non-leaf dir is collapsed). Then
-      // translate to the transitional DirectoryLodSelection (open directory group ids) so it
-      // updates only the selection layer — never intent. Reuse the already-memoized dirTree
-      // rather than rebuilding it from the raw node list on every cut.
-      if (!cutEquals(next, l.rawCut)) {
-        l.rawCut = next;
-        l.onCut("directory", directoryLodSelection(next, l.dirTree));
-      }
+      // The C1a fallback cuts (computeCut / computeGroupCut / directoryLodSelection) have been
+      // RETIRED (spec P5 — the representation cut is the sole LOD authority). When the rep cut
+      // does not run (representationLod off, or no snapshot yet), the recut is inert: there is no
+      // longer a legacy zoom-shaped cut to fall back to. The bootstrap seed (Explorer's
+      // budgetGroupCut → compose()) bounds the first frame meanwhile.
     };
     // Expose to the scene-ready effect so it can fire the first cut on a new scene (no gesture).
     recomputeCutRef.current = recomputeCut;
@@ -1484,12 +1374,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
 
   // INITIAL / refresh rep cut (design impl point 5). The mount-effect's recomputeCut fires only on
   // camera gestures, so without this the authoritative materializer path would never run until the
-  // user zooms/pans — the bootstrap C1a base scene would render indefinitely. When a fresh
+  // user zooms/pans — the bootstrap-seeded base scene would render indefinitely. When a fresh
   // layout-ready scene lands (a new graph / filter / grouping / the rep scene itself), fire one cut
   // so the committed cut is materialized into the production scene. The solver's committed-generation
   // guard makes this idempotent: re-running the SAME committed cut returns committed=false, so
   // folding the rep scene's own re-layout does NOT loop (no second setRepScene). Skipped while the
-  // rep cut is off (the C1a path renders directly) and until recomputeCut is installed.
+  // rep cut is off (the bootstrap-seeded scene renders directly) and until recomputeCut is installed.
   const lastCutScene = useRef<Scene | null>(null);
   useEffect(() => {
     if (!representationLod || !ready || !layoutReady) return;

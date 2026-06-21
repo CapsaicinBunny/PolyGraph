@@ -46,7 +46,7 @@ import {
   toDirectoryGroupIds,
 } from "@/lib/graph/grouping";
 import { buildGroupingSnapshot, type CompactGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
-import { budgetGroupCut, groupLodSelection } from "@/lib/graph/group-cut";
+import { budgetGroupCut, groupLodSelection } from "@/lib/graph/group-bootstrap";
 import { deriveGroupByOptions, facetKeyOfGroupBy } from "@/lib/graph/group-by-options";
 import { LOD_BUDGET, type RepLodResult } from "@/lib/graph/lod-representation-cut";
 import { type RepLodOverlayStats, summarizeRepLod } from "@/lib/graph/lod-observability";

@@ -1,15 +1,15 @@
-// CI gate for the P4 parity bench + the CUTOVER CONDITION (spec P4 + merge-gate 11 "Parity
+// CI gate for the P4 cutover bench + the CUTOVER CONDITION (spec P4 + merge-gate 11 "Parity
 // benchmarks pass on real repos" + merge-gate 12 "Real CI runs green"). The standalone
 // `bench/lod-parity.ts` is the human-facing report (`bun run bench:parity`); this file runs the
 // SAME bench (importing its exports, so the report and the gate can never diverge) and asserts
 // the eight P4 metrics + the cutover contract under `bun test`. It complements the synthetic
 // fast-path gate in `lod-parity-stress.test.ts`: that one proves the invariants on hand-built
-// inputs; THIS one proves the rep cut is equal-or-BETTER than the C1a oracle being retired, on
-// the bench's fixture-shaped graph, in every mode × {full, filtered} × {zoom, pan}.
+// inputs; THIS one proves the rep cut is BOUNDED + a valid antichain in every mode × {full,
+// filtered} × {zoom, pan} on the bench's fixture-shaped graph. The C1a oracle has been DELETED
+// (spec P5 — cutover PROVEN), so the cut's quality is asserted in absolute terms (≤ hardCards +
+// valid antichain), not relative to C1a.
 //
-// It also console.log()s the comparison table so the parity report is visible in the CI log —
-// satisfying the task's "console.log a readable comparison table so a human can confirm parity
-// before C1a deletion" requirement directly from the test run.
+// It also console.log()s the report table so the cut behavior is visible in the CI log.
 
 import { beforeAll, describe, expect, test } from "bun:test";
 import { MAX_FANOUT } from "./representation";
@@ -22,12 +22,12 @@ let rows: ParityRow[];
 
 beforeAll(async () => {
   rows = await runParityBench();
-  // Emit the readable comparison + cutover tables into the CI log (the task's "console.log a
-  // readable comparison table" deliverable — a human confirms parity straight from `bun test`).
+  // Emit the readable report + cutover tables into the CI log (a human confirms the cut behaves
+  // straight from `bun test`).
   printParityReport(rows);
 });
 
-describe("P4 parity bench — representation cut vs C1a oracle, all modes × filtered × zoom/pan", () => {
+describe("P4 cutover bench — representation cut bounded + valid in all modes × filtered × zoom/pan", () => {
   test("the bench covers every grouping mode, both filtered and unfiltered", () => {
     const modes = new Set(rows.map((r) => r.mode));
     for (const m of ["directory", "package", "community", "facet:env", "none"]) {
@@ -47,15 +47,14 @@ describe("P4 parity bench — representation cut vs C1a oracle, all modes × fil
         return r;
       };
 
-      // Metric 1 — committed visible cards equal-or-BETTER than C1a at EQUAL budget. "Better"
-      // for an LOD cut = renders fewer-or-equal cards (more real aggregation) while staying a
-      // valid antichain. C1a never folds Package/facet into cards (spec reality-check #1), so it
-      // sprawls there; the rep cut aggregates — strictly better. Never WORSE in any mode.
-      test(`${label}: committed visible cards ≤ C1a (equal-or-better) + valid antichain`, () => {
+      // Metric 1 — committed visible cards BOUNDED + a valid antichain. The C1a oracle is gone
+      // (spec P5); the cut's quality is asserted absolutely: it renders ≤ hardCards (real
+      // aggregation, not sprawl) AND represents every visible node exactly once.
+      test(`${label}: committed visible cards ≤ hardCards + valid antichain`, () => {
         const r = row();
         expect(r.validAntichain).toBe(true);
-        expect(r.repCardsZoomIn).toBeLessThanOrEqual(r.c1aCardsZoomIn);
-        expect(r.cardsParity).toBe("≤(better)");
+        expect(r.repCardsZoomIn).toBeLessThanOrEqual(r.hardCards);
+        expect(r.cardsWithinBudget).toBe("✓(bounded)");
       });
 
       // Metric 2 — edge count / aggregation sane: finite and within the hard edge ceiling.
@@ -63,7 +62,6 @@ describe("P4 parity bench — representation cut vs C1a oracle, all modes × fil
         const r = row();
         expect(r.edgesFinite).toBe(true);
         expect(Number.isFinite(r.repEdges)).toBe(true);
-        expect(Number.isFinite(r.c1aEdges)).toBe(true);
       });
 
       // Metric 6 — ZERO camera-induced GLOBAL layout moves: the persistent runtime reuses the
@@ -139,11 +137,11 @@ describe("P4 parity bench — representation cut vs C1a oracle, all modes × fil
     }
   }
 
-  // The headline verdict: the cutover is READY only when EVERY mode passes EVERY condition, and
-  // card parity holds in every mode. This is the single assertion the freeze gate turns on.
-  test("CUTOVER VERDICT: every mode is ready and rep ≤ C1a everywhere (C1a is safe to delete)", () => {
+  // The headline verdict: the cutover holds in EVERY mode (every condition), and the committed
+  // cut is bounded in every mode. The rep cut is now the sole LOD authority (C1a is deleted).
+  test("CUTOVER VERDICT: every mode is ready and the committed cut is bounded everywhere", () => {
     expect(rows.every((r) => r.cutover)).toBe(true);
-    expect(rows.every((r) => r.cardsParity === "≤(better)")).toBe(true);
+    expect(rows.every((r) => r.cardsWithinBudget === "✓(bounded)")).toBe(true);
     expect(rows.reduce((s, r) => s + r.repGlobalMoves, 0)).toBe(0);
   });
 

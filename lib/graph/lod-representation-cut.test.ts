@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { directoryGrouping } from "./grouping";
 import { buildGroupingSnapshot } from "./grouping-snapshot";
 import type { Box, Camera, Viewport } from "./lod-screen";
-import { groupLodSelection } from "./group-cut";
+import type { CompactGroupingSnapshot } from "./grouping-snapshot";
+import type { GroupId } from "./collapse-model";
 import {
   acquireRepresentationRuntime,
   activeProxyBoxKeyOfNode,
@@ -32,6 +33,30 @@ const graph: GraphModel = {
 };
 const nodeIds = graph.nodes.map((n) => n.id);
 const snap = buildGroupingSnapshot(directoryGrouping(graph), "directory", nodeIds);
+
+// The OPEN-selection oracle: a group is open iff neither it nor any ancestor's box key is in
+// `collapsed`. This is the (now-retired) C1a `groupLodSelection` semantics, kept as an
+// independent in-test cross-check for the rep cut's own `openSelectionOf` derivation — proving
+// the rep cut's openSelection matches the canonical collapsed→open conversion `compose()` wants.
+function openSelectionOracle(
+  collapsed: ReadonlySet<string>,
+  snapshot: CompactGroupingSnapshot,
+): Set<GroupId> {
+  const underCut = (g: number): boolean => {
+    let cur = g;
+    let guard = snapshot.groupIds.length + 1;
+    while (cur !== -1 && guard-- > 0) {
+      if (collapsed.has(snapshot.boxKeyByGroup[cur])) return true;
+      cur = snapshot.parentByGroup[cur];
+    }
+    return false;
+  };
+  const open = new Set<GroupId>();
+  for (let g = 0; g < snapshot.groupIds.length; g++) {
+    if (!underCut(g)) open.add(snapshot.groupIds[g]);
+  }
+  return open;
+}
 
 const vp: Viewport = { w: 800, h: 600 };
 const noIntent: CollapseIntent = new Map();
@@ -123,7 +148,7 @@ describe("buildSceneRepresentationCut — valid antichain + collapse-shaped deri
     expect(r.collapsedBoxKeys.has("b")).toBe(true);
     // The derived open selection equals groupLodSelection over the collapsed set.
     expect([...r.openSelection].sort()).toEqual(
-      [...groupLodSelection(r.collapsedBoxKeys, snap)].sort(),
+      [...openSelectionOracle(r.collapsedBoxKeys, snap)].sort(),
     );
     assertValidAntichain(r);
   });
@@ -140,7 +165,7 @@ describe("buildSceneRepresentationCut — valid antichain + collapse-shaped deri
   test("the derived openSelection is exactly groupLodSelection(collapsed, snapshot)", () => {
     const r = solve({ x: 0, y: 0, scale: 1 });
     expect([...r.openSelection].sort()).toEqual(
-      [...groupLodSelection(r.collapsedBoxKeys, snap)].sort(),
+      [...openSelectionOracle(r.collapsedBoxKeys, snap)].sort(),
     );
   });
 });
