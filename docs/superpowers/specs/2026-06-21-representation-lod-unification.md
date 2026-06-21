@@ -1,11 +1,14 @@
 # Representation-LOD Unification — Design Spec (Rev 3)
 
-> Status: **design, awaiting freeze** · 2026-06-21 · branch `feat/dimension-spine` (PR #77)
+> Status: **FROZEN — approved 9.6/10 (review #3)** · 2026-06-21 · branch `feat/dimension-spine` (PR #77)
 > Rev 3 adds the **Nanite-scale proxy tier**, **cut-aware edge-cost**, and **commit-policy**
 > requirements from implementation review #2. The direction is **approved** (review rated it
 > **9/10**); the three "must-add-before-freeze" requirements below are **required before freezing**
 > the spec. Rev 2's verified-good structure (Goal, Architecture, gaps 1–8, finite budget, integration
 > contracts, edge cases, P0–P5, merge gate) is retained; Rev 3 extends it.
+> Review #3 gave **final approval (9.6/10): freeze and begin implementation** and added
+> implementation notes only (CSR edge index, connected-transition commit batches, intermediate-tier
+> limits, split coarsening/refinement readiness) — **no architecture change**.
 
 ## Goal
 
@@ -116,6 +119,94 @@ Each **independent subtree transition commits atomically** → the rendered scen
 always-valid antichains**, and there is **no global wait** on the slowest subtree. (This subsumes
 Rev 2's CutDiff orchestration: the diff drives which subtrees are in flight; the readiness policy
 governs when each commits.)
+
+---
+
+## Cutover condition (the essential freeze gate)
+
+> Delete C1a only when every grouping mode — including None — can progressively refine through bounded
+> proxy tiers, without rescanning the complete graph, exceeding finite hard budgets, or triggering a
+> global layout.
+
+Target system boundaries:
+
+```
+post-filter graph → persistent semantic grouping → bounded render-proxy hierarchy
+→ cut-aware edge index → constrained antichain solver → pending target cut
+→ incremental proxy materialization → generation-safe local layouts
+→ atomic transition batches → committed scene
+```
+
+## Implementation notes (review #3)
+
+These four notes are **implementation guidance** that **refine B1/B2/B3 — they do not replace them.**
+The architecture is unchanged; these pin the concrete data layout and commit rules so implementation
+does not regress the budget/antichain guarantees at kernel scale.
+
+### (a) Edge index as CSR, not `Uint32Array[]` (refines B2)
+
+At kernel scale, one array-of-typed-arrays per rep is **millions of small objects** — fragmented heap,
+poor cache locality, expensive to transfer to the worker. Use a compact **columnar (CSR) layout**:
+
+```ts
+interface RepresentationEdgeIndex {
+  outgoingOffsets: Uint32Array; outgoingTargets: Uint32Array;
+  outgoingKinds: Uint16Array;   outgoingCounts: Uint32Array;
+  incomingOffsets: Uint32Array; incomingSources: Uint32Array;
+  rangeOffsets: Uint32Array;    originalEdgeOrdinals: Uint32Array;
+}
+```
+
+Better transfer/cache locality; **supersedes the `Uint32Array[]` sketch in B2** (boundary summaries +
+`edgeRanges` by lowest rep pair are now expressed in these flat columns).
+
+### (b) Connected-transition commit batches (refines B3)
+
+Two changed subtrees may have **edges between them**: committing one before the other changes the
+quotient graph the edge costs were computed against. Add:
+
+```ts
+interface TransitionBatch { roots: Uint32Array; targetGeneration: number; }
+```
+
+Rules:
+
+- Changed subtrees with **no boundary relationship** commit **independently**.
+- Subtrees connected by **affected quotient edges** commit as **ONE batch** (or recompute the edge
+  delta against the **currently-committed** cut).
+- **Every batch revalidates hard budgets immediately before commit.**
+- A **rejected batch leaves BOTH the scene and the committed cut unchanged.**
+
+This refines B3's per-subtree commit policy: the unit of atomic commit is the connected batch, not an
+isolated subtree, whenever a boundary relationship exists.
+
+### (c) Explicit intermediate-tier limits (refines B1)
+
+Named constants + a **deterministic fallback** for proxy-tier construction:
+
+```ts
+const MAX_FANOUT = 32;
+const MAX_LEAVES_PER_PROXY = 128;
+const MAX_PARTITION_DEPTH = 12;
+const MAX_PARTITION_WORK_MS = 50;
+```
+
+Strategy sequence: **community partition → validate balance & fan-out → heavy-edge coarsening →
+directory subdivision → deterministic balanced chunks.** If community detection yields **one huge +
+several tiny** partitions, **REJECT it** and continue to the next strategy. Include the partition
+algorithm + thresholds in `representationBuilderVersion` so proxy caches invalidate correctly.
+
+### (d) Separate coarsening vs refinement readiness (refines B3)
+
+Coarsening usually needs **no async layout**, so it should not wait. Rules:
+
+- **Coarsening** commits **immediately** after proxy + edge materialization.
+- **Refinement with a cache HIT** commits **immediately**.
+- **Refinement with a cache MISS** **retains the existing proxy** until the local layout returns.
+- A **mixed connected batch** waits until **all required refinements in that batch** are ready.
+
+This refines B3 by preventing unnecessary waiting on zoom-out / eviction (pure coarsening), while still
+honoring the connected-batch rule (b) for mixed transitions.
 
 ---
 
@@ -397,6 +488,16 @@ discarded (B3).
 the feature is *"fully functional"* — contradictory given gates 9/13/16. Update it to reflect the
 P0.5 + edge-index + commit-policy work as in-scope-before-merge, and retain the **real-CI**
 requirement (test / typecheck / lint / format jobs actually executing).
+
+## Delivery strategy
+
+PR #77 is **already very large**. Deliver **P0 / P0.5 / P1 / P2 / P3** as **stacked commits or child
+PRs**, with **P5 as the final cutover** (C1a deletion lands last, behind all merge gates). Reviewers
+should be able to assess each phase in isolation rather than against one 75-commit diff.
+
+**Blocker before reviewers assess final scope:** the PR description still says cached local layouts /
+refinement are deferred and the system is *"fully functional"* — this **contradicts the merge gates**
+(9/13/16) and **MUST be updated before reviewers assess final scope.**
 
 ## Risks
 
