@@ -200,6 +200,18 @@ export function solveLodCut(
     forceClosedRep(cols, selected, rep);
   }
 
+  // forceClosedRep collapses opened descendants back into a proxy but does NOT decrement
+  // `cur` (it can drop arbitrary subtrees, not a single marginal delta). After a
+  // close-over-an-open the running cost is therefore STALE and overstated, which would
+  // make refineUnderBudget see the budget as more spent than it is and under-refine. Recompute
+  // `cur` from the post-constraint `selected` so the budget pressure is accurate (§D/E).
+  const live = sumCost(cols, [...selected]);
+  cur.nodes = live.nodes;
+  cur.edges = live.edges;
+  cur.labels = live.labels;
+  cur.gpu = live.gpu;
+  cur.layout = live.layout;
+
   // 3. Budget-driven refinement (§D/E): greedily refine the highest error-per-cost proxy
   //    while the SOFT budget allows. Atomic: each refine is committed only if it keeps the
   //    cut within soft budget; otherwise it is skipped (the prior cut is unchanged).
