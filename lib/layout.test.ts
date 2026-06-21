@@ -6,9 +6,40 @@ import {
   type LayoutInput,
   layoutFallbackSummary,
   layoutView,
+  resolveEngineForBudget,
   runLayout,
 } from "./layout";
 import { edgeWeight } from "./layout/weight";
+
+describe("resolveEngineForBudget — structural backbone fallback", () => {
+  test("an over-cap heavy component falls back to backbone, not the alphabetical grid", () => {
+    // layered cap 1200; the 1628-node 'Reveal detail + group None' case → backbone (core).
+    expect(resolveEngineForBudget("layered", 1628, 3000)).toEqual({
+      engine: "backbone",
+      fallbackReason: "node-cap",
+    });
+    // Too big even for backbone (cap 2500) → grid.
+    expect(resolveEngineForBudget("layered", 3000, 3000)).toEqual({
+      engine: "grid",
+      fallbackReason: "node-cap",
+    });
+    // Backbone over its own cap → grid (it can't fall back to itself).
+    expect(resolveEngineForBudget("backbone", 3000, 3000)).toEqual({
+      engine: "grid",
+      fallbackReason: "node-cap",
+    });
+    // Over the dense-edge cap → grid (backbone is ~O(V·E) too, so it can't help).
+    expect(resolveEngineForBudget("force", 1000, 9000)).toEqual({
+      engine: "grid",
+      fallbackReason: "edge-cap",
+    });
+    // Within budget → unchanged.
+    expect(resolveEngineForBudget("layered", 1000, 3000)).toEqual({
+      engine: "layered",
+      fallbackReason: null,
+    });
+  });
+});
 
 // A → B, so the layout should place B "after" A along the flow axis.
 const view: GraphView = {

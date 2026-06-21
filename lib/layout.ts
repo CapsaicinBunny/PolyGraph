@@ -1301,8 +1301,12 @@ export function runLayout(input: LayoutInput, options: LayoutOptions = {}): Layo
 const HEAVY_COMPONENT_CAP = {
   stress: 6000,
   layered: 1200,
+  // backbone is the STRUCTURAL fallback for an over-cap heavy component (below), so its cap
+  // is set above typical "Reveal detail" expanded-graph sizes (~1.5-2.5k nodes) — it shows
+  // the core instead of dropping to a meaningless grid. The 8s worker timeout backstops any
+  // dense outlier that creeps toward the edge cap.
   tree: 2500,
-  backbone: 1500,
+  backbone: 2500,
   force: 1800,
 } as const;
 const HEAVY_EDGE_CAP = 8_000;
@@ -1327,12 +1331,24 @@ export function resolveEngineForBudget(
 ): { engine: LayoutAlgorithm; fallbackReason: FallbackReason } {
   const cap = HEAVY_COMPONENT_CAP[requested as keyof typeof HEAVY_COMPONENT_CAP];
   if (cap === undefined) return { engine: requested, fallbackReason: null };
-  if (nodeCount > cap) return { engine: "grid", fallbackReason: "node-cap" };
+  const overNodes = nodeCount > cap;
   // Stress is near-linear in edges (PivotMDS for large comps), so the dense edge backstop
   // doesn't apply to it; the other heavy engines are ~O(V·E) and keep it.
-  if (requested !== "stress" && edgeCount > HEAVY_EDGE_CAP)
-    return { engine: "grid", fallbackReason: "edge-cap" };
-  return { engine: requested, fallbackReason: null };
+  const overEdges = requested !== "stress" && edgeCount > HEAVY_EDGE_CAP;
+  if (!overNodes && !overEdges) return { engine: requested, fallbackReason: null };
+  const reason: FallbackReason = overNodes ? "node-cap" : "edge-cap";
+  // Prefer a STRUCTURAL fallback — backbone shows the dependency core, not the meaningless
+  // alphabetical grid users complained about — whenever the component still fits backbone's
+  // budget. Only a component too big even for backbone (or backbone itself overflowing)
+  // falls all the way to the cheap grid.
+  if (
+    requested !== "backbone" &&
+    nodeCount <= HEAVY_COMPONENT_CAP.backbone &&
+    edgeCount <= HEAVY_EDGE_CAP
+  ) {
+    return { engine: "backbone", fallbackReason: reason };
+  }
+  return { engine: "grid", fallbackReason: reason };
 }
 
 /**

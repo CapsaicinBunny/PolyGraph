@@ -643,12 +643,12 @@ export function Explorer() {
       // Seed the AUTO collapse layers (bootstrap + camera selection), NOT intent — a load
       // seed is derived safety, not a user action, so the camera may later open it.
       seedDirectoryLod(res.graph, seed);
-      // Adaptive LOD only earns its keep when the graph is too big to draw whole
-      // (seed !== null). When it already fits, turn the camera-driven cut OFF — otherwise
-      // zooming into a small/medium project collapses on-screen directories as "too-small"
-      // (they never reach the open-px threshold) and the view shrinks instead of revealing
-      // detail. Big repos keep it on so the cut bounds the rendered card count.
-      setAdaptiveLod(seed !== null);
+      // Adaptive LOD defaults ON for every scan — the user's consistent expectation. On a
+      // huge repo the camera-driven cut bounds the rendered card count; on a graph that
+      // already fits it's inert until you zoom out. `seed` still seeds the directory
+      // collapse for big repos above; only the toggle default changed (was `seed !== null`,
+      // which surprised users by starting small/medium projects with LOD visibly off).
+      setAdaptiveLod(true);
       setSelectedId(null);
       setSelectedEdge(null);
       setSearch("");
