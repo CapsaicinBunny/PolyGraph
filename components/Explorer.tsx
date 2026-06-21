@@ -77,11 +77,13 @@ const VelloGraphCanvas = dynamic(
 // Above this many file nodes, auto-collapse directories so the initial scene the
 // renderer receives stays drawable (LOD v0; see docs/SCALE-100K.md).
 const AUTO_COLLAPSE_MAX_CARDS = 2000;
-// Cap on estimated layout NODES (files + their symbols when expanded) used to seed
-// the collapse on expand-all. Keeps the layout input small enough for Smart to finish
-// within the worker timeout instead of falling back to grid. Matches LOD_NODE_BUDGET
-// in VelloGraphCanvas. See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
-const LOD_NODE_BUDGET = 2500;
+// Cap on estimated layout NODES (files + their symbols when expanded) used to seed the
+// collapse on expand-all ("Reveal detail"). Keeps the layout input small enough for Smart
+// to finish within the 8s worker timeout. Lowered from 2500 after desktop testing: Smart
+// timed out (>8s, 3× → a multi-second hang) on ~1.5k-node inputs from filter/zoom churn,
+// so the old 2.5k let a full expand-all lay out flat and hang. Matches VelloGraphCanvas.
+// See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
+const LOD_NODE_BUDGET = 1500;
 
 // The modeKey the Directory-scoped collapse wiring targets. Package / Community /
 // facet are now peer modes too (each with its own per-mode intent map, Phase C1a);

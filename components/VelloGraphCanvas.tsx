@@ -58,11 +58,12 @@ import { useScene } from "./useScene";
 // MAX_CARDS cards. These want desktop calibration (see docs/SCALE-100K.md).
 const LOD_OPEN_PX = 240;
 const LOD_MAX_CARDS = 800;
-// Cap on estimated layout NODES (files + their symbols when expanded). Smart lays out
-// ~2.5k dense nodes in ~1s but ~40s at 29k, so keep the cut's input under this and
-// Smart always finishes within the worker timeout (never degrading to the grid
-// fallback). See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
-const LOD_NODE_BUDGET = 2500;
+// Cap on estimated layout NODES (files + their symbols when expanded). Keep the cut's
+// input under this so Smart finishes within the 8s worker timeout (never degrading to the
+// grid fallback). Lowered from 2500 after desktop testing showed Smart timing out (>8s) on
+// ~1.5k-node inputs from filter/zoom churn — not the optimistic ~1s-at-2.5k estimate.
+// See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
+const LOD_NODE_BUDGET = 1500;
 // Bound on RETAINED auto-opened group proxies (the deadband set): a group opened while
 // on-screen stays open through a small pan/zoom-out, but exploring many regions can't grow
 // the open set without limit — the IntrusiveLru evicts the oldest offscreen opens past this
