@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type CatalogWarning,
+  type DimensionCatalog,
+  STRUCTURAL_DESCRIPTORS,
+} from "./dimensions";
+import {
   type ScanPayload,
   SCAN_NDJSON_CONTENT_TYPE,
   readScanNdjson,
@@ -72,6 +77,23 @@ describe("scan-ndjson codec", () => {
     expect(meta.timings).toEqual({ scanMs: 12, analyzeMs: 340 });
     const out = await readScanNdjson(ndjsonResponse(scanNdjsonStream(payload)));
     expect(out.timings).toEqual({ scanMs: 12, analyzeMs: 340 });
+  });
+
+  test("carries the dimension catalog + warnings through the meta line", async () => {
+    // Without this the desktop client never receives the merged multi-language catalog
+    // and falls back to the TS-only facets — the gap this codec change closes.
+    const dimensions: DimensionCatalog = { descriptors: [...STRUCTURAL_DESCRIPTORS] };
+    const catalogWarnings: CatalogWarning[] = [
+      { key: "kind", value: "weird", message: "undeclared value" },
+    ];
+    const payload: ScanPayload = { ...sample(), dimensions, catalogWarnings };
+    const meta = (
+      JSON.parse([...scanNdjsonLines(payload)][0]!) as { meta: { dimensions?: unknown } }
+    ).meta;
+    expect(meta.dimensions).toBeDefined();
+    const out = await readScanNdjson(ndjsonResponse(scanNdjsonStream(payload)));
+    expect(out.dimensions).toEqual(dimensions);
+    expect(out.catalogWarnings).toEqual(catalogWarnings);
   });
 
   test("reassembles lines split across chunk boundaries", async () => {

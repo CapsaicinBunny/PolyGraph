@@ -16,6 +16,7 @@
 // than the node/edge set, so a single stringify of them stays well under the
 // ceiling. (If unresolved ever dominates on a huge repo, stream it too.)
 
+import type { CatalogWarning, DimensionCatalog } from "./dimensions";
 import type { PackageManifest } from "./levels/types";
 import type { AnalyzeError, GraphEdge, GraphNode, UnresolvedRef } from "./types";
 
@@ -30,6 +31,9 @@ export interface ScanPayload {
   skipped: number;
   root: string;
   manifests: PackageManifest[];
+  /** The merged multi-language dimension catalog; rides in the meta line (small). */
+  dimensions?: DimensionCatalog;
+  catalogWarnings?: CatalogWarning[];
   /** Optional engine timings (ms); present on a server scan, absent in tests/CLI. */
   timings?: { scanMs: number; analyzeMs: number };
 }
@@ -43,6 +47,8 @@ interface ScanMeta {
   errors: AnalyzeError[];
   unresolved: UnresolvedRef[];
   manifests: PackageManifest[];
+  dimensions?: DimensionCatalog;
+  catalogWarnings?: CatalogWarning[];
   timings?: { scanMs: number; analyzeMs: number };
 }
 
@@ -58,6 +64,8 @@ export function* scanNdjsonLines(value: ScanPayload): Generator<string> {
     errors,
     unresolved,
     manifests,
+    ...(value.dimensions ? { dimensions: value.dimensions } : {}),
+    ...(value.catalogWarnings ? { catalogWarnings: value.catalogWarnings } : {}),
     ...(timings ? { timings } : {}),
   };
   yield `${JSON.stringify({ meta })}\n`;
@@ -140,6 +148,8 @@ export async function readScanNdjson(res: Response): Promise<ScanPayload> {
     skipped: m.skipped,
     root: m.root,
     manifests: m.manifests,
+    ...(m.dimensions ? { dimensions: m.dimensions } : {}),
+    ...(m.catalogWarnings ? { catalogWarnings: m.catalogWarnings } : {}),
     ...(m.timings ? { timings: m.timings } : {}),
   };
 }

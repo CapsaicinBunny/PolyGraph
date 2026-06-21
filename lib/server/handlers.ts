@@ -5,6 +5,7 @@
 // not just TypeScript.
 
 import { stat } from "node:fs/promises";
+import type { CatalogWarning, DimensionCatalog } from "../graph/dimensions";
 import type { PackageManifest } from "../graph/levels/types";
 import { trimIfLarge } from "../graph/trim";
 import type { AnalyzeError, GraphModel, SourceFileMap, UnresolvedRef } from "../graph/types";
@@ -22,6 +23,15 @@ export interface ScanData {
   root: string;
   /** Packages discovered from manifest files, for the Package/Workspace levels. */
   manifests: PackageManifest[];
+  /**
+   * The merged dimension catalog (structural dims + EVERY provider's facets), so the
+   * desktop client renders the real multi-language filter/group UI. Without it the app
+   * falls back to the TS-only catalog and Rust/Go/etc. facets never surface. Optional to
+   * mirror AnalyzeResult (the TS-only analyzeSources path leaves it unset).
+   */
+  dimensions?: DimensionCatalog;
+  /** Non-fatal catalog-merge warnings (undeclared closed values, descriptor conflicts). */
+  catalogWarnings?: CatalogWarning[];
   /** Engine timings (ms), carried to the client so they land in the session log. */
   timings: { scanMs: number; analyzeMs: number };
 }
@@ -31,6 +41,8 @@ export interface AnalyzeData {
   errors: AnalyzeError[];
   unresolved: UnresolvedRef[];
   manifests: PackageManifest[];
+  dimensions?: DimensionCatalog;
+  catalogWarnings?: CatalogWarning[];
 }
 
 /** Returned when a scan is large enough to warrant explicit confirmation. */
@@ -93,10 +105,10 @@ export async function runScan(
     // On a huge graph, edge occurrences dominate the payload and can push
     // JSON.stringify past V8's string ceiling — trim them to a sample (count kept).
     const graph = trimIfLarge(analyzed.graph);
-    const { errors, unresolved } = analyzed;
+    const { errors, unresolved, dimensions, catalogWarnings } = analyzed;
     const analyzeMs = performance.now() - tAnalyze;
     console.error(
-      `[scan] ${fileCount} files | read ${scanMs.toFixed(0)}ms | analyze ${analyzeMs.toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges | ${manifests.length} packages`,
+      `[scan] ${fileCount} files | read ${scanMs.toFixed(0)}ms | analyze ${analyzeMs.toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges | ${manifests.length} packages | ${dimensions?.descriptors.length ?? 0} dims, ${catalogWarnings?.length ?? 0} warnings`,
     );
     return {
       ok: true,
@@ -108,6 +120,8 @@ export async function runScan(
         skipped,
         root,
         manifests,
+        dimensions,
+        catalogWarnings,
         timings: { scanMs, analyzeMs },
       },
     };
@@ -123,12 +137,12 @@ export async function runAnalyze(files: SourceFileMap | undefined): Promise<Hand
   }
   try {
     const t = performance.now();
-    const { graph, errors, unresolved } = await analyzeProject(files);
+    const { graph, errors, unresolved, dimensions, catalogWarnings } = await analyzeProject(files);
     const manifests = discoverPackages(files);
     console.error(
       `[analyze] ${Object.keys(files).length} files | ${(performance.now() - t).toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges`,
     );
-    return { ok: true, value: { graph, errors, unresolved, manifests } };
+    return { ok: true, value: { graph, errors, unresolved, manifests, dimensions, catalogWarnings } };
   } catch (err) {
     return {
       ok: false,
