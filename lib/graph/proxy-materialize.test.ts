@@ -252,7 +252,10 @@ describe("generic proxy materializer — None (orphan leaves) renders cards gene
     // The orphan files are uncovered by this cut (no selected rep on their chain) → not drawn.
     // With a valid full cut they'd be their own leaves; here we assert the proxy fold worked.
     const card = scene.nodes.find((n) => isProxyId(n.id));
-    expect(card?.label).toBe("component 0 · 2");
+    // None renders FLAT: even a SEMANTIC synthetic-None group ("component 0") is a cut proxy, not a
+    // visible container — so it materializes as a `+N` overflow card, never a named-group card
+    // (design Gap 2 / P2: None's "synthetic groups are cut proxies, not visible cards").
+    expect(card?.label).toBe("+2");
   });
 });
 

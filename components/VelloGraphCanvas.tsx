@@ -562,12 +562,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // and never built (the snapshot prop covers the rest).
   //
   //   - Directory → directoryGrouping (the canvas's own DirNode path has no snapshot).
-  //   - None → syntheticNoneGrouping (components → communities, design Gap 2 / P2). Explorer
-  //     deliberately returns NO `cutGrouping` snapshot for None (it has no visible containers,
-  //     so the C1a seed/intent/cluster machinery must not run for it). The representation cut,
-  //     however, needs a hierarchy to bound None's budget — fed ONLY here so it drives the rep
-  //     path (stable, layout-independent proxy bounds) WITHOUT drawing group boxes. None emits
-  //     no live cluster boxes, so the cut runs purely on stable bounds and renders FLAT.
+  //   - None → syntheticNoneGrouping (components → communities, design Gap 2 / P2). This is a
+  //     FALLBACK: Explorer also builds a None `cutGrouping` snapshot (also modeKey "none") and
+  //     passes it as the `groupingSnapshot` prop, which `repSnap` prefers (see below). Either
+  //     source is modeKey "none", so the materializer renders None FLAT (isFlatMode → +N overflow
+  //     cards, never named container boxes). The representation cut needs a hierarchy to bound
+  //     None's budget; it drives the rep path on stable, layout-independent proxy bounds WITHOUT
+  //     drawing group boxes. None emits no live cluster boxes, so the cut runs purely on those
+  //     stable bounds. The C1a seed/intent/cluster machinery still must NOT run for None.
   const directoryRepSnapshot = useMemo(() => {
     if (!representationLod) return null;
     if (groupBy === "directory") {

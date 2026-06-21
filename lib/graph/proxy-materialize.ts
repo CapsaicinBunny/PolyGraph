@@ -193,22 +193,61 @@ export function materializeProxyScene(input: MaterializeInput): GraphModel {
 }
 
 /**
- * Build the aggregate card GraphNode for a committed proxy rep. Generic: a SEMANTIC group
- * proxy borrows its group's label; a render-only proxy (intermediate tier / bootstrap bucket,
- * groupByRep === NO_GROUP) gets a synthetic "N items" label. Either way it is ONE card with a
- * stable proxy id and a member-count badge — exactly what the renderer draws for an aggregate.
+ * The grouping mode that renders FLAT — it has NO visible containers, so EVERY one of its proxies
+ * (even its SEMANTIC groups) is a cut proxy, not a visible card (design Gap 2 / P2: None's
+ * synthetic components→communities "groups are cut proxies, not visible cards"). `modeKey` is the
+ * snapshot's mode tag (`"none"` for None); the Smart layout likewise lays None out flat (no
+ * cluster tree), so a None proxy must never be drawn as a named container box.
+ */
+export const isFlatMode = (modeKey: string): boolean => modeKey === "none";
+
+/**
+ * Whether a committed proxy `rep` renders as a FLAT OVERFLOW card (`+N`) rather than a named-group
+ * card. True when EITHER:
+ *
+ *  - the rep is RENDER-ONLY (an intermediate tier, a bootstrap root bucket, or the super-root —
+ *    `groupByRep === NO_GROUP`): a structural fold with no semantic group, in ANY mode; OR
+ *  - the snapshot's mode is FLAT (None): None has no visible containers, so even a SEMANTIC
+ *    synthetic-None group proxy folds its low-importance leaves into a `+N` overflow card.
+ *
+ * Either way the spec is explicit: "synthetic groups are cut proxies, not visible cards" — these
+ * must render FLAT, never as a named group container box. A semantic group proxy in a CONTAINER
+ * mode (Directory / Community / Package / facet) is the contrasting case (a named `label · count`).
+ */
+export function isOverflowProxyRep(hierarchy: RepresentationHierarchy, rep: number): boolean {
+  if (isFlatMode(hierarchy.snapshot.modeKey)) return true;
+  const g = hierarchy.columns.groupByRep[rep];
+  return g === NO_GROUP || g >= hierarchy.snapshot.groupIds.length;
+}
+
+/** A render-only overflow proxy card is labeled `+N` — the universal "N more, folded" badge. */
+export const OVERFLOW_LABEL = (count: number): string => `+${count}`;
+
+/**
+ * Build the aggregate card GraphNode for a committed proxy rep. Generic across modes:
+ *
+ *  - a SEMANTIC group proxy (a real `groupByRep`) borrows its group's label + a member count —
+ *    e.g. `client · 2` — exactly what the renderer draws for a named collapsed group;
+ *  - a RENDER-ONLY proxy (intermediate tier / bootstrap bucket / super-root, `NO_GROUP`) renders
+ *    FLAT as a `+N` OVERFLOW card. None has no semantic containers, so its over-budget cut folds
+ *    the low-importance leaves into exactly these render-only buckets — and they must read as a
+ *    flat "+N more" aggregate, NOT a named container box (design Gap 2 / P2: "synthetic groups
+ *    are cut proxies, not visible cards").
+ *
+ * Either way it is ONE flat card with a stable proxy id and a member-count badge — a proxy carries
+ * no real path, so its `filePath`/`parentFile` is its own id and the directory/container logic
+ * treats it as a leaf card (never nesting it as a synthetic folder → no group box is drawn).
  */
 function proxyNodeFor(hierarchy: RepresentationHierarchy, rep: number, count: number): GraphNode {
-  const cols = hierarchy.columns;
-  const g = cols.groupByRep[rep];
   const id = proxyNodeId(rep);
-  const groupCount = hierarchy.snapshot.groupIds.length;
-  const hasGroup = g !== NO_GROUP && g < groupCount;
-  const baseLabel = hasGroup ? hierarchy.snapshot.groupLabels[g] : "group";
+  const g = hierarchy.columns.groupByRep[rep];
+  const label = isOverflowProxyRep(hierarchy, rep)
+    ? OVERFLOW_LABEL(count)
+    : `${hierarchy.snapshot.groupLabels[g]} · ${count}`;
   return {
     id,
     kind: "file",
-    label: `${baseLabel} · ${count}`,
+    label,
     // A proxy carries no real path; use its id so directory logic treats it as a leaf card.
     filePath: id,
     line: 0,
