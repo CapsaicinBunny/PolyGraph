@@ -296,6 +296,10 @@ function refineUnderBudget(
   const cols = h.columns;
   const canRefine = gate?.canRefine;
   const diag = gate?.diagnostics;
+  // Reps whose refinement was rejected this solve (didn't fit the soft budget). A blocked
+  // rep is skipped as a candidate so the loop tries the NEXT-best smaller refinement
+  // instead of stopping — a too-large candidate must not strand the remaining budget.
+  const blocked = new Set<number>();
   // Bound the number of refinements to the rep count (each rep is refined at most once).
   let guard = h.repCount + 1;
   while (guard-- > 0) {
@@ -310,6 +314,7 @@ function refineUnderBudget(
     let bestPriority = -Infinity;
     for (const r of selected) {
       if (cols.firstChildByRep[r] === -1) continue; // a leaf can't be refined
+      if (blocked.has(r)) continue; // already rejected this solve → don't reconsider
       if (isForceClosedHere(cols, constraints, r)) continue; // closed at/above r → frozen
       if (canRefine && !canRefine(r)) continue; // screen-space / legibility gate
       const p = refinePriority(cols, cam, r, remaining);
@@ -319,9 +324,13 @@ function refineUnderBudget(
       }
     }
     if (best === -1) break;
-    // Refine the best within the SOFT budget; if it doesn't fit, no further auto
-    // refinement is beneficial under the current pressure → stop.
-    if (!refineAtomic(cols, selected, best, budget, "soft", cur)) break;
+    // Refine the best within the SOFT budget. If it doesn't fit, BLOCK it and continue:
+    // a smaller candidate may still fit the remaining budget. Stopping here would strand
+    // substantial budget behind a single oversized proxy.
+    if (!refineAtomic(cols, selected, best, budget, "soft", cur)) {
+      blocked.add(best);
+      continue;
+    }
     if (diag) diag.refinements += 1;
   }
   // Per-rep why-not-refined (§I): classify every still-selected non-leaf proxy.
@@ -410,9 +419,11 @@ function withinCeiling(cost: CostVec, budget: LodBudget, ceiling: "soft" | "hard
 /**
  * Priority of refining a proxy (Appendix A §D): deltaError / normalizedDeltaCost. The
  * delta-error is the information GAINED by replacing the proxy with its children (the
- * proxy's own hidden-information error); the delta-cost is the added load, normalized by
- * the REMAINING budget so an edge-heavy refine is deprioritized when the edge budget is
- * nearly spent. Boosted by on-screen visibility (the spec's visibilityWeight).
+ * proxy's own hidden-information error); the delta-cost is the MARGINAL load of the
+ * refinement (Σ children cost − parent cost — exactly what refineAtomic charges),
+ * normalized by the REMAINING budget so an edge-heavy refine is deprioritized when the
+ * edge budget is nearly spent. Boosted by on-screen visibility (the spec's
+ * visibilityWeight).
  */
 function refinePriority(
   cols: RepresentationColumns,
@@ -424,20 +435,41 @@ function refinePriority(
   // deltaError ≈ the error this proxy hides (resolved by refining it). geometricError is
   // the log2 subtree-size heuristic; weight by the structural (edge) error too.
   const deltaError = cols.geometricError[rep] * (1 + cols.structuralError[rep]);
-  // deltaCost: children − parent across dims. node/edge/label totals are conserved on a
-  // refine (children sum to the parent), so the marginal layout cost is the children's
-  // own layout work; model it as the proxy's node cost (its subtree size) so larger
-  // subtrees cost more to open — keeping the normalization meaningful.
-  const delta: CostVec = {
-    nodes: cols.nodeCost[rep],
-    edges: cols.edgeCost[rep],
-    labels: cols.labelCost[rep],
-    gpu: cols.gpuByteCost[rep],
-    layout: cols.nodeCost[rep],
-  };
+  // deltaCost = the MARGINAL one-level refinement cost: Σ over the proxy's DIRECT children
+  // minus the proxy's own per-level cost (the same delta refineAtomic commits). Using the
+  // parent's own per-level cost instead is wrong — every proxy renders as ONE card
+  // (nodeCost 1), so a 2-child and a 2000-child proxy would look identically cheap. The
+  // marginal delta separates them: refining a 2000-child proxy adds ~2000 cards, a 2-child
+  // proxy adds ~2.
+  const delta = marginalRefineDelta(cols, rep);
   const normCost = normalizedCost(delta, remaining);
   const visibility = visibilityWeight(cols, cam, rep);
   return (deltaError * visibility) / Math.max(EPSILON, normCost);
+}
+
+/**
+ * The marginal cost of refining a proxy one level: Σ over its DIRECT children of each
+ * rendered per-level cost, minus the proxy's own per-level cost. Mirrors the delta
+ * refineAtomic commits, so priority normalization and the actual budget charge agree.
+ */
+function marginalRefineDelta(cols: RepresentationColumns, rep: number): CostVec {
+  let nodes = 0;
+  let edges = 0;
+  let labels = 0;
+  let gpu = 0;
+  for (let c = cols.firstChildByRep[rep]; c !== -1; c = cols.nextSiblingByRep[c]) {
+    nodes += cols.nodeCost[c];
+    edges += cols.edgeCost[c];
+    labels += cols.labelCost[c];
+    gpu += cols.gpuByteCost[c];
+  }
+  nodes -= cols.nodeCost[rep];
+  edges -= cols.edgeCost[rep];
+  labels -= cols.labelCost[rep];
+  gpu -= cols.gpuByteCost[rep];
+  // layout work tracks node cost (each refined proxy lays out its children) — same model
+  // as refineAtomic's delta.layout = delta.nodes.
+  return { nodes, edges, labels, gpu, layout: nodes };
 }
 
 /** max over dims of delta[d] / max(1, remaining[d]) (Appendix A §D). */

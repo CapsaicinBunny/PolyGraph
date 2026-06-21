@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { directoryGrouping } from "./grouping";
-import { buildGroupingSnapshot } from "./grouping-snapshot";
-import { buildRepresentationHierarchy, type RepresentationHierarchy } from "./representation";
+import { buildGroupingSnapshot, type CompactGroupingSnapshot } from "./grouping-snapshot";
+import {
+  buildRepresentationHierarchy,
+  type RepresentationCosts,
+  type RepresentationHierarchy,
+} from "./representation";
 import {
   bootstrapCut,
   type CameraState,
@@ -317,5 +321,193 @@ describe("cutSignature — material equality (Appendix A §K)", () => {
     expect(cutSignaturesEqual(s0, sameNodesDifferentEdges)).toBe(false);
     expect(cutSignaturesEqual(s0, sameNodesDifferentLabels)).toBe(false);
     expect(cutSignaturesEqual(s0, differentFilter)).toBe(false);
+  });
+});
+
+// ── Gap 5 / review #1: marginal refinement cost + continue-after-oversized ───────
+//
+// A synthetic FLAT hierarchy with two root group proxies of very different fan-out:
+// "small" has 2 leaf children, "big" has ~2000. Every proxy renders as ONE card
+// (nodeCost 1), so the OLD refinePriority (parent's own per-level cost) saw both as
+// equally cheap to refine. The marginal delta (Σ children − parent) separates them:
+// refining small adds ~2 cards, refining big adds ~2000.
+
+/** Build a flat snapshot: two root groups "small" (smallN nodes) and "big" (bigN). */
+function flatTwoGroupSnapshot(smallN: number, bigN: number): CompactGroupingSnapshot {
+  const groupIds = ["g:small", "g:big"];
+  const directGroupByNode = new Uint32Array(smallN + bigN);
+  for (let i = 0; i < smallN; i++) directGroupByNode[i] = 0; // small
+  for (let i = 0; i < bigN; i++) directGroupByNode[smallN + i] = 1; // big
+  return {
+    modeKey: "synthetic",
+    groupIds,
+    groupLabels: ["small", "big"],
+    parentByGroup: Int32Array.from([-1, -1]), // both roots
+    depthByGroup: Uint16Array.from([0, 0]),
+    boxKeyByGroup: ["box:small", "box:big"],
+    directGroupByNode,
+    roots: Uint32Array.from([0, 1]),
+  };
+}
+
+function buildFlatHierarchy(
+  smallN: number,
+  bigN: number,
+  costs?: RepresentationCosts,
+): RepresentationHierarchy {
+  const ids = [
+    ...Array.from({ length: smallN }, (_, i) => `s${i}`),
+    ...Array.from({ length: bigN }, (_, i) => `b${i}`),
+  ];
+  return buildRepresentationHierarchy(flatTwoGroupSnapshot(smallN, bigN), ids, costs);
+}
+
+/** Antichain check parameterized by node count (the module helper hardcodes `nodeIds`). */
+function assertAntichainN(hh: RepresentationHierarchy, cut: LodCut, nodeCount: number) {
+  const selected = new Set(cut.selectedRepresentations);
+  const { parentByRep, leafRepresentationByNode } = hh.columns;
+  for (let i = 0; i < nodeCount; i++) {
+    let cur = leafRepresentationByNode[i];
+    let hits = 0;
+    let guard = hh.repCount + 1;
+    while (cur !== -1 && guard-- > 0) {
+      if (selected.has(cur)) hits++;
+      cur = parentByRep[cur];
+    }
+    expect(hits).toBe(1);
+  }
+}
+
+describe("refinePriority — ranks by MARGINAL child-expansion delta (Gap 5)", () => {
+  test("a 2-child proxy outranks a ~2000-child proxy when budget can't fit both", () => {
+    const smallN = 2;
+    const bigN = 2000;
+    const hh = buildFlatHierarchy(smallN, bigN);
+    const smallRep = hh.repOfGroup[0];
+    const bigRep = hh.repOfGroup[1];
+
+    // Root cut = {small, big} = 2 cards. A target that leaves room to open ONLY the
+    // small proxy (2 cards → 2 leaves: total 1 big + 2 small = 3) but NOT the big proxy
+    // (would be ~2001 cards). The marginal-cost ranking must pick `small` to refine.
+    const budget: LodBudget = {
+      targetNodes: 4,
+      targetEdges: 100000,
+      targetLabels: 100000,
+      hardNodes: 4,
+      hardEdges: 100000,
+      hardLabels: 100000,
+      maxGpuBytes: Infinity,
+      maxLayoutWork: Infinity,
+    };
+    const cut = solveLodCut(hh, bootstrapCut(hh), noConstraints, cam, budget);
+    const selected = new Set(cut.selectedRepresentations);
+
+    // small was refined (its 2 leaves now selected), big retained as the single proxy.
+    expect(selected.has(smallRep)).toBe(false);
+    expect(selected.has(bigRep)).toBe(true);
+    // Cost: 2 small leaves + 1 big proxy = 3 cards (within the target-4 budget).
+    expect(cut.nodeCost).toBe(smallN + 1);
+  });
+
+  test("the small proxy's marginal delta is far smaller than the big proxy's", () => {
+    // A direct sanity check that the two proxies are NOT seen as equally cheap: refining
+    // small adds (smallN − 1) cards, big adds (bigN − 1). With the OLD parent-cost
+    // priority both deltas were 1 (nodeCost of a proxy is 1) and the solver would pick by
+    // error alone — wrongly opening the big proxy first under tight budget.
+    const hh = buildFlatHierarchy(2, 50);
+    const smallRep = hh.repOfGroup[0];
+    const bigRep = hh.repOfGroup[1];
+    const { nodeCost, firstChildByRep, nextSiblingByRep } = hh.columns;
+    const marginal = (rep: number) => {
+      let sum = 0;
+      for (let c = firstChildByRep[rep]; c !== -1; c = nextSiblingByRep[c]) sum += nodeCost[c];
+      return sum - nodeCost[rep];
+    };
+    expect(marginal(smallRep)).toBe(1); // 2 − 1
+    expect(marginal(bigRep)).toBe(49); // 50 − 1
+  });
+});
+
+describe("refineUnderBudget — continue past an oversized candidate (Gap 5)", () => {
+  test("budget is filled by smaller refinements when the top candidate doesn't fit", () => {
+    // "big" has the highest ERROR (largest subtree → largest geometricError), so it is the
+    // highest-priority candidate on the FIRST pass once normalized cost is comparable. But
+    // it cannot fit the soft budget. The old code BROKE the loop here, leaving the small
+    // proxy unrefined and the budget stranded. With `blocked.add(best); continue;`, the
+    // solver moves on and refines `small`, filling the available budget.
+    const smallN = 5;
+    const bigN = 2000;
+    const hh = buildFlatHierarchy(smallN, bigN);
+    const smallRep = hh.repOfGroup[0];
+    const bigRep = hh.repOfGroup[1];
+
+    // Root = {small, big} = 2. Budget room for the small open (→ 5 leaves + big = 6) but
+    // never the big open (~2001). Set target so big does NOT fit but small DOES.
+    const budget: LodBudget = {
+      targetNodes: 10,
+      targetEdges: 100000,
+      targetLabels: 100000,
+      hardNodes: 10,
+      hardEdges: 100000,
+      hardLabels: 100000,
+      maxGpuBytes: Infinity,
+      maxLayoutWork: Infinity,
+    };
+    const cut = solveLodCut(hh, bootstrapCut(hh), noConstraints, cam, budget);
+    const selected = new Set(cut.selectedRepresentations);
+
+    // The small proxy WAS refined despite big being rejected first — budget not stranded.
+    expect(selected.has(smallRep)).toBe(false);
+    expect(selected.has(bigRep)).toBe(true);
+    expect(cut.nodeCost).toBe(smallN + 1); // 5 small leaves + 1 big proxy = 6
+    assertAntichainN(hh, cut, smallN + bigN);
+  });
+
+  // The test above does NOT actually exercise the blocked.add(best);continue; branch:
+  // with marginal-cost ranking the *small* proxy has the higher priority (its tiny delta
+  // normalizes cheap), so the solver picks small FIRST and never selects big as `best`.
+  // break vs continue produce the identical cut there. To genuinely discriminate the fix
+  // the OVERSIZED candidate must be the highest-priority one — engineered here by loading
+  // big's leaves with edge cost so big's structuralError (hence deltaError) dwarfs small's,
+  // out-ranking it despite a worse normalized cost. With `break` the solver stops at the
+  // unfittable big and strands the budget (small never refines); with `continue` it skips
+  // big and refines small. This test FAILS on the pre-fix `break`.
+  test("the highest-priority candidate being oversized does not strand the budget", () => {
+    const smallN = 2;
+    const bigN = 5;
+    // Edge cost only on big's leaves (`b*`) → big proxy carries large structuralError, so
+    // its deltaError (geometric × (1 + structural)) is far higher than small's.
+    const hh = buildFlatHierarchy(smallN, bigN, {
+      edgeCost: (id) => (id.startsWith("b") ? 50 : 0),
+    });
+    const smallRep = hh.repOfGroup[0];
+    const bigRep = hh.repOfGroup[1];
+
+    // Root = {small, big} = 2. target 5 → remaining 3 nodes. big's node delta is 4
+    // (5 children − 1 proxy) > 3 → does NOT fit. small's delta is 1 → fits. Edges/labels
+    // budgets are huge so only the node dimension gates.
+    const budget: LodBudget = {
+      targetNodes: 5,
+      targetEdges: 1e9,
+      targetLabels: 1e9,
+      hardNodes: 5,
+      hardEdges: 1e9,
+      hardLabels: 1e9,
+      maxGpuBytes: Infinity,
+      maxLayoutWork: Infinity,
+    };
+    // Sanity: big is genuinely the higher-priority candidate on the first pass (it would be
+    // tried, and rejected, before small) — otherwise this wouldn't test continue-vs-break.
+    expect(hh.columns.structuralError[bigRep]).toBeGreaterThan(0);
+    expect(hh.columns.structuralError[smallRep]).toBe(0);
+
+    const cut = solveLodCut(hh, bootstrapCut(hh), noConstraints, cam, budget);
+    const selected = new Set(cut.selectedRepresentations);
+
+    // Despite big being the top priority and unfittable, small was still refined.
+    expect(selected.has(smallRep)).toBe(false);
+    expect(selected.has(bigRep)).toBe(true);
+    expect(cut.nodeCost).toBe(smallN + 1); // 2 small leaves + 1 big proxy = 3
+    assertAntichainN(hh, cut, smallN + bigN);
   });
 });
