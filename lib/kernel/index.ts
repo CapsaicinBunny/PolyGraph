@@ -103,8 +103,13 @@ export async function analyzeProject(
   }
 
   // Merge every provider's facet schema onto the core's structural descriptors —
-  // one catalog the whole UI/CLI/rule engine projects from.
-  const dimensions = mergeDescriptors([STRUCTURAL_DESCRIPTORS, ...facetSchemas]).catalog;
+  // one catalog the whole UI/CLI/rule engine projects from. Keep the merge's
+  // warnings (e.g. a provider's defaultValue/domain dropped first-wins) so
+  // descriptor conflicts surface on the result instead of being lost here.
+  const { catalog: dimensions, warnings: catalogWarnings } = mergeDescriptors([
+    STRUCTURAL_DESCRIPTORS,
+    ...facetSchemas,
+  ]);
 
   const dedupedNodes = dedupeById(nodes);
   const nodeIds = new Set(dedupedNodes.map((n) => n.id));
@@ -112,5 +117,11 @@ export async function analyzeProject(
     (e) => nodeIds.has(e.source) && nodeIds.has(e.target),
   );
 
-  return { graph: { nodes: dedupedNodes, edges: validEdges }, errors, unresolved, dimensions };
+  return {
+    graph: { nodes: dedupedNodes, edges: validEdges },
+    errors,
+    unresolved,
+    dimensions,
+    catalogWarnings,
+  };
 }

@@ -15,6 +15,9 @@ describe("kernel dimension catalog", () => {
     const keys = (result.dimensions?.descriptors ?? []).map((d) => d.key).sort();
     // Provider facets + the core structural dimensions, all present.
     expect(keys).toEqual(["category", "env", "folder", "kind", "language", "role", "runtime"]);
+    // The merge's warning channel is surfaced on the result (not dropped at the
+    // kernel boundary) and is empty for this conflict-free, namespaced merge.
+    expect(result.catalogWarnings).toEqual([]);
   });
 
   test("structural descriptors come from core; facet descriptors from typescript", async () => {

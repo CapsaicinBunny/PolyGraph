@@ -2,7 +2,7 @@
 
 // Type-only import: dimensions.ts never imports types.ts at runtime, so a
 // type-only reference here introduces no import cycle.
-import type { DimensionCatalog } from "./dimensions";
+import type { CatalogWarning, DimensionCatalog } from "./dimensions";
 
 // Universal, language-neutral node taxonomy. Each language parser emits the
 // subset that fits its constructs (a Rust parser uses struct/trait/macro, a
@@ -191,6 +191,15 @@ export interface AnalyzeResult {
    * multi-language kernel populates it, the TS-only path may omit it.
    */
   dimensions?: DimensionCatalog;
+  /**
+   * Non-fatal issues raised while merging the providers' descriptors into the
+   * catalog — e.g. a later provider's `defaultValue`/`domain` dropped first-wins,
+   * or a conflicting metadata value ignored. The design treats descriptor
+   * conflicts as observable signal, so they ride alongside the result rather than
+   * being silently discarded at the kernel boundary. Empty when the merge was
+   * clean (the common case: namespaced facet keys collide with nothing).
+   */
+  catalogWarnings?: CatalogWarning[];
 }
 
 /** A map of relative file path to its source text — the upload payload. */
