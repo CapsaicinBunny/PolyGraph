@@ -46,4 +46,8 @@
     <question>Among the top-level functions in the mcp/evals/fixture project, exactly one is never called by any other function in the project. What is its name?</question>
     <answer>main</answer>
   </qa_pair>
+  <qa_pair>
+    <question>Read the file db.ts in the mcp/evals/fixture project. What string literal does its connect function return?</question>
+    <answer>connected</answer>
+  </qa_pair>
 </evaluation>
