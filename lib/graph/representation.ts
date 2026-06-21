@@ -29,6 +29,20 @@ import {
   subdivideOnce,
 } from "./representation-subdivision";
 
+// The persistent CSR edge index is built ALONGSIDE the hierarchy and cached on the same
+// material signature (design B2 + impl note (a)). Re-exported here so consumers of the
+// representation hierarchy reach the index from one module; the implementation lives in
+// representation-edge-index.ts (it depends on this module, not the reverse).
+export {
+  buildRepresentationEdgeIndex,
+  type EdgeIndexInput,
+  edgesBetween,
+  incomingBoundary,
+  outgoingBoundary,
+  type RepresentationEdgeIndex,
+  representationEdgeIndexVersion,
+} from "./representation-edge-index";
+
 /**
  * The explanatory object model of a single representation level (Appendix A: "The object
  * `RepresentationNode[]` form stays the explanatory model; the columnar form is the

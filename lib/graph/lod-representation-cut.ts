@@ -26,10 +26,14 @@ import { NO_GROUP } from "./grouping-snapshot";
 import type { Box, Camera, Viewport } from "./lod-screen";
 import { intersectsViewport, screenHeight, worldToScreen } from "./lod-screen";
 import {
+  buildRepresentationEdgeIndex,
   buildRepresentationHierarchy,
   DETACHED_REP,
+  type EdgeIndexInput,
+  type RepresentationEdgeIndex,
   type RepresentationHierarchy,
   representationBuilderVersion,
+  representationEdgeIndexVersion,
   representativeOf,
 } from "./representation";
 import {
@@ -66,6 +70,15 @@ import type { CollapseIntent, GroupId } from "./collapse-model";
  */
 export const REPRESENTATION_BUILDER_VERSION = representationBuilderVersion;
 
+/**
+ * Version of the persistent CSR edge index (design B2 + impl note (a)). Folded into the
+ * {@link RepresentationMaterialSignature} alongside {@link REPRESENTATION_BUILDER_VERSION} so a
+ * change to the index layout / pairing rule invalidates every cached {@link RepresentationRuntime}
+ * (the index is cached ON the runtime, on the SAME signature). Re-exports the single source of
+ * truth from the edge-index module; it already concatenates the hierarchy builder version.
+ */
+export const REPRESENTATION_EDGE_INDEX_VERSION = representationEdgeIndexVersion;
+
 /** Tuning for the representation cut, mirroring the C1a GroupCutOptions surface. */
 export interface RepLodOptions {
   /** Minimum on-screen box height (px) for a proxy to auto-refine into its children. */
@@ -101,6 +114,16 @@ export interface RepLodInput {
    * community detection is reused via the snapshot; it is NOT re-run over the full graph.
    */
   visibleNode?: (ordinal: number) => boolean;
+  /**
+   * POST-FILTER edges by node ORDINAL (design B2 + impl note (a)). When provided, a persistent
+   * CSR {@link RepresentationEdgeIndex} is built ALONGSIDE the hierarchy and cached on the SAME
+   * material signature ({@link RepresentationRuntime.edgeIndex}) — a camera recut reuses it,
+   * only a material change rebuilds it. The index drives the solver's cut-aware marginal edge
+   * cost and the incremental materializer's boundary-edge retrieval (Gap 9). Hidden endpoints
+   * (per {@link visibleNode}, reflected in the hierarchy's detachment) are dropped. Omitted →
+   * no index is built (the legacy behavior; the additive per-rep edge cost stands in).
+   */
+  edges?: readonly EdgeIndexInput[];
   /** Live scene boxes per layout box key (open ClusterBoxes + collapsed aggregate cards). */
   boxes: Map<string, Box>;
   cam: Camera;
@@ -169,6 +192,13 @@ export interface RepresentationRuntime {
   signature: RepresentationMaterialSignature;
   /** The proxy hierarchy (arrays, subtree-cost rollups, DFS intervals) — built ONCE. */
   hierarchy: RepresentationHierarchy;
+  /**
+   * The persistent CSR edge index (design B2 + impl note (a)), built ONCE alongside the
+   * hierarchy from the post-filter edges, or `undefined` when the caller supplied no `edges`.
+   * Reused across camera recuts (it is a function of the material signature, not the camera);
+   * a material change rebuilds it together with the hierarchy.
+   */
+  edgeIndex: RepresentationEdgeIndex | undefined;
   /** The canonical node-id order the hierarchy was built from (reused, not re-mapped). */
   nodeIds: readonly string[];
   /** namespaced group id → rep id, built once with the hierarchy (used for intent → constraints). */
@@ -200,6 +230,7 @@ export function materialSignature(input: RepLodInput): RepresentationMaterialSig
     `gv=${groupingVersion}`,
     `nc=${nodeCostSig}`,
     `b=${REPRESENTATION_BUILDER_VERSION}`,
+    `e=${REPRESENTATION_EDGE_INDEX_VERSION}`,
   ].join("|");
 }
 
@@ -236,6 +267,10 @@ export function acquireRepresentationRuntime(
   for (let g = 0; g < input.snapshot.groupIds.length; g++) {
     repOfGroupId.set(input.snapshot.groupIds[g], hierarchy.repOfGroup[g]);
   }
+  // Build the persistent CSR edge index ALONGSIDE the hierarchy (design B2 + impl note (a)),
+  // from the post-filter edges — cached on this same material signature, reused across recuts.
+  // Hidden endpoints are dropped by the index itself (a leaf rep under DETACHED_REP).
+  const edgeIndex = input.edges ? buildRepresentationEdgeIndex(hierarchy, input.edges) : undefined;
   // The eviction controller's key space is the rep count; rebuild it when the rep count
   // changes (a new hierarchy), else reuse the prior controller (its tracking is stale only
   // when the rep id domain moved, which a material change implies — so a fresh one is correct).
@@ -243,6 +278,7 @@ export function acquireRepresentationRuntime(
   return {
     signature,
     hierarchy,
+    edgeIndex,
     nodeIds: input.nodeIds,
     repOfGroupId,
     eviction,
