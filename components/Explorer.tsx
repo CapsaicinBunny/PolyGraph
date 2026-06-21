@@ -63,7 +63,9 @@ import { ThemeToggle } from "./ThemeToggle";
 import { UploadDropzone } from "./UploadDropzone";
 import type { ExplorerWorkspaceState } from "@/lib/workspace/schema";
 import { isTauri } from "@/lib/client/env";
+import { hasIntegrityIssue, scanDiagnostics } from "@/lib/graph/scan-diagnostics";
 import { telemetry } from "@/lib/telemetry";
+import { setDiagnosticContext } from "@/lib/telemetry/diagnostic-context";
 import { startSessionLogPersist } from "@/lib/telemetry/persist";
 
 // Vello renders via WebGPU (browser-only), so load it client-side.
@@ -654,9 +656,37 @@ export function Explorer() {
       setCommunityCollapse(false);
       setFocusedIds(null);
       resetFileFilters(res.graph);
+      // Diagnostics: a data-shape + integrity snapshot of every scan, so a misbehaving
+      // result is diagnosable from the session log alone (a non-zero integrity count is a
+      // real defect — e.g. the null-facet scan crash that took a headless repro to find).
+      // Best-effort; diagnostics must never break the result flow.
+      try {
+        const diag = scanDiagnostics(res.graph, res.dimensions, res.catalogWarnings);
+        telemetry.event(
+          "analysis",
+          "scan-diagnostics",
+          diag as unknown as Record<string, unknown>,
+          hasIntegrityIssue(diag) ? "warn" : "info",
+        );
+        setDiagnosticContext({
+          scan: { nodes: diag.nodes, edges: diag.edges, dimensions: diag.dimensions },
+          projectPath: scannedPath,
+        });
+      } catch {
+        /* never break the result flow */
+      }
     },
     [resetFileFilters, seedDirectoryLod],
   );
+
+  // Mirror the active view config into the crash-diagnostic context, so an error fired
+  // mid-interaction (changing group-by, expanding, filtering) records what the user was
+  // looking at — not just the throw site. Cheap; runs only when one of these changes.
+  useEffect(() => {
+    setDiagnosticContext({
+      view: { level, groupBy, algorithm, direction, density, showExternal, edgeRouting },
+    });
+  }, [level, groupBy, algorithm, direction, density, showExternal, edgeRouting]);
 
   // Switching levels clears any focus/selection (ids differ across projections) and,
   // for the file/symbol levels, sets a sensible expand state.
