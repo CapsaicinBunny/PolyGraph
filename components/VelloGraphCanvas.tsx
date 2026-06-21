@@ -49,7 +49,7 @@ import {
   DEFAULT_REP_LOD_OPTIONS,
   materialSignature,
 } from "@/lib/graph/lod-representation-cut";
-import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
+import { cameraBand, proxyBoxes, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
 import { decideRecut, type RecutTrigger } from "@/lib/graph/lod-recut-mode";
 import {
   centerCameraOn,
@@ -325,6 +325,15 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     [showExternal, enabledFacets, enabledEdgeKinds, enabledFolders, enabledLanguages],
   );
 
+  // The AUTHORITATIVE rep-cut render scene (design impl point 5). When `representationLod` is on,
+  // the recut materializes the committed cut into a folded proxy GraphModel and stores it here;
+  // `useScene` then builds the rendered structure DIRECTLY from it (NOT from
+  // `compose()`/`collapsedClusters`/`collapseClusters()`). Null until the first committed cut (the
+  // C1a base structure renders meanwhile as the bootstrap) and whenever representationLod is off.
+  const [repScene, setRepScene] = useState<{ scene: GraphModel; cutSignature: string } | null>(
+    null,
+  );
+
   const {
     scene,
     layingOut,
@@ -346,6 +355,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     projected,
     catalog,
     manifests,
+    representationLod ? repScene : null,
   );
   const { resolvedTheme } = useTheme();
 
@@ -508,6 +518,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // its active proxy"). Holds the hierarchy + runtimeCut for the representativeOf walk.
   const lastRep = useRef<RepLodResult | null>(null);
 
+  // A handle to the mount-effect's `recomputeCut`, so effects OUTSIDE the mount effect (e.g. the
+  // scene-ready effect that fires the FIRST cut when a new scene lands) can trigger a recut without
+  // a camera gesture. Assigned once the mount effect installs the listeners; null before that.
+  const recomputeCutRef = useRef<((trigger: RecutTrigger) => void) | null>(null);
+
   // The PERSISTENT representation runtime (design Gap 4): the cached hierarchy, node
   // ordinals, group-id map, eviction + runtime-cut controller, and committed-generation
   // runtime. A camera recut REUSES this (updating bounds/priorities/cut) rather than
@@ -630,6 +645,20 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.groupBy = groupBy;
   lod.current.groupingSnapshot = groupingSnapshot ?? null;
   const lodBand = useRef(cameraBand(1));
+
+  // Drop the authoritative rep scene when the rep id domain moves (a grouping-mode switch), the
+  // rep cut is turned off, OR the POST-FILTER projection could have changed (graph / filters /
+  // query narrowing). A folded scene from the OLD mode (or a now-disabled cut) must not keep
+  // rendering; just as important, a fold from the PRIOR filter set is stale —
+  // `buildSceneStructureFromModel` renders the materialized nodes VERBATIM (it deliberately does
+  // not re-filter), so a now-hidden node would linger as a rendered own-node and a proxy's
+  // member-count badge would be wrong until the next committed recut lands. Clearing here drops to
+  // the always-correct C1a base structure for one frame (the honest bootstrap) instead of showing
+  // the stale fold. The scene-ready effect then fires a recut that repopulates `repScene` from the
+  // new projection. (This effect only invalidates; the recut owns repopulation.)
+  useEffect(() => {
+    setRepScene(null);
+  }, [groupBy, representationLod, graph, filters, queryIds]);
 
   // The JSON payload Vello consumes. Built from the positioned scene.
   const payload = useMemo(() => {
@@ -864,7 +893,15 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       // alone. (Generalized from the old groupBy!=="directory" + zero-cluster guards: the
       // cut now runs in EVERY mode via boxKey, fixing the bug where changing the group mode
       // disabled LOD.)
-      const boxes = sceneBoxes(l.scene);
+      // Box geometry the cut measures from. Once the rep cut is authoritative, the rendered scene
+      // is the materializer's proxy cards — a collapsed group is a generic `«proxy»` card, NOT an
+      // `isAggregateId` directory card — so read collapsed-group bounds via `proxyBoxes` (rep →
+      // group → box key through the prior cut's hierarchy). Open groups still come from
+      // scene.clusters in both. Before the first committed cut (no hierarchy yet) the C1a base
+      // structure is what's rendered, so the directory-aggregate `sceneBoxes` is correct.
+      const prevHier = lastRep.current?.hierarchy;
+      const boxes =
+        l.representationLod && prevHier ? proxyBoxes(l.scene, prevHier) : sceneBoxes(l.scene);
       if (boxes.size === 0) return;
       const c = cam.current;
       const band = cameraBand(c.scale);
@@ -961,26 +998,36 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         const result = buildSceneRepresentationCut({ ...input, runtime });
         lastRep.current = result;
         l.onRepLod?.(result);
-        // Only a committed generation drives a scene rebuild — hand up the open selection.
+        // Only a committed generation drives a scene rebuild.
         if (result.committed) {
+          // Hand up the open selection. This still feeds compose() → collapsedClusters, but ONLY
+          // for legacy UI state (the cluster-collapse toggles, workspace export, the C1a fallback
+          // base structure). It NO LONGER builds the production scene (design impl point 5): the
+          // rendered scene is the materializer output set below, not collapseClusters(openSelection).
           l.onCut(l.groupBy, result.openSelection);
-          // P1 INCREMENTAL materialization (design impl point 4 / Gap 9). Drive the persistent
-          // fold session from the committed cut: the first committed cut runs the full fold, each
-          // later one re-folds ONLY the changed subtrees (cost ∝ changed region). Rebuild the
-          // session in lockstep with the runtime (same material signature → same hierarchy / node
-          // ordinals; `l.graph` is the post-filter graph in `repNodeIds` ordinal order). Gated on a
-          // consumer — no `onProxyScene`, no fold work.
-          if (l.onProxyScene) {
-            let entry = proxySessionRef.current;
-            if (!entry || entry.signature !== sig) {
-              entry = {
-                session: new IncrementalSceneSession(l.graph, runtime.hierarchy, { visibleNode }),
-                signature: sig,
-              };
-              proxySessionRef.current = entry;
-            }
-            l.onProxyScene(entry.session.recut(result.cut));
+
+          // P1 GENERIC + INCREMENTAL materialization (design Gap 1 / Gap 9 / impl point 5). Fold the
+          // committed cut into the AUTHORITATIVE production scene: intent → solver constraints →
+          // LodCut → proxy materializer → scene, with NO compose()/collapseClusters() in the path.
+          // The persistent fold session re-folds ONLY the changed subtrees (cost ∝ changed region);
+          // it is rebuilt in lockstep with the runtime (same material signature → same hierarchy /
+          // node ordinals; `l.graph` is the post-filter graph in `repNodeIds` ordinal order).
+          let entry = proxySessionRef.current;
+          if (!entry || entry.signature !== sig) {
+            entry = {
+              session: new IncrementalSceneSession(l.graph, runtime.hierarchy, { visibleNode }),
+              signature: sig,
+            };
+            proxySessionRef.current = entry;
           }
+          const folded = entry.session.recut(result.cut);
+          // Adopt the folded scene as the render scene. The salt (material signature + committed
+          // generation) is the layout-cache key term standing in for C1a's ser(collapsedClusters):
+          // a materially-different committed cut gets a distinct cached layout.
+          setRepScene({ scene: folded, cutSignature: `${sig}#${result.runtime.generation}` });
+          // Optional extra consumer (telemetry / external adoption) — the production path no longer
+          // depends on it, but keep the hook for callers that observe the folded scene directly.
+          l.onProxyScene?.(folded);
         }
         return;
       }
@@ -1080,6 +1127,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         l.onCut("directory", directoryLodSelection(next, l.dirTree));
       }
     };
+    // Expose to the scene-ready effect so it can fire the first cut on a new scene (no gesture).
+    recomputeCutRef.current = recomputeCut;
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -1336,6 +1385,26 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, payload, fitSignature, scene, layoutReady]);
+
+  // INITIAL / refresh rep cut (design impl point 5). The mount-effect's recomputeCut fires only on
+  // camera gestures, so without this the authoritative materializer path would never run until the
+  // user zooms/pans — the bootstrap C1a base scene would render indefinitely. When a fresh
+  // layout-ready scene lands (a new graph / filter / grouping / the rep scene itself), fire one cut
+  // so the committed cut is materialized into the production scene. The solver's committed-generation
+  // guard makes this idempotent: re-running the SAME committed cut returns committed=false, so
+  // folding the rep scene's own re-layout does NOT loop (no second setRepScene). Skipped while the
+  // rep cut is off (the C1a path renders directly) and until recomputeCut is installed.
+  const lastCutScene = useRef<Scene | null>(null);
+  useEffect(() => {
+    if (!representationLod || !ready || !layoutReady) return;
+    if (scene === lastCutScene.current) return; // same scene (highlight/dim only) — nothing to recut
+    lastCutScene.current = scene;
+    // "pan" (visibility) ALWAYS runs the cut (no band-advance requirement) without forcing deeper
+    // refinement — exactly what an initial / post-change materialization needs. A real zoom still
+    // refines via the wheel handler.
+    recomputeCutRef.current?.("pan");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [representationLod, ready, layoutReady, scene]);
 
   // Selection / search are cheap — just update + redraw.
   useEffect(() => {

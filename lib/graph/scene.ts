@@ -413,6 +413,67 @@ export function buildSceneStructure(
     if (n.kind !== "file") symbolCount.set(n.parentFile, (symbolCount.get(n.parentFile) ?? 0) + 1);
   }
 
+  return structureFromView({
+    view,
+    visibleEdges,
+    signature,
+    visibleNodeIds: keptIds,
+    symbolCount,
+    graph,
+    algorithm,
+    direction,
+    groupBy,
+    density,
+    communityOf,
+    enabledEdgeKinds,
+    catalog,
+    manifests,
+  });
+}
+
+/**
+ * The geometry-free tail shared by {@link buildSceneStructure} (the C1a collapse path) and
+ * {@link buildSceneStructureFromModel} (the authoritative rep-cut materializer path): given an
+ * already built {@link buildView} result, style the nodes/edges, build the layout input and the
+ * Smart grouping snapshot, and assemble the {@link SceneStructure}. Pure. It is the SINGLE place
+ * that turns a folded source graph's view into renderable structure — so both LOD paths render
+ * byte-identically once they agree on the folded graph; they differ ONLY in HOW that graph was
+ * folded (collapseClusters vs. the proxy materializer).
+ */
+function structureFromView(args: {
+  view: ReturnType<typeof buildView>;
+  visibleEdges: ReturnType<typeof buildView>["edges"];
+  signature: string;
+  visibleNodeIds: Set<string>;
+  /** parentFile → symbol count, over the ORIGINAL graph (for the card badge). */
+  symbolCount: Map<string, number>;
+  /** The original (pre-fold) graph — only its identity (graphKeyFor) + facet resolution is read. */
+  graph: GraphModel;
+  algorithm: LayoutAlgorithm;
+  direction: LayoutDirection;
+  groupBy: GroupBy;
+  density: number;
+  communityOf: Map<string, string> | undefined;
+  enabledEdgeKinds: Set<ViewEdgeKind>;
+  catalog: DimensionCatalog;
+  manifests: PackageManifest[];
+}): SceneStructure {
+  const {
+    view,
+    visibleEdges,
+    signature,
+    visibleNodeIds,
+    symbolCount,
+    graph,
+    algorithm,
+    direction,
+    groupBy,
+    density,
+    communityOf,
+    catalog,
+    manifests,
+  } = args;
+
   const externalColor = new Map<string, string>();
   for (const n of view.nodes) {
     if (n.kind === "external")
@@ -487,8 +548,116 @@ export function buildSceneStructure(
     layoutInput,
     options: { algorithm, direction, groupBy, density, communityOf, groupingSnapshot },
     // The post-filter visible base nodes (pre-collapse) — the projection the rep cut uses.
-    visibleNodeIds: keptIds,
+    visibleNodeIds,
   };
+}
+
+/**
+ * The AUTHORITATIVE rep-cut scene structure (design "Retire compose()" / impl point 5). Build the
+ * renderable {@link SceneStructure} DIRECTLY from a proxy GraphModel the rep-cut materializer
+ * already produced (`materializeRepresentationScene` / {@link IncrementalSceneSession}) — the
+ * folded scene whose nodes are proxy aggregate cards + own nodes and whose edges are aggregated
+ * between active representatives.
+ *
+ * This path deliberately does NOT run filtering or {@link collapseClusters}: the materializer
+ * already applied the post-filter visibility mask and folded the cut's selected proxies. So it is
+ * the production render path the spec mandates —
+ *
+ *   intent → solver constraints → LodCut → proxy materializer → scene
+ *
+ * — with NO `compose()` / `collapsedClusters` / `collapseClusters()` step mutating the production
+ * scene. `compose()` survives only for the C1a fallback, workspace migration, legacy UI state, and
+ * translating intent/bootstrap into solver constraints; it never reaches here.
+ *
+ * `communityOf` is the scene's filtered-graph community map (passed through for the Smart layout's
+ * Community containers); `visibleNodeIds` is the post-filter projection the cut was built over (so
+ * the structure reports the same projection the C1a path does). `originalGraph` is read only for
+ * its identity (the layout-cache key) — never re-filtered or re-folded.
+ */
+export function buildSceneStructureFromModel(
+  /** The folded proxy scene from the materializer (proxy cards + own nodes + aggregated edges). */
+  materialized: GraphModel,
+  /** The original (pre-fold) graph — only its identity + symbol counts are read. */
+  originalGraph: GraphModel,
+  expanded: Set<string>,
+  filters: SceneFilters,
+  algorithm: LayoutAlgorithm,
+  direction: LayoutDirection,
+  groupBy: GroupBy,
+  density: number,
+  visibleNodeIds: Set<string>,
+  signatureSalt: string,
+  communityOf?: Map<string, string>,
+  focusedIds: Set<string> | null = null,
+  queryIds: Set<string> | null = null,
+  projected = false,
+  catalog: DimensionCatalog = clientCatalog(undefined),
+  manifests: PackageManifest[] = [],
+): SceneStructure {
+  const { showExternal, enabledFacets, enabledEdgeKinds, enabledFolders, enabledLanguages } =
+    filters;
+
+  // A focused symbol still needs its parent file open so it has a container to nest in
+  // (mirrors buildSceneStructure). The proxy materializer renders own nodes verbatim, so the
+  // parent file is present whenever its leaf rep is selected; force it open in the view.
+  const focusParents = new Set<string>();
+  if (focusedIds) {
+    const byId = new Map(materialized.nodes.map((n) => [n.id, n]));
+    for (const id of focusedIds) {
+      const n = byId.get(id);
+      if (n && n.kind !== "file" && n.kind !== "external") focusParents.add(n.parentFile);
+    }
+  }
+  const viewExpanded = focusParents.size > 0 ? new Set([...expanded, ...focusParents]) : expanded;
+  const view = buildView(materialized, viewExpanded);
+  const visibleEdges = view.edges.filter(
+    (e) => e.kind === "contains" || enabledEdgeKinds.has(e.kind),
+  );
+
+  // The layout-cache signature. `signatureSalt` is the cut identity (the committed
+  // generation / selected-rep signature) the caller supplies — it replaces C1a's
+  // `ser(collapsedClusters)` term so a different rep cut gets a distinct cached layout. Every
+  // other term mirrors buildSceneStructure so the two paths never collide in the cache.
+  const signature = [
+    graphKeyFor(originalGraph),
+    `cat:${catalogKeyFor(catalog)}`,
+    algorithm,
+    direction,
+    `x${showExternal ? 1 : 0}`,
+    ser(expanded),
+    `f:${serializeFacetSelections(enabledFacets)}`,
+    ser(enabledEdgeKinds),
+    ser(enabledFolders),
+    ser(enabledLanguages),
+    `rep:${signatureSalt}`,
+    groupBy,
+    `d${density}`,
+    focusedIds ? `focus:${[...focusedIds].sort().join(",")}` : "focus:none",
+    queryIds ? `q:${[...queryIds].sort().join(",")}` : "q:none",
+    `p${projected ? 1 : 0}`,
+  ].join("|");
+
+  const symbolCount = new Map<string, number>();
+  for (const n of originalGraph.nodes) {
+    if (n.kind !== "file") symbolCount.set(n.parentFile, (symbolCount.get(n.parentFile) ?? 0) + 1);
+  }
+
+  return structureFromView({
+    view,
+    visibleEdges,
+    signature,
+    visibleNodeIds,
+    symbolCount,
+    graph: originalGraph,
+    algorithm,
+    direction,
+    groupBy,
+    density,
+    communityOf,
+    enabledEdgeKinds,
+    catalog,
+    manifests,
+  });
 }
 
 /**

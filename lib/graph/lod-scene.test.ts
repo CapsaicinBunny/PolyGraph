@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { aggregateNodeId } from "./collapse";
-import { cameraBand, sceneBoxes, shouldFit } from "./lod-scene";
+import { cameraBand, proxyBoxes, sceneBoxes, shouldFit } from "./lod-scene";
+import { buildGroupingSnapshot } from "./grouping-snapshot";
+import { directoryGrouping } from "./grouping";
+import { buildRepresentationHierarchy } from "./representation";
+import { proxyNodeId } from "./proxy-materialize";
+import type { GraphModel } from "./types";
 import type { Scene } from "./scene";
 
 const aggNode = (dir: string, x: number, y: number) => ({
@@ -40,6 +45,73 @@ describe("sceneBoxes", () => {
       clusters: [],
     };
     expect(sceneBoxes(scene).size).toBe(0);
+  });
+});
+
+describe("proxyBoxes (rep-cut materializer scene → group box keys)", () => {
+  const file = (path: string) => ({
+    id: path,
+    kind: "file" as const,
+    label: path,
+    filePath: path,
+    line: 0,
+    parentFile: path,
+  });
+  const graph: GraphModel = { nodes: [file("a/x/f1.c"), file("b/z/f4.c")], edges: [] };
+  const nodeIds = graph.nodes.map((n) => n.id);
+  const snap = buildGroupingSnapshot(directoryGrouping(graph), "directory", nodeIds);
+  const hierarchy = buildRepresentationHierarchy(snap, nodeIds, { nodeCost: () => 1 });
+
+  // The proxy card node shape (mirrors proxyNodeFor's output + the scene node geometry fields).
+  const proxyCard = (rep: number, x: number, y: number) => ({
+    id: proxyNodeId(rep),
+    kind: "file" as const,
+    x,
+    y,
+    width: 200,
+    height: 56,
+    label: "proxy",
+    glyph: "",
+    shape: "doc" as const,
+    color: "#000",
+    symbolCount: 0,
+    isFile: true,
+    isExternal: false,
+  });
+
+  test("maps a collapsed group's proxy card back to its group box key", () => {
+    // Group ordinal 0 is the first group in the snapshot; its rep is repOfGroup[0].
+    const g = 0;
+    const rep = hierarchy.repOfGroup[g];
+    const boxKey = snap.boxKeyByGroup[g];
+    const scene: Scene = {
+      nodes: [proxyCard(rep, 12, 34)],
+      edges: [],
+      positions: new Map(),
+      clusters: [],
+    };
+    const boxes = proxyBoxes(scene, hierarchy);
+    expect(boxes.get(boxKey)).toEqual({ x: 12, y: 34, w: 200, h: 56 });
+  });
+
+  test("still reads open-group cluster boxes (parity with sceneBoxes)", () => {
+    const scene: Scene = {
+      nodes: [],
+      edges: [],
+      positions: new Map(),
+      clusters: [{ id: "a", x: 0, y: 0, width: 500, height: 400, depth: 0, label: "a" }],
+    };
+    expect(proxyBoxes(scene, hierarchy).get("a")).toEqual({ x: 0, y: 0, w: 500, h: 400 });
+  });
+
+  test("ignores non-proxy nodes (raw files draw as themselves — no box key)", () => {
+    const scene: Scene = {
+      nodes: [{ ...proxyCard(0, 0, 0), id: "a/x/f1.c" }],
+      edges: [],
+      positions: new Map(),
+      clusters: [],
+    };
+    expect(proxyBoxes(scene, hierarchy).size).toBe(0);
   });
 });
 

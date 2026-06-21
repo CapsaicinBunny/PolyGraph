@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyPositions,
   buildSceneStructure,
+  buildSceneStructureFromModel,
   type Scene,
   type SceneFilters,
 } from "@/lib/graph/scene";
@@ -46,6 +47,15 @@ export function useScene(
   projected = false,
   catalog?: DimensionCatalog,
   manifests: PackageManifest[] = [],
+  /**
+   * The AUTHORITATIVE rep-cut scene (design "Retire compose()" / impl point 5). When present, the
+   * production render structure is built DIRECTLY from this folded proxy GraphModel (the rep-cut
+   * materializer's output) — NOT from `collapsedClusters` / `collapseClusters()`. The
+   * `collapsedClusters` arg then only seeds the C1a base structure that supplies `communityOf` +
+   * `visibleNodeIds` + the bootstrap boxes the cut refines from; it never folds the rendered scene.
+   * Omitted/null → the legacy C1a path (collapseClusters builds the scene), unchanged.
+   */
+  repScene: { scene: GraphModel; cutSignature: string } | null = null,
 ): {
   scene: Scene;
   layingOut: boolean;
@@ -55,7 +65,12 @@ export function useScene(
   /** Post-filter visible base-node ids (pre-collapse) — feeds the rep cut's Gap 7 mask. */
   visibleNodeIds: Set<string>;
 } {
-  const structure = useMemo(
+  // The C1a base structure. It is the FALLBACK render scene (when there is no rep scene yet) AND,
+  // when the rep cut is authoritative, the source of `communityOf` (the filtered-graph community
+  // labels the Smart layout needs) + `visibleNodeIds` (the post-filter projection the rep cut is
+  // built over) + the bootstrap boxes the cut refines from. It is NOT the rendered structure once a
+  // `repScene` arrives — `collapseClusters` no longer folds the production scene then.
+  const baseStructure = useMemo(
     () =>
       buildSceneStructure(
         graph,
@@ -90,6 +105,49 @@ export function useScene(
       manifests,
     ],
   );
+
+  // The AUTHORITATIVE structure (design impl point 5). When a `repScene` is present, build the
+  // rendered structure DIRECTLY from the materializer's folded proxy graph — bypassing
+  // `compose()` / `collapsedClusters` / `collapseClusters()` entirely. The base structure's
+  // `communityOf` + `visibleNodeIds` carry through (both are pure functions of the post-filter
+  // graph, which the materializer also folded over, so they agree). Otherwise the base structure
+  // IS the render structure (the unchanged C1a path).
+  const structure = useMemo(() => {
+    if (!repScene) return baseStructure;
+    return buildSceneStructureFromModel(
+      repScene.scene,
+      graph,
+      expanded,
+      filters,
+      algorithm,
+      direction,
+      groupBy,
+      density,
+      baseStructure.visibleNodeIds,
+      repScene.cutSignature,
+      baseStructure.options.communityOf,
+      focusedIds,
+      queryIds,
+      projected,
+      catalog,
+      manifests,
+    );
+  }, [
+    repScene,
+    baseStructure,
+    graph,
+    expanded,
+    filters,
+    algorithm,
+    direction,
+    groupBy,
+    density,
+    focusedIds,
+    queryIds,
+    projected,
+    catalog,
+    manifests,
+  ]);
 
   const initial = layoutCacheGet(structure.signature);
   const [positions, setPositions] = useState<Map<string, XYPosition>>(
