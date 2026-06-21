@@ -27,6 +27,8 @@
 import type { LodBudget, LodCut } from "./lod-cut-solver";
 import type { RepresentationEdgeIndex } from "./representation-edge-index";
 import type { RepresentationColumns, RepresentationHierarchy } from "./representation";
+import { representationBoundsOf } from "./representation-bounds";
+import { type OverflowResolution, resolveOverflow } from "./overflow-ladder";
 import {
   type CutDiff,
   diffCuts,
@@ -316,6 +318,51 @@ function revertBatch(selected: Set<number>, added: number[], removed: number[]):
   for (const r of removed) selected.add(r);
 }
 
+/** Default overflow-ladder tuning when the caller supplies none (mirrors the unit-test base). */
+export const DEFAULT_OVERFLOW_TUNING = {
+  /** How far past the box the compacted local layout may pan before grow is preferred. */
+  maxPanRatio: 1.5,
+  /** Sibling slack to borrow before growing the envelope (0 = none by default). */
+  siblingSlackW: 0,
+  siblingSlackH: 0,
+} as const;
+
+/**
+ * Resolve the overflow of ONE refined subtree root against its tiered reservation (design P3
+ * overflow + Appendix A §C). The root's refinement reveals its (bounded) children, which need
+ * the next-tier reservation's extent; that extent is checked against the root's CURRENT box and
+ * escalated through the SCOPED ladder — scale → clip-pan → borrow-slack → grow-envelope →
+ * scoped-relayout — by {@link resolveOverflow}. The growth ceiling is the rep's
+ * `growthEnvelope` (filled by {@link computeRepresentationBounds}), so envelope growth is CAPPED
+ * by representation-bounds and the deepest escalation is a SCOPED subtree relayout. The result's
+ * `global` field is ALWAYS false — a refinement never triggers a global relayout (the §C
+ * invariant). A leaf / zero-box / unbounded rep resolves trivially at the scale rung.
+ */
+export function resolveBatchOverflow(
+  cols: RepresentationColumns,
+  rep: number,
+  tuning: {
+    maxPanRatio: number;
+    siblingSlackW: number;
+    siblingSlackH: number;
+  } = DEFAULT_OVERFLOW_TUNING,
+): OverflowResolution {
+  const b = representationBoundsOf(cols, rep);
+  // The refined contents need (at least) the NEXT-tier reservation's extent. That reservation is
+  // already bounded by the direct-child count (never the full-leaf extent — the Space Paradox
+  // fix), so it is the right "required" footprint to fit the children into the current box.
+  const required = { x: b.current.x, y: b.current.y, w: b.nextReserved.w, h: b.nextReserved.h };
+  return resolveOverflow({
+    current: b.current,
+    required,
+    growthEnvelope: b.growthEnvelope,
+    minScale: b.minScale > 0 ? b.minScale : 1,
+    siblingSlackW: tuning.siblingSlackW,
+    siblingSlackH: tuning.siblingSlackH,
+    maxPanRatio: tuning.maxPanRatio,
+  });
+}
+
 /** The outcome of committing a single {@link TransitionBatch}. */
 export interface BatchCommitOutcome {
   batch: TransitionBatch;
@@ -323,6 +370,12 @@ export interface BatchCommitOutcome {
   committed: boolean;
   /** The hard ceiling that rejected the batch (null when committed). */
   rejectedBy: "cards" | "layout" | "edges" | "labels" | "gpu" | null;
+  /**
+   * The per-refined-root overflow resolutions for this batch (design P3 overflow). Every
+   * resolution has `global === false` — a refined group escalates through the SCOPED ladder and
+   * NEVER triggers a global relayout. A coarsen-only batch (no refined roots) has an empty array.
+   */
+  overflow: { root: number; resolution: OverflowResolution }[];
 }
 
 /** The result of committing a whole transition (one diff's worth of batches). */
@@ -335,6 +388,15 @@ export interface TransitionResult {
   outcomes: BatchCommitOutcome[];
   /** True iff at least one batch committed (the scene/cut changed). */
   anyCommitted: boolean;
+  /**
+   * True iff any COMMITTED refined root exhausted its growth envelope (the overflow ladder's
+   * final `scoped-relayout` rung — design P3 overflow + global-relayout's `envelopeExhaustedNonce`).
+   * This is the ONLY camera-adjacent signal that may later request a GLOBAL relayout: the caller
+   * bumps {@link GlobalLayoutInputs.envelopeExhaustedNonce} on it. It is NOT a global relayout in
+   * itself — the in-flight transition stays scoped (`resolution.global === false`); a global
+   * relayout fires only on the NEXT solve through {@link globalRelayoutReason}.
+   */
+  envelopeExhausted: boolean;
 }
 
 /**
@@ -372,6 +434,8 @@ export function commitTransitionBatches(input: {
   targetGeneration: number;
   /** Optional instrumentation (touched nodes/edges per applied batch). */
   counter?: MaterializeCounter;
+  /** Overflow-ladder tuning (pan cap + sibling slack); defaults to {@link DEFAULT_OVERFLOW_TUNING}. */
+  overflowTuning?: { maxPanRatio: number; siblingSlackW: number; siblingSlackH: number };
 }): TransitionResult {
   const { hierarchy, edgeIndex, materializer, committed, target, budget, targetGeneration } = input;
   const cols = hierarchy.columns;
@@ -382,6 +446,12 @@ export function commitTransitionBatches(input: {
     hierarchy.repCount,
   );
   const batches = groupTransitionBatches(diff, hierarchy, edgeIndex, targetGeneration);
+
+  // A batch root is REFINED (its proxy opened — it grows its contents into its reservation) iff it
+  // appears in the diff's `refined` set. Only refined roots can overflow their reserved box; a
+  // coarsened root folds INTO one card and needs no overflow resolution.
+  const refinedRoots = new Set<number>();
+  for (let i = 0; i < diff.refined.length; i++) refinedRoots.add(diff.refined[i]);
 
   // Index the TARGET cut's selected reps by the changed-subtree ROOT whose subtree contains them
   // (a target rep falls under exactly one batch root, or none — the unchanged region). A batch's
@@ -417,14 +487,28 @@ export function commitTransitionBatches(input: {
   );
   const outcomes: BatchCommitOutcome[] = [];
   let anyCommitted = false;
+  let envelopeExhausted = false;
 
   for (const batch of batches) {
+    // Resolve overflow for each REFINED root in the batch through the SCOPED ladder (design P3
+    // overflow). Every resolution is `global:false` — a refinement never triggers a global
+    // relayout; the growth ceiling is the rep's envelope (representation-bounds caps it). The
+    // final `scoped-relayout` rung flags an envelope exhaustion (a later, explicit global-relayout
+    // request — NOT a global relayout of this transition).
+    const overflow: { root: number; resolution: OverflowResolution }[] = [];
+    for (let i = 0; i < batch.roots.length; i++) {
+      const root = batch.roots[i];
+      if (!refinedRoots.has(root)) continue; // coarsen-only root — no growth, no overflow
+      const resolution = resolveBatchOverflow(cols, root, input.overflowTuning);
+      overflow.push({ root, resolution });
+    }
+
     const { added, removed } = applyBatchToSelection(cols, selected, batch, rootOfTarget);
     const rejectedBy = hardBudgetBreach(cols, edgeIndex, selected, budget);
     if (rejectedBy !== null) {
       // REJECTED — revert the candidate selection; the scene + committed cut stay unchanged.
       revertBatch(selected, added, removed);
-      outcomes.push({ batch, committed: false, rejectedBy });
+      outcomes.push({ batch, committed: false, rejectedBy, overflow });
       continue;
     }
     // ACCEPTED — materialize the batch atomically against the running scene. The CutDiff handed
@@ -439,8 +523,10 @@ export function commitTransitionBatches(input: {
     );
     prevSelected = nextSelected;
     anyCommitted = true;
-    outcomes.push({ batch, committed: true, rejectedBy: null });
+    // A COMMITTED refined root that needed the scoped-relayout rung exhausted its envelope.
+    for (const o of overflow) if (o.resolution.scopedRelayout) envelopeExhausted = true;
+    outcomes.push({ batch, committed: true, rejectedBy: null, overflow });
   }
 
-  return { scene, committedSelection: prevSelected, outcomes, anyCommitted };
+  return { scene, committedSelection: prevSelected, outcomes, anyCommitted, envelopeExhausted };
 }

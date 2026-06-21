@@ -41,6 +41,7 @@ import {
   PROXY_LAYOUT_VERSION,
   type StableProxyBounds,
 } from "./representation-proxy-layout";
+import { computeRepresentationBounds } from "./representation-bounds";
 import {
   bootstrapCut,
   type CameraState,
@@ -296,6 +297,14 @@ export function acquireRepresentationRuntime(
   // the hierarchy's `bounds*` columns; a recut overwrites them per-rep from the live scene boxes
   // when the engine produces them, but reuses the stable box for any rep the engine left out.
   const stableBounds = computeStableProxyBounds(hierarchy);
+  // Tiered reservation (design Appendix A §C / P3 overflow). Fill `reserved*` / `envelope*` /
+  // `minScale` from the just-computed stable `bounds*` ONCE per runtime (structural, on the
+  // material signature — never per camera recut). These are the bounds the overflow ladder
+  // (overflow-ladder.ts, wired in transition.ts) measures a refined group against, and the
+  // capped `growthEnvelope` is what bounds envelope growth (the Space Paradox fix). A camera
+  // recut overwrites the live `bounds*` columns from the engine boxes but leaves these
+  // structural reservation tiers intact (the cut never grows the envelope).
+  computeRepresentationBounds(hierarchy);
   const repOfGroupId = new Map<GroupId, number>();
   for (let g = 0; g < input.snapshot.groupIds.length; g++) {
     repOfGroupId.set(input.snapshot.groupIds[g], hierarchy.repOfGroup[g]);

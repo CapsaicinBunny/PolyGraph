@@ -31,6 +31,12 @@ import type { RepresentationHierarchy } from "./representation";
 import type { RepresentationEdgeIndex } from "./representation-edge-index";
 import type { LodBudget, LodCut } from "./lod-cut-solver";
 import { commitTransitionBatches, type TransitionResult } from "./transition";
+import {
+  type GlobalLayoutInputs,
+  globalLayoutSignature,
+  type GlobalRelayoutReason,
+  globalRelayoutReason,
+} from "./global-relayout";
 import type { DimensionCatalog, FacetKey } from "./dimensions";
 import { buildDimensionIndex, type DimensionIndex } from "./dimension-index";
 import { type FacetSelection, facetAllows, serializeFacetSelections } from "./facet-selection";
@@ -715,6 +721,16 @@ export class IncrementalSceneSession {
   private readonly edgeIndex: RepresentationEdgeIndex | undefined;
   private readonly repCount: number;
   private prevSelected: Uint32Array | null = null;
+  /**
+   * The MATERIAL global-layout inputs the current committed scene was laid out against (design
+   * "Global layout stability" / global-relayout.ts). Carries ONLY material inputs (graph / filters
+   * / grouping / direction / engine / options + the explicit & envelope-exhausted nonces) — NO
+   * camera/LOD field — so a camera recut is physically incapable of changing it. Compared against
+   * by {@link shouldGlobalRelayout}; re-baselined ONLY when a global relayout fires. `undefined`
+   * until the caller establishes a baseline via {@link setGlobalLayoutBaseline}.
+   */
+  private globalInputs: GlobalLayoutInputs | undefined;
+  private globalSig: string | undefined;
 
   constructor(
     graph: GraphModel,
@@ -722,6 +738,8 @@ export class IncrementalSceneSession {
     options: {
       visibleNode?: (ordinal: number) => boolean;
       edgeIndex?: RepresentationEdgeIndex;
+      /** The initial material global-layout inputs (the relayout baseline); optional. */
+      globalLayoutInputs?: GlobalLayoutInputs;
     } = {},
   ) {
     const ordinalOfNode = new Map<string, number>();
@@ -737,6 +755,41 @@ export class IncrementalSceneSession {
     this.hierarchy = hierarchy;
     this.edgeIndex = options.edgeIndex;
     this.repCount = hierarchy.repCount;
+    if (options.globalLayoutInputs) this.setGlobalLayoutBaseline(options.globalLayoutInputs);
+  }
+
+  /**
+   * Establish (or re-establish) the material global-layout baseline a relayout was last performed
+   * against (design "Global layout stability"). Call this once the global repository layout has
+   * been (re)computed for `inputs` so the next {@link shouldGlobalRelayout} diffs against the new
+   * baseline. A camera recut NEVER calls this — only a true material relayout does.
+   */
+  setGlobalLayoutBaseline(inputs: GlobalLayoutInputs): void {
+    this.globalInputs = inputs;
+    this.globalSig = globalLayoutSignature(inputs);
+  }
+
+  /** The material signature of the current global-layout baseline (undefined if none set). */
+  globalLayoutSignature(): string | undefined {
+    return this.globalSig;
+  }
+
+  /**
+   * Decide whether the transition to `next` material inputs requires a GLOBAL (repository) relayout
+   * (design "Global layout stability" + global-relayout.ts). Returns the {@link GlobalRelayoutReason}
+   * on a MATERIAL change — a graph re-scan, filter/grouping/direction/engine/options change, an
+   * explicit relayout request, or an envelope-exhaustion nonce bump — or `null` when nothing material
+   * changed. A pure CAMERA RECUT changes NO field of {@link GlobalLayoutInputs}, so it can never
+   * return non-null: the box origins every local refinement is offset against stay fixed. This is the
+   * gate that guarantees "a cut change never launches a full-repository layout" (merge gate 10).
+   *
+   * It does NOT mutate the baseline — the caller re-baselines via {@link setGlobalLayoutBaseline}
+   * AFTER it actually performs the relayout, so a reason it chose to ignore is reported again next
+   * time. With no baseline set, returns null (the caller hasn't opted into the gate).
+   */
+  shouldGlobalRelayout(next: GlobalLayoutInputs): GlobalRelayoutReason | null {
+    if (!this.globalInputs) return null;
+    return globalRelayoutReason(this.globalInputs, next);
   }
 
   /**
