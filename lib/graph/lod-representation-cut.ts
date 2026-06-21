@@ -35,6 +35,8 @@ import {
   type CameraState,
   type CutConstraints,
   cutSignature,
+  type LimitedDetail,
+  LOD_BUDGET,
   type LodBudget,
   type LodCut,
   makeRuntimeCut,
@@ -118,6 +120,13 @@ export interface RepLodResult {
   cutSolveMs: number;
   /** The solver's diagnostics when requested (why-not-refined + refinements), else null. */
   diagnostics: SolveDiagnostics | null;
+  /**
+   * Explicit opens that hit a FINITE hard ceiling and were retained at the nearest proxy
+   * ("Detail limited" — design "Finite budget model"). Always populated (independent of
+   * `collectDiagnostics`); empty when every forced open was honored within hard. The UI
+   * surfaces an honest message naming each `limitingBudget` rather than silently expanding.
+   */
+  limitedDetails: LimitedDetail[];
   /** Auto-opens evicted THIS solve (offscreen-over-budget); 0 without an eviction controller. */
   evictions: number;
   /** Cumulative evictions since the controller was created; 0 without one. */
@@ -176,28 +185,44 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
     return screenHeight(box, cam.scale) >= options.openPx;
   };
 
-  // 4. Budget. Soft target bounds AUTO refinement (cards); the hard ceiling lets a forced
-  //    open exceed soft up to the whole graph's size (so user intent is never stuck).
-  const totalNodes = sumLeafNodeCost(hierarchy);
+  // 4. Budget — the FINITE split model (design "Finite budget model"; Gap 6). Soft targets
+  //    steer AUTO refinement; FINITE hard ceilings cap forced opens. Every ceiling is finite
+  //    by construction — a forced open is capped at `hardCards`/`hardLayoutCost`, NOT expanded
+  //    to the whole graph. Cards (visible antichain width) and layout cost (Σ 1 + symbols) are
+  //    DISTINCT dimensions. Card budgets derive from the caller's options; the remaining
+  //    finite ceilings come from the shared production defaults (LOD_BUDGET).
+  //
+  //    When intent can't be honored within the hard ceiling the solver retains the nearest
+  //    proxy and surfaces "Detail limited" (LimitedDetail) rather than silently expanding.
+  const targetCards = Math.min(options.maxCards, options.nodeBudget);
+  const hardCards = options.nodeBudget;
   const budget: LodBudget = {
-    targetNodes: Math.min(options.maxCards, options.nodeBudget),
-    targetEdges: Infinity,
-    targetLabels: Infinity,
-    hardNodes: Math.max(options.nodeBudget, totalNodes),
-    hardEdges: Infinity,
-    hardLabels: Infinity,
-    maxGpuBytes: Infinity,
-    maxLayoutWork: Math.max(options.nodeBudget, totalNodes),
+    targetCards,
+    hardCards: Math.max(hardCards, targetCards),
+    targetLayoutCost: LOD_BUDGET.targetLayoutCost,
+    hardLayoutCost: LOD_BUDGET.hardLayoutCost,
+    targetEdges: LOD_BUDGET.targetEdges,
+    hardEdges: LOD_BUDGET.hardEdges,
+    targetLabels: LOD_BUDGET.targetLabels,
+    hardLabels: LOD_BUDGET.hardLabels,
+    maxGpuBytes: LOD_BUDGET.maxGpuBytes,
   };
 
   const camState: CameraState = { x: cam.x, y: cam.y, scale: cam.scale, viewport: vp };
   const diagnostics: SolveDiagnostics | null = input.collectDiagnostics
-    ? { whyNotRefined: new Map(), refinements: 0 }
+    ? { whyNotRefined: new Map(), refinements: 0, limited: [] }
     : null;
+  // "Detail limited" is surfaced ALWAYS (not gated on collectDiagnostics): when no full
+  // diagnostics sink is requested, a minimal sink still captures the forced-open limits.
+  const limitSink: SolveDiagnostics = diagnostics ?? {
+    whyNotRefined: new Map(),
+    refinements: 0,
+    limited: [],
+  };
   const t0 = nowMs();
   let cut = solveLodCut(hierarchy, bootstrapCut(hierarchy), constraints, camState, budget, {
     canRefine,
-    diagnostics: diagnostics ?? undefined,
+    diagnostics: limitSink,
   });
 
   // 4b. Deadband retention + bounded offscreen-auto-open eviction (Phase C1c bug b). The
@@ -239,13 +264,15 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
       for (const rep of retainOpen) nextOpen.add(rep);
       const nextClosed = new Set<number>(forceClosed);
       for (const rep of outcome.evicted) nextClosed.add(rep);
+      // Re-solve from a clean limit sink so limitedDetails reflects only the FINAL cut.
+      limitSink.limited.length = 0;
       cut = solveLodCut(
         hierarchy,
         bootstrapCut(hierarchy),
         { forceClosed: nextClosed, forceOpen: nextOpen },
         camState,
         budget,
-        { canRefine, diagnostics: diagnostics ?? undefined },
+        { canRefine, diagnostics: limitSink },
       );
     }
   }
@@ -286,6 +313,7 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
     budget,
     cutSolveMs,
     diagnostics,
+    limitedDetails: limitSink.limited,
     evictions,
     totalEvictions,
   };
@@ -385,11 +413,4 @@ function openSelectionOf(h: RepresentationHierarchy, cut: LodCut): Set<GroupId> 
     if (!collapsed) out.add(h.snapshot.groupIds[g]);
   }
   return out;
-}
-
-/** Total leaf (underlying-node) cost — the full-open size, for the hard ceiling. */
-function sumLeafNodeCost(h: RepresentationHierarchy): number {
-  let total = 0;
-  for (const rep of h.columns.leafRepresentationByNode) total += h.columns.nodeCost[rep];
-  return total;
 }

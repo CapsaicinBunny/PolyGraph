@@ -12,11 +12,14 @@ import {
   type CutConstraints,
   cutSignature,
   cutSignaturesEqual,
+  type LimitedDetail,
+  LOD_BUDGET,
   type LodBudget,
   type LodCut,
   makeRuntimeCut,
   rootCut,
   selectedRepresentationsHash,
+  type SolveDiagnostics,
   solveLodCut,
 } from "./lod-cut-solver";
 import type { GraphModel } from "./types";
@@ -59,27 +62,32 @@ function leafRep(hh: RepresentationHierarchy, nodeId: string): number {
 const noConstraints: CutConstraints = { forceClosed: new Set(), forceOpen: new Set() };
 const cam: CameraState = { x: 0, y: 0, scale: 1, viewport: { w: 800, h: 600 } };
 
+// Test fixtures use nodeCost 1 per leaf, so layout == cards; layout/edge/label/gpu ceilings
+// are set high-but-FINITE so the CARDS dimension is the binding one under test (Gap 6: every
+// ceiling is finite — no Infinity/totalNodes).
 /** A generous budget that lets the solver refine everything to leaves. */
 const bigBudget: LodBudget = {
-  targetNodes: 1000,
+  targetCards: 1000,
+  hardCards: 10000,
+  targetLayoutCost: 1_000_000,
+  hardLayoutCost: 1_000_000,
   targetEdges: 1000,
-  targetLabels: 1000,
-  hardNodes: 10000,
   hardEdges: 10000,
+  targetLabels: 1000,
   hardLabels: 10000,
-  maxGpuBytes: Infinity,
-  maxLayoutWork: Infinity,
+  maxGpuBytes: 1_000_000_000,
 };
 /** A tiny soft budget: auto refinement is heavily constrained. */
 const tinyBudget: LodBudget = {
-  targetNodes: 2,
+  targetCards: 2,
+  hardCards: 4,
+  targetLayoutCost: 1_000_000,
+  hardLayoutCost: 1_000_000,
   targetEdges: 1000,
-  targetLabels: 1000,
-  hardNodes: 4,
   hardEdges: 10000,
+  targetLabels: 1000,
   hardLabels: 10000,
-  maxGpuBytes: Infinity,
-  maxLayoutWork: Infinity,
+  maxGpuBytes: 1_000_000_000,
 };
 
 /** Assert the cut is a VALID ANTICHAIN: every node represented exactly once. */
@@ -115,7 +123,7 @@ describe("solveLodCut — produces a valid antichain", () => {
     assertValidAntichain(h, cut);
     // auto must not exceed the SOFT node target… but the floor is the coarsest cut
     // (roots), which may already exceed target — so it never exceeds the HARD ceiling.
-    expect(cut.nodeCost).toBeLessThanOrEqual(tinyBudget.hardNodes);
+    expect(cut.cardCost).toBeLessThanOrEqual(tinyBudget.hardCards);
   });
 });
 
@@ -173,7 +181,7 @@ describe("solveLodCut — forceClosed / forceOpen constraints (Appendix A §A)",
     const b = groupRep(h, "directory:b");
     const bz = groupRep(h, "directory:b/z");
     // target 4: root {a, b, top} = 3 leaves room for ONE more refine (a → a/x, a/y = 4).
-    const targetFour: LodBudget = { ...tinyBudget, targetNodes: 4, hardNodes: 100 };
+    const targetFour: LodBudget = { ...tinyBudget, targetCards: 4, hardCards: 100 };
     const c: CutConstraints = { forceOpen: new Set([bz]), forceClosed: new Set([b]) };
     const cut = solveLodCut(h, bootstrapCut(h), c, cam, targetFour);
     assertValidAntichain(h, cut);
@@ -182,7 +190,7 @@ describe("solveLodCut — forceClosed / forceOpen constraints (Appendix A §A)",
     expect(selected.has(b)).toBe(true);
     expect(selected.has(bz)).toBe(false);
     // The freed budget refines a to the target — NOT left coarse by a stale cost vector.
-    expect(cut.nodeCost).toBe(4);
+    expect(cut.cardCost).toBe(4);
     expect(selected.has(a)).toBe(false); // a was refined into its children
     expect(selected.has(groupRep(h, "directory:a/x"))).toBe(true);
     // Identical outcome to closing b WITHOUT the prior open — proving the open left no
@@ -202,39 +210,138 @@ describe("solveLodCut — user-open may exceed soft but never hard (Appendix A �
   test("a forced open exceeds the soft target up to the hard ceiling", () => {
     // Soft target = 1 node; auto would stay at roots. Force-open every root group so the
     // whole graph must refine — exceeding soft, bounded by hard.
-    const softOne: LodBudget = { ...tinyBudget, targetNodes: 1, hardNodes: 1000 };
+    const softOne: LodBudget = { ...tinyBudget, targetCards: 1, hardCards: 1000 };
     const a = groupRep(h, "directory:a");
     const b = groupRep(h, "directory:b");
     const c: CutConstraints = { forceClosed: new Set(), forceOpen: new Set([a, b]) };
     const cut = solveLodCut(h, bootstrapCut(h), c, cam, softOne);
     assertValidAntichain(h, cut);
-    expect(cut.nodeCost).toBeGreaterThan(softOne.targetNodes); // exceeded soft
-    expect(cut.nodeCost).toBeLessThanOrEqual(softOne.hardNodes); // within hard
+    expect(cut.cardCost).toBeGreaterThan(softOne.targetCards); // exceeded soft
+    expect(cut.cardCost).toBeLessThanOrEqual(softOne.hardCards); // within hard
   });
 
   test("a forced open that would breach the HARD ceiling retains the nearest legal proxy", () => {
-    // Root cut = {a, b, top} = 3 cards. hardNodes = 4 holds that and ONE refine of a
+    // Root cut = {a, b, top} = 3 cards. hardCards = 4 holds that and ONE refine of a
     // (→ a/x, a/y, b, top = 4) but NOT a full open of a (a/x→f1,f2 would be 5 > 4). So a
     // is opened to its child proxies but a/x and a/y are retained — the deepest safe rep.
     const hardFour: LodBudget = {
       ...tinyBudget,
-      targetNodes: 1,
-      hardNodes: 4,
+      targetCards: 1,
+      hardCards: 4,
     };
     const a = groupRep(h, "directory:a");
     const c: CutConstraints = { forceClosed: new Set(), forceOpen: new Set([a]) };
     const cut = solveLodCut(h, bootstrapCut(h), c, cam, hardFour);
     assertValidAntichain(h, cut);
-    expect(cut.nodeCost).toBeLessThanOrEqual(hardFour.hardNodes);
+    expect(cut.cardCost).toBeLessThanOrEqual(hardFour.hardCards);
     expect(new Set(cut.selectedRepresentations).has(a)).toBe(false); // a IS opened
     // a/x and a/y are retained as proxies (couldn't fully open within hard).
     expect(new Set(cut.selectedRepresentations).has(groupRep(h, "directory:a/x"))).toBe(true);
   });
 });
 
+describe("LodBudget — finite split budget model (Gap 6 / 'Finite budget model')", () => {
+  test("LOD_BUDGET ships finite ceilings on EVERY dimension (no Infinity)", () => {
+    for (const v of [
+      LOD_BUDGET.targetCards,
+      LOD_BUDGET.hardCards,
+      LOD_BUDGET.targetLayoutCost,
+      LOD_BUDGET.hardLayoutCost,
+      LOD_BUDGET.targetEdges,
+      LOD_BUDGET.hardEdges,
+      LOD_BUDGET.targetLabels,
+      LOD_BUDGET.hardLabels,
+      LOD_BUDGET.maxGpuBytes,
+    ]) {
+      expect(Number.isFinite(v)).toBe(true);
+    }
+    // Soft ≤ hard on every split dimension.
+    expect(LOD_BUDGET.targetCards).toBeLessThanOrEqual(LOD_BUDGET.hardCards);
+    expect(LOD_BUDGET.targetLayoutCost).toBeLessThanOrEqual(LOD_BUDGET.hardLayoutCost);
+    expect(LOD_BUDGET.targetEdges).toBeLessThanOrEqual(LOD_BUDGET.hardEdges);
+    expect(LOD_BUDGET.targetLabels).toBeLessThanOrEqual(LOD_BUDGET.hardLabels);
+  });
+
+  test("cards and layout are DISTINCT: a layout-heavy refine is capped by hardLayoutCost while cards has room", () => {
+    // Give every leaf a large nodeCost (1 + symbols = 100) so opening `a` (3 leaves) costs
+    // 300 LAYOUT but only +2 CARDS. A generous card budget but a tight layout budget must
+    // stop the refine on the LAYOUT dimension — proving the two are not conflated.
+    const heavy = buildRepresentationHierarchy(snap, nodeIds, { nodeCost: () => 100 });
+    const a = groupRep(heavy, "directory:a");
+    const budget: LodBudget = {
+      ...LOD_BUDGET,
+      targetCards: 1000, // plenty of card room
+      hardCards: 1000,
+      targetLayoutCost: 150, // but only ~150 layout work — one a/x or a/y refine, not all
+      hardLayoutCost: 150,
+    };
+    const cut = solveLodCut(
+      heavy,
+      bootstrapCut(heavy),
+      { forceClosed: new Set(), forceOpen: new Set([a]) },
+      cam,
+      budget,
+    );
+    assertValidAntichain(heavy, cut);
+    // Layout never busts its finite ceiling even under a forced open…
+    expect(cut.layoutCost).toBeLessThanOrEqual(budget.hardLayoutCost);
+    // …while cards stayed well under its (much larger) ceiling — the dimensions are independent.
+    expect(cut.cardCost).toBeLessThan(budget.hardCards);
+  });
+
+  test("a forced open beyond hardCards is CAPPED and surfaces a 'Detail limited' signal", () => {
+    // b/z holds {f4,f5,f6}. Force-open b/z with hardCards too small to hold its 3 leaves.
+    // Root {a,b,top}=3. b→b/z keeps 3 cards. hardCards=3 forbids b/z→3 leaves (would be 5).
+    // So b opens to b/z, b/z is RETAINED, and a LimitedDetail names the limiting budget.
+    const bz = groupRep(h, "directory:b/z");
+    const budget: LodBudget = {
+      ...LOD_BUDGET,
+      targetCards: 1,
+      hardCards: 3,
+      targetLayoutCost: 1_000_000,
+      hardLayoutCost: 1_000_000,
+    };
+    const diag: SolveDiagnostics = { whyNotRefined: new Map(), refinements: 0, limited: [] };
+    const cut = solveLodCut(
+      h,
+      bootstrapCut(h),
+      { forceClosed: new Set(), forceOpen: new Set([bz]) },
+      cam,
+      budget,
+      { diagnostics: diag },
+    );
+    assertValidAntichain(h, cut);
+    // Capped at the FINITE hard ceiling — never expanded to the whole graph.
+    expect(cut.cardCost).toBeLessThanOrEqual(budget.hardCards);
+    // b/z is retained as the nearest proxy (its leaves were not revealed).
+    expect(new Set(cut.selectedRepresentations).has(bz)).toBe(true);
+    // The structured "Detail limited" signal is emitted, naming the cards ceiling.
+    expect(diag.limited.length).toBeGreaterThan(0);
+    const limit = diag.limited.find((l: LimitedDetail) => l.requestedRep === bz);
+    expect(limit).toBeDefined();
+    expect(limit?.resolvedRep).toBe(bz);
+    expect(limit?.limitingBudget).toBe("cards");
+  });
+
+  test("a forced open that FITS within hardCards emits no 'Detail limited' signal", () => {
+    const bz = groupRep(h, "directory:b/z");
+    const budget: LodBudget = { ...LOD_BUDGET, targetCards: 1, hardCards: 1000 };
+    const diag: SolveDiagnostics = { whyNotRefined: new Map(), refinements: 0, limited: [] };
+    solveLodCut(
+      h,
+      bootstrapCut(h),
+      { forceClosed: new Set(), forceOpen: new Set([bz]) },
+      cam,
+      budget,
+      { diagnostics: diag },
+    );
+    expect(diag.limited.length).toBe(0);
+  });
+});
+
 describe("solveLodCut — atomic refine/coarsen, byte-identical reject (Appendix A §E)", () => {
   test("a rejected refinement leaves the prior cut byte-identical", () => {
-    // hardNodes below even the coarsest refine: the solver can make no progress, so the
+    // hardCards below even the coarsest refine: the solver can make no progress, so the
     // result equals the seed cut exactly (same selected reps, same order).
     const a = groupRep(h, "directory:a");
     const seed = solveLodCut(
@@ -245,9 +352,9 @@ describe("solveLodCut — atomic refine/coarsen, byte-identical reject (Appendix
       tinyBudget,
     );
     // Now solve again from `seed` with a budget that forbids any refinement.
-    const noRefine: LodBudget = { ...tinyBudget, targetNodes: 0, hardNodes: 0 };
+    const noRefine: LodBudget = { ...tinyBudget, targetCards: 0, hardCards: 0 };
     const again = solveLodCut(h, seed, noConstraints, cam, noRefine);
-    // The seed's two proxies already cost > 0; with hardNodes 0 nothing can change, and a
+    // The seed's two proxies already cost > 0; with hardCards 0 nothing can change, and a
     // valid cut must still cover everything — so it must return the seed unchanged.
     expect([...again.selectedRepresentations]).toEqual([...seed.selectedRepresentations]);
   });
@@ -389,15 +496,17 @@ describe("refinePriority — ranks by MARGINAL child-expansion delta (Gap 5)", (
     // Root cut = {small, big} = 2 cards. A target that leaves room to open ONLY the
     // small proxy (2 cards → 2 leaves: total 1 big + 2 small = 3) but NOT the big proxy
     // (would be ~2001 cards). The marginal-cost ranking must pick `small` to refine.
+    // CARDS is the gating dimension; layout (== cards here, nodeCost 1) is held high-finite.
     const budget: LodBudget = {
-      targetNodes: 4,
+      targetCards: 4,
+      hardCards: 4,
+      targetLayoutCost: 1_000_000,
+      hardLayoutCost: 1_000_000,
       targetEdges: 100000,
-      targetLabels: 100000,
-      hardNodes: 4,
       hardEdges: 100000,
+      targetLabels: 100000,
       hardLabels: 100000,
-      maxGpuBytes: Infinity,
-      maxLayoutWork: Infinity,
+      maxGpuBytes: 1_000_000_000,
     };
     const cut = solveLodCut(hh, bootstrapCut(hh), noConstraints, cam, budget);
     const selected = new Set(cut.selectedRepresentations);
@@ -406,7 +515,7 @@ describe("refinePriority — ranks by MARGINAL child-expansion delta (Gap 5)", (
     expect(selected.has(smallRep)).toBe(false);
     expect(selected.has(bigRep)).toBe(true);
     // Cost: 2 small leaves + 1 big proxy = 3 cards (within the target-4 budget).
-    expect(cut.nodeCost).toBe(smallN + 1);
+    expect(cut.cardCost).toBe(smallN + 1);
   });
 
   test("the small proxy's marginal delta is far smaller than the big proxy's", () => {
@@ -444,14 +553,15 @@ describe("refineUnderBudget — continue past an oversized candidate (Gap 5)", (
     // Root = {small, big} = 2. Budget room for the small open (→ 5 leaves + big = 6) but
     // never the big open (~2001). Set target so big does NOT fit but small DOES.
     const budget: LodBudget = {
-      targetNodes: 10,
+      targetCards: 10,
+      hardCards: 10,
+      targetLayoutCost: 1_000_000,
+      hardLayoutCost: 1_000_000,
       targetEdges: 100000,
-      targetLabels: 100000,
-      hardNodes: 10,
       hardEdges: 100000,
+      targetLabels: 100000,
       hardLabels: 100000,
-      maxGpuBytes: Infinity,
-      maxLayoutWork: Infinity,
+      maxGpuBytes: 1_000_000_000,
     };
     const cut = solveLodCut(hh, bootstrapCut(hh), noConstraints, cam, budget);
     const selected = new Set(cut.selectedRepresentations);
@@ -459,7 +569,7 @@ describe("refineUnderBudget — continue past an oversized candidate (Gap 5)", (
     // The small proxy WAS refined despite big being rejected first — budget not stranded.
     expect(selected.has(smallRep)).toBe(false);
     expect(selected.has(bigRep)).toBe(true);
-    expect(cut.nodeCost).toBe(smallN + 1); // 5 small leaves + 1 big proxy = 6
+    expect(cut.cardCost).toBe(smallN + 1); // 5 small leaves + 1 big proxy = 6
     assertAntichainN(hh, cut, smallN + bigN);
   });
 
@@ -483,18 +593,19 @@ describe("refineUnderBudget — continue past an oversized candidate (Gap 5)", (
     const smallRep = hh.repOfGroup[0];
     const bigRep = hh.repOfGroup[1];
 
-    // Root = {small, big} = 2. target 5 → remaining 3 nodes. big's node delta is 4
-    // (5 children − 1 proxy) > 3 → does NOT fit. small's delta is 1 → fits. Edges/labels
-    // budgets are huge so only the node dimension gates.
+    // Root = {small, big} = 2. target 5 → remaining 3 cards. big's card delta is 4
+    // (5 children − 1 proxy) > 3 → does NOT fit. small's delta is 1 → fits. Edges/labels/
+    // layout budgets are huge-finite so only the CARDS dimension gates.
     const budget: LodBudget = {
-      targetNodes: 5,
+      targetCards: 5,
+      hardCards: 5,
+      targetLayoutCost: 1_000_000,
+      hardLayoutCost: 1_000_000,
       targetEdges: 1e9,
-      targetLabels: 1e9,
-      hardNodes: 5,
       hardEdges: 1e9,
+      targetLabels: 1e9,
       hardLabels: 1e9,
-      maxGpuBytes: Infinity,
-      maxLayoutWork: Infinity,
+      maxGpuBytes: 1_000_000_000,
     };
     // Sanity: big is genuinely the higher-priority candidate on the first pass (it would be
     // tried, and rejected, before small) — otherwise this wouldn't test continue-vs-break.
@@ -507,7 +618,7 @@ describe("refineUnderBudget — continue past an oversized candidate (Gap 5)", (
     // Despite big being the top priority and unfittable, small was still refined.
     expect(selected.has(smallRep)).toBe(false);
     expect(selected.has(bigRep)).toBe(true);
-    expect(cut.nodeCost).toBe(smallN + 1); // 2 small leaves + 1 big proxy = 3
+    expect(cut.cardCost).toBe(smallN + 1); // 2 small leaves + 1 big proxy = 3
     assertAntichainN(hh, cut, smallN + bigN);
   });
 });

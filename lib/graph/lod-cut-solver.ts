@@ -25,7 +25,10 @@ import { isRepAncestor } from "./representation";
  */
 export interface LodCut {
   selectedRepresentations: Uint32Array;
-  nodeCost: number;
+  /** Visible cards (the antichain width = one per selected rep). */
+  cardCost: number;
+  /** Layout work (Σ (1 + symbols) over selected reps) — DISTINCT from cardCost. */
+  layoutCost: number;
   edgeCost: number;
   labelCost: number;
   gpuByteCost: number;
@@ -44,19 +47,71 @@ export interface CutConstraints {
 }
 
 /**
- * Hard vs soft budgets (Appendix A §B). Automatic refinement never exceeds the SOFT
- * targets; an explicit user-open may exceed targets up to the HARD ceiling; nothing
- * exceeds hard. Node / edge / label / GPU / layout-work are independent.
+ * Hard vs soft budgets (Appendix A §B; finite split-budget model — design "Finite budget
+ * model"). Automatic refinement never exceeds the SOFT targets; an explicit user-open may
+ * exceed targets up to the HARD ceiling; nothing exceeds hard. The dimensions are SPLIT and
+ * every ceiling is FINITE — `Infinity`/`totalNodes` are not limits:
+ *
+ * - cards: VISIBLE cards (one proxy = one card; the antichain width the user sees).
+ * - layoutCost: Σ (1 + symbols) over refined reps — the relayout work pressure. DISTINCT
+ *   from cards: a proxy is one card but may carry high future layout cost.
+ * - edges / labels: aggregated edges + drawn labels.
+ * - gpu: GPU geometry bytes.
+ *
+ * When intent cannot be honored within a hard ceiling, the solver surfaces a structured
+ * "Detail limited" signal (see {@link LimitedDetail}) rather than expanding to the whole graph.
  */
 export interface LodBudget {
-  targetNodes: number;
+  /** Soft cap on visible cards (the antichain width). */
+  targetCards: number;
+  /** Hard ceiling on visible cards — a forced open is capped here, never the whole graph. */
+  hardCards: number;
+  /** Soft cap on layout work (Σ (1 + symbols) over refined reps). */
+  targetLayoutCost: number;
+  /** Hard ceiling on layout work. */
+  hardLayoutCost: number;
   targetEdges: number;
-  targetLabels: number;
-  hardNodes: number;
   hardEdges: number;
+  targetLabels: number;
   hardLabels: number;
+  /** GPU geometry budget (bytes). */
   maxGpuBytes: number;
-  maxLayoutWork: number;
+}
+
+/**
+ * Example production defaults for the finite split budget (design "Finite budget model").
+ * Exact numbers are pinned by the P4 bench; every ceiling is finite by construction.
+ */
+export const LOD_BUDGET: LodBudget = {
+  // visible cards (one proxy = one card; the antichain width the user sees)
+  targetCards: 800,
+  hardCards: 2_000,
+  // layout cost (Σ (1 + symbols) over refined reps — the relayout work pressure)
+  targetLayoutCost: 2_500,
+  hardLayoutCost: 6_000,
+  // aggregated edges in the active quotient graph (cut-dependent; via the edge index — B2)
+  targetEdges: 8_000,
+  hardEdges: 25_000,
+  // labels drawn
+  targetLabels: 500,
+  hardLabels: 2_000,
+  // GPU geometry budget
+  maxGpuBytes: 128 * 1024 * 1024,
+};
+
+/**
+ * Why an explicit open could not be honored within the hard ceiling (design "Deterministic
+ * forced-open arbitration"). The solver retains the nearest legal proxy and emits this
+ * structured signal so the UI can surface an honest "Detail limited" message naming the
+ * limiting budget — rather than silently expanding to the whole graph.
+ */
+export interface LimitedDetail {
+  /** The rep the user asked to open. */
+  requestedRep: number;
+  /** The nearest proxy actually retained (the cut stops here). */
+  resolvedRep: number;
+  /** Which finite ceiling stopped the descent. */
+  limitingBudget: "cards" | "edges" | "labels" | "gpu" | "layout";
 }
 
 /** Minimal camera state the solver scores against (visibility/interaction weighting). */
@@ -67,9 +122,13 @@ export interface CameraState {
   viewport: { w: number; h: number };
 }
 
-/** The cost vector of a cut across the budget dimensions. */
+/**
+ * The cost vector of a cut across the budget dimensions. `cards` (visible antichain width)
+ * and `layout` (Σ (1 + symbols) relayout work) are DISTINCT — a proxy is one card but may
+ * carry high layout cost.
+ */
 interface CostVec {
-  nodes: number;
+  cards: number;
   edges: number;
   labels: number;
   gpu: number;
@@ -106,7 +165,8 @@ export function cutFromSelection(
   const cost = sumCost(h.columns, arr);
   return {
     selectedRepresentations: arr,
-    nodeCost: cost.nodes,
+    cardCost: cost.cards,
+    layoutCost: cost.layout,
     edgeCost: cost.edges,
     labelCost: cost.labels,
     gpuByteCost: cost.gpu,
@@ -115,19 +175,22 @@ export function cutFromSelection(
 }
 
 function sumCost(cols: RepresentationColumns, reps: ArrayLike<number>): CostVec {
-  let nodes = 0;
+  let cards = 0;
   let edges = 0;
   let labels = 0;
   let gpu = 0;
+  let layout = 0;
   for (let i = 0; i < reps.length; i++) {
     const r = reps[i];
-    nodes += cols.nodeCost[r];
+    // Each selected rep is ONE visible card; nodeCost (1 + symbols) is LAYOUT cost, not
+    // cards — the two are tracked independently (design "Finite budget model").
+    cards += 1;
+    layout += cols.nodeCost[r];
     edges += cols.edgeCost[r];
     labels += cols.labelCost[r];
     gpu += cols.gpuByteCost[r];
   }
-  // Layout work proxied by node cost (each refined proxy lays out its children).
-  return { nodes, edges, labels, gpu, layout: nodes };
+  return { cards, edges, labels, gpu, layout };
 }
 
 // ── The solve ────────────────────────────────────────────────────────────────
@@ -149,6 +212,13 @@ export interface SolveDiagnostics {
   whyNotRefined: Map<number, WhyNotRefined>;
   /** Count of atomic refinements committed this solve. */
   refinements: number;
+  /**
+   * Explicit opens that hit a FINITE hard ceiling and were retained at the nearest proxy
+   * ("Detail limited" — design "Deterministic forced-open arbitration"). Empty when every
+   * forced open was honored within hard. The UI surfaces an honest message naming the
+   * limiting budget; this is the structured field rather than a silent retain.
+   */
+  limited: LimitedDetail[];
 }
 
 /**
@@ -188,9 +258,11 @@ export function solveLodCut(
   // 1. forceOpen (§A): a force-open rep may not be the representative. Ensure each is
   //    NOT selected and its subtree is represented by descendants. If a selected ancestor
   //    covers it, refine down until the rep is strictly below the cut. Forced opens may
-  //    spend up to the HARD ceiling.
+  //    spend up to the FINITE HARD ceiling; one that can't descend within hard is retained
+  //    at the nearest proxy and recorded as a "Detail limited" signal (§B).
   for (const rep of constraints.forceOpen) {
-    forceOpenRep(cols, selected, rep, cur, budget);
+    const limited = forceOpenRep(cols, selected, rep, cur, budget);
+    if (limited && gate?.diagnostics) gate.diagnostics.limited.push(limited);
   }
 
   // 2. forceClosed (§A): select the requested proxy (or nearest legal ancestor) and
@@ -206,7 +278,7 @@ export function solveLodCut(
   // make refineUnderBudget see the budget as more spent than it is and under-refine. Recompute
   // `cur` from the post-constraint `selected` so the budget pressure is accurate (§D/E).
   const live = sumCost(cols, [...selected]);
-  cur.nodes = live.nodes;
+  cur.cards = live.cards;
   cur.edges = live.edges;
   cur.labels = live.labels;
   cur.gpu = live.gpu;
@@ -234,25 +306,55 @@ function forceOpenRep(
   rep: number,
   cur: CostVec,
   budget: LodBudget,
-): void {
-  if (cols.firstChildByRep[rep] === -1) return; // a leaf can't be opened further
+): LimitedDetail | null {
+  if (cols.firstChildByRep[rep] === -1) return null; // a leaf can't be opened further
   let guard = cols.parentByRep.length + 1;
   while (guard-- > 0) {
     // Find the selected rep on `rep`'s path (rep itself or an ancestor). At most one
     // (antichain). If none is selected, rep is already strictly below the cut → done.
     const covering = coveringSelected(cols, selected, rep);
-    if (covering === -1) return;
+    if (covering === -1) return null;
     if (covering !== rep && isStrictAncestor(cols, rep, covering)) {
       // covering is a descendant of rep — already open past rep; done.
-      return;
+      return null;
     }
-    // Refine `covering` (replace with its children), within the HARD ceiling. If it can't
-    // be refined safely, stop (retain the nearest legal proxy — the "Detail limited" case).
-    if (!refineAtomic(cols, selected, covering, budget, "hard", cur)) return;
+    // Refine `covering` (replace with its children), within the FINITE HARD ceiling. If it
+    // can't be refined safely, STOP and surface "Detail limited": retain the nearest legal
+    // proxy (`covering`) and name the finite ceiling that blocked the descent — rather than
+    // expanding to the whole graph (design "Finite budget model" + "forced-open arbitration").
+    if (!refineAtomic(cols, selected, covering, budget, "hard", cur)) {
+      return {
+        requestedRep: rep,
+        resolvedRep: covering,
+        limitingBudget: limitingBudgetOf(cols, covering, cur, budget),
+      };
+    }
     // Loop: after refining, a child may again cover rep — keep descending until rep is
     // below the cut (covering becomes rep's descendant or disappears).
-    if (covering === rep) return; // we refined rep itself → its children now cover; done
+    if (covering === rep) return null; // we refined rep itself → its children now cover; done
   }
+  return null;
+}
+
+/**
+ * The FINITE hard ceiling that blocks refining `rep` from the current cost `cur` — the
+ * dimension whose post-refinement value first exceeds its hard budget. Drives the
+ * "Detail limited" message's `limitingBudget` (design "forced-open arbitration"). Checked in
+ * a fixed order so the reported limit is deterministic.
+ */
+function limitingBudgetOf(
+  cols: RepresentationColumns,
+  rep: number,
+  cur: CostVec,
+  budget: LodBudget,
+): LimitedDetail["limitingBudget"] {
+  const delta = marginalRefineDelta(cols, rep);
+  if (cur.cards + delta.cards > budget.hardCards) return "cards";
+  if (cur.layout + delta.layout > budget.hardLayoutCost) return "layout";
+  if (cur.edges + delta.edges > budget.hardEdges) return "edges";
+  if (cur.labels + delta.labels > budget.hardLabels) return "labels";
+  if (cur.gpu + delta.gpu > budget.maxGpuBytes) return "gpu";
+  return "cards"; // defensive: some ceiling blocked it; cards is the user-visible default
 }
 
 /**
@@ -304,11 +406,11 @@ function refineUnderBudget(
   let guard = h.repCount + 1;
   while (guard-- > 0) {
     const remaining: CostVec = {
-      nodes: Math.max(0, budget.targetNodes - cur.nodes),
+      cards: Math.max(0, budget.targetCards - cur.cards),
       edges: Math.max(0, budget.targetEdges - cur.edges),
       labels: Math.max(0, budget.targetLabels - cur.labels),
       gpu: Math.max(0, budget.maxGpuBytes - cur.gpu),
-      layout: Math.max(0, budget.maxLayoutWork - cur.layout),
+      layout: Math.max(0, budget.targetLayoutCost - cur.layout),
     };
     let best = -1;
     let bestPriority = -Infinity;
@@ -362,24 +464,27 @@ function refineAtomic(
 ): boolean {
   if (cols.firstChildByRep[rep] === -1) return false;
   if (!selected.has(rep)) return false;
-  // Gather children and the marginal delta = Σ children − rep (rendered per-level costs).
+  // Gather children and the marginal delta = Σ children − rep. CARDS and LAYOUT are tracked
+  // distinctly: refining swaps 1 card (the proxy) for N cards (its children) → Δcards =
+  // childCount − 1; layout is Σ child nodeCost − parent nodeCost (1 + symbols each).
   const children: number[] = [];
-  const delta: CostVec = { nodes: 0, edges: 0, labels: 0, gpu: 0, layout: 0 };
+  const delta: CostVec = { cards: 0, edges: 0, labels: 0, gpu: 0, layout: 0 };
   for (let c = cols.firstChildByRep[rep]; c !== -1; c = cols.nextSiblingByRep[c]) {
     children.push(c);
-    delta.nodes += cols.nodeCost[c];
+    delta.cards += 1;
+    delta.layout += cols.nodeCost[c];
     delta.edges += cols.edgeCost[c];
     delta.labels += cols.labelCost[c];
     delta.gpu += cols.gpuByteCost[c];
   }
-  delta.nodes -= cols.nodeCost[rep];
+  delta.cards -= 1; // the proxy itself was one card
+  delta.layout -= cols.nodeCost[rep];
   delta.edges -= cols.edgeCost[rep];
   delta.labels -= cols.labelCost[rep];
   delta.gpu -= cols.gpuByteCost[rep];
-  delta.layout = delta.nodes; // layout work tracks node cost
 
   const next: CostVec = {
-    nodes: cur.nodes + delta.nodes,
+    cards: cur.cards + delta.cards,
     edges: cur.edges + delta.edges,
     labels: cur.labels + delta.labels,
     gpu: cur.gpu + delta.gpu,
@@ -390,7 +495,7 @@ function refineAtomic(
   // Commit: swap rep → children, advance the running cost.
   selected.delete(rep);
   for (const c of children) selected.add(c);
-  cur.nodes = next.nodes;
+  cur.cards = next.cards;
   cur.edges = next.edges;
   cur.labels = next.labels;
   cur.gpu = next.gpu;
@@ -398,19 +503,24 @@ function refineAtomic(
   return true;
 }
 
-/** Whether a cost vector is within the soft or hard ceiling across every budget dim. */
+/**
+ * Whether a cost vector is within the soft or hard ceiling across every FINITE budget dim.
+ * GPU has a single (finite) ceiling; cards / layout / edges / labels each have a soft target
+ * and a finite hard ceiling.
+ */
 function withinCeiling(cost: CostVec, budget: LodBudget, ceiling: "soft" | "hard"): boolean {
   if (cost.gpu > budget.maxGpuBytes) return false;
-  if (cost.layout > budget.maxLayoutWork) return false;
   if (ceiling === "soft") {
     return (
-      cost.nodes <= budget.targetNodes &&
+      cost.cards <= budget.targetCards &&
+      cost.layout <= budget.targetLayoutCost &&
       cost.edges <= budget.targetEdges &&
       cost.labels <= budget.targetLabels
     );
   }
   return (
-    cost.nodes <= budget.hardNodes &&
+    cost.cards <= budget.hardCards &&
+    cost.layout <= budget.hardLayoutCost &&
     cost.edges <= budget.hardEdges &&
     cost.labels <= budget.hardLabels
   );
@@ -453,29 +563,32 @@ function refinePriority(
  * refineAtomic commits, so priority normalization and the actual budget charge agree.
  */
 function marginalRefineDelta(cols: RepresentationColumns, rep: number): CostVec {
-  let nodes = 0;
+  let cards = 0;
+  let layout = 0;
   let edges = 0;
   let labels = 0;
   let gpu = 0;
   for (let c = cols.firstChildByRep[rep]; c !== -1; c = cols.nextSiblingByRep[c]) {
-    nodes += cols.nodeCost[c];
+    cards += 1;
+    layout += cols.nodeCost[c];
     edges += cols.edgeCost[c];
     labels += cols.labelCost[c];
     gpu += cols.gpuByteCost[c];
   }
-  nodes -= cols.nodeCost[rep];
+  cards -= 1; // the proxy itself was one card
+  layout -= cols.nodeCost[rep];
   edges -= cols.edgeCost[rep];
   labels -= cols.labelCost[rep];
   gpu -= cols.gpuByteCost[rep];
-  // layout work tracks node cost (each refined proxy lays out its children) — same model
-  // as refineAtomic's delta.layout = delta.nodes.
-  return { nodes, edges, labels, gpu, layout: nodes };
+  // Same delta refineAtomic commits — cards (childCount − 1) and layout (Σ child − parent)
+  // are distinct dimensions (design "Finite budget model").
+  return { cards, layout, edges, labels, gpu };
 }
 
 /** max over dims of delta[d] / max(1, remaining[d]) (Appendix A §D). */
 function normalizedCost(delta: CostVec, remaining: CostVec): number {
   return Math.max(
-    delta.nodes / Math.max(1, remaining.nodes),
+    delta.cards / Math.max(1, remaining.cards),
     delta.edges / Math.max(1, remaining.edges),
     delta.labels / Math.max(1, remaining.labels),
     delta.gpu / Math.max(1, remaining.gpu),

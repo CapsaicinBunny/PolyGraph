@@ -24,16 +24,16 @@ export interface RepLodOverlayStats {
   committedReps: number;
   /** Selected reps in the pending cut (may differ before a commit). */
   pendingReps: number;
-  /** Rendered node / edge / label cost of the committed cut. */
-  nodes: number;
+  /** Rendered card / edge / label cost of the committed cut. */
+  cards: number;
   edges: number;
   labels: number;
   /** Soft targets (auto ceiling) for the same dims. */
-  targetNodes: number;
+  targetCards: number;
   targetEdges: number;
   targetLabels: number;
   /** Hard ceilings. */
-  hardNodes: number;
+  hardCards: number;
   /** GPU megabytes of the committed cut. */
   gpuMB: number;
   /** Layout-work percent of the hard layout budget (0..1, clamped). */
@@ -93,8 +93,8 @@ export function summarizeRepLod(
   const { runtime, hierarchy, cut } = result;
   const budget = timings.budget;
   const gpuBytes = sumGpu(hierarchy, cut.selectedRepresentations);
-  const layoutWork = cut.nodeCost; // layout work tracks node cost (solver convention)
-  const hardLayout = budget?.maxLayoutWork ?? Infinity;
+  const layoutWork = cut.layoutCost; // Σ (1 + symbols) over selected reps — distinct from cards
+  const hardLayout = budget?.hardLayoutCost ?? Infinity;
   const layoutWorkPct = Number.isFinite(hardLayout) && hardLayout > 0 ? layoutWork / hardLayout : 0;
   const hits = timings.proxyCacheHits ?? 0;
   const misses = timings.proxyCacheMisses ?? 0;
@@ -105,13 +105,13 @@ export function summarizeRepLod(
     committed: result.committed,
     committedReps: repCountOf(runtime.committedCut),
     pendingReps: repCountOf(runtime.pendingCut),
-    nodes: cut.nodeCost,
+    cards: cut.cardCost,
     edges: cut.edgeCost,
     labels: cut.labelCost,
-    targetNodes: budget?.targetNodes ?? 0,
+    targetCards: budget?.targetCards ?? 0,
     targetEdges: budget?.targetEdges ?? 0,
     targetLabels: budget?.targetLabels ?? 0,
-    hardNodes: budget?.hardNodes ?? 0,
+    hardCards: budget?.hardCards ?? 0,
     gpuMB: gpuBytes / (1024 * 1024),
     layoutWorkPct: Math.max(0, Math.min(1, layoutWorkPct)),
     // Prefer explicit timings, else the real counters the cut now carries (Phase C1c bug b:

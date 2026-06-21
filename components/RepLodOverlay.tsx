@@ -42,7 +42,7 @@ export function RepLodOverlay({ stats }: { stats: RepLodOverlayStats }) {
       <VStack align="stretch" gap="0.5">
         <Row label="generation" value={String(stats.generation)} />
         <Row label="reps (pend/commit)" value={`${stats.pendingReps} / ${stats.committedReps}`} />
-        <Row label="nodes" value={vsBudget(stats.nodes, stats.targetNodes, stats.hardNodes)} />
+        <Row label="cards" value={vsBudget(stats.cards, stats.targetCards, stats.hardCards)} />
         <Row label="edges" value={vsBudget(stats.edges, stats.targetEdges)} />
         <Row label="labels" value={vsBudget(stats.labels, stats.targetLabels)} />
         <Row label="GPU MB" value={stats.gpuMB.toFixed(2)} />

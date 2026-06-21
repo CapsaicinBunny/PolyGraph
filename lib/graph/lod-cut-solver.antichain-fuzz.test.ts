@@ -247,15 +247,21 @@ function randomBudget(r: Rng, h: RepresentationHierarchy): LodBudget {
           ? r.int(1, Math.max(1, Math.floor(total / 2)))
           : total + 10;
   const hard = Math.max(target, r.chance(0.5) ? target : total + 10);
+  // FINITE ceilings throughout (Gap 6). The fuzz varies the CARDS dimension; edges/labels/gpu
+  // are held huge-finite (BIG) so they never gate. Layout sometimes mirrors the cards ceilings
+  // (so it co-gates), otherwise stays slack — both finite, with target ≤ hard.
+  const BIG = total + 1_000;
+  const layoutBinds = r.chance(0.3);
   return {
-    targetNodes: target,
-    targetEdges: Infinity,
-    targetLabels: Infinity,
-    hardNodes: hard,
-    hardEdges: Infinity,
-    hardLabels: Infinity,
-    maxGpuBytes: Infinity,
-    maxLayoutWork: r.chance(0.3) ? hard : Infinity,
+    targetCards: target,
+    hardCards: hard,
+    targetLayoutCost: layoutBinds ? target : BIG,
+    hardLayoutCost: layoutBinds ? hard : BIG,
+    targetEdges: BIG,
+    hardEdges: BIG,
+    targetLabels: BIG,
+    hardLabels: BIG,
+    maxGpuBytes: BIG,
   };
 }
 
@@ -390,7 +396,7 @@ describe("solveLodCut — antichain invariant fuzz (Phase C1b probe)", () => {
   });
 
   test("budget rejection: a 0-budget solve returns the coarsest valid antichain (roots), byte-identical to the seed", () => {
-    // With targetNodes=0 AND hardNodes=0 the solver can make NO refinement; the result must
+    // With targetCards=0 AND hardCards=0 the solver can make NO refinement; the result must
     // be the bootstrap (roots) cut unchanged — still a valid antichain that covers all nodes.
     const ITERS = 800;
     for (let it = 0; it < ITERS; it++) {
@@ -400,14 +406,15 @@ describe("solveLodCut — antichain invariant fuzz (Phase C1b probe)", () => {
       const { snap, nodeIds } = synthSnapshot(r, spec);
       const h = buildFuzzHierarchy(r, spec, nodeIds, snap);
       const zero: LodBudget = {
-        targetNodes: 0,
+        targetCards: 0,
+        hardCards: 0,
+        targetLayoutCost: 0,
+        hardLayoutCost: 0,
         targetEdges: 0,
-        targetLabels: 0,
-        hardNodes: 0,
         hardEdges: 0,
+        targetLabels: 0,
         hardLabels: 0,
         maxGpuBytes: 0,
-        maxLayoutWork: 0,
       };
       const cam = randomCamera(r);
       // No constraints: pure budget rejection from the seed.
@@ -506,25 +513,28 @@ function explicitHierarchy(
 }
 
 const edgeCam: CameraState = { x: 0, y: 0, scale: 1, viewport: { w: 800, h: 600 } };
+// FINITE everywhere (Gap 6) — 1e9 stands in for "effectively unbounded" without Infinity.
 const bigBudget: LodBudget = {
-  targetNodes: 1e9,
-  targetEdges: Infinity,
-  targetLabels: Infinity,
-  hardNodes: 1e9,
-  hardEdges: Infinity,
-  hardLabels: Infinity,
-  maxGpuBytes: Infinity,
-  maxLayoutWork: Infinity,
+  targetCards: 1e9,
+  hardCards: 1e9,
+  targetLayoutCost: 1e9,
+  hardLayoutCost: 1e9,
+  targetEdges: 1e9,
+  hardEdges: 1e9,
+  targetLabels: 1e9,
+  hardLabels: 1e9,
+  maxGpuBytes: 1e9,
 };
 const zeroBudget: LodBudget = {
-  targetNodes: 0,
+  targetCards: 0,
+  hardCards: 0,
+  targetLayoutCost: 0,
+  hardLayoutCost: 0,
   targetEdges: 0,
-  targetLabels: 0,
-  hardNodes: 0,
   hardEdges: 0,
+  targetLabels: 0,
   hardLabels: 0,
   maxGpuBytes: 0,
-  maxLayoutWork: 0,
 };
 const noC: CutConstraints = { forceClosed: new Set(), forceOpen: new Set() };
 
@@ -556,10 +566,16 @@ describe("solveLodCut — antichain edge-case guards (Phase C1b probe)", () => {
   });
 
   test("Detail-limited forceOpen: a root that can't fully open under HARD retains a deeper proxy", () => {
-    // g0 → g1 → {n0..n4}. Root cut {g0}=1 card. hardNodes=2 allows g0→g1 (1 card) but NOT
+    // g0 → g1 → {n0..n4}. Root cut {g0}=1 card. hardCards=2 allows g0→g1 (1 card) but NOT
     // g1→5 leaves (5 > 2). So g0 opens, g1 is retained — valid antichain, never busts hard.
     const h = explicitHierarchy([-1, 0], [1, 1, 1, 1, 1]);
-    const hard2: LodBudget = { ...bigBudget, targetNodes: 1, hardNodes: 2, maxLayoutWork: 2 };
+    const hard2: LodBudget = {
+      ...bigBudget,
+      targetCards: 1,
+      hardCards: 2,
+      targetLayoutCost: 2,
+      hardLayoutCost: 2,
+    };
     const cut = solveLodCut(
       h,
       bootstrapCut(h),
@@ -571,12 +587,18 @@ describe("solveLodCut — antichain edge-case guards (Phase C1b probe)", () => {
     const sel = new Set(cut.selectedRepresentations);
     expect(sel.has(0)).toBe(false); // g0 IS opened
     expect(sel.has(1)).toBe(true); // g1 is the retained proxy
-    expect(cut.nodeCost).toBeLessThanOrEqual(hard2.hardNodes);
+    expect(cut.cardCost).toBeLessThanOrEqual(hard2.hardCards);
   });
 
   test("forceOpen blocked at hard=0 leaves the root cut byte-identical (valid antichain)", () => {
     const h = explicitHierarchy([-1, 0], [1, 1, 1]); // g0 → g1 → {n0,n1,n2}
-    const hard0: LodBudget = { ...bigBudget, targetNodes: 0, hardNodes: 0, maxLayoutWork: 0 };
+    const hard0: LodBudget = {
+      ...bigBudget,
+      targetCards: 0,
+      hardCards: 0,
+      targetLayoutCost: 0,
+      hardLayoutCost: 0,
+    };
     const cut = solveLodCut(
       h,
       bootstrapCut(h),

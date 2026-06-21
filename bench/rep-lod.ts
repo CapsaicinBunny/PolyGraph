@@ -43,14 +43,15 @@ interface Row {
 }
 
 const BUDGET: LodBudget = {
-  targetNodes: 2000,
+  targetCards: 2000,
+  hardCards: 50_000,
+  targetLayoutCost: 5_000,
+  hardLayoutCost: 200_000,
   targetEdges: 4000,
-  targetLabels: 2000,
-  hardNodes: 50_000,
   hardEdges: 200_000,
+  targetLabels: 2000,
   hardLabels: 50_000,
-  maxGpuBytes: Infinity,
-  maxLayoutWork: 200_000,
+  maxGpuBytes: 128 * 1024 * 1024,
 };
 
 /** Map a graph's edges to the aggregator's ordinal/integer-kind input shape. */

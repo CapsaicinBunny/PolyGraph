@@ -104,6 +104,58 @@ describe("buildSceneRepresentationCut — user intent constrains the cut", () =>
   });
 });
 
+describe("buildSceneRepresentationCut — finite split budget (Gap 6 / 'Finite budget model')", () => {
+  test("the solve budget is FINITE on every dimension (no Infinity / totalNodes)", () => {
+    const r = solve({ x: 0, y: 0, scale: 1 });
+    const b = r.budget;
+    for (const v of [
+      b.targetCards,
+      b.hardCards,
+      b.targetLayoutCost,
+      b.hardLayoutCost,
+      b.targetEdges,
+      b.hardEdges,
+      b.targetLabels,
+      b.hardLabels,
+      b.maxGpuBytes,
+    ]) {
+      expect(Number.isFinite(v)).toBe(true);
+    }
+    // Card ceilings derive from the caller options; the rest from the production defaults.
+    expect(b.hardCards).toBe(opts.nodeBudget);
+    expect(b.targetCards).toBe(Math.min(opts.maxCards, opts.nodeBudget));
+    // hardCards is NOT inflated to the whole-graph size (the Gap 6 regression).
+    expect(b.hardCards).toBeLessThan(1_000_000);
+  });
+
+  test("a forced open beyond hardCards is capped and surfaces limitedDetails", () => {
+    // A tiny card budget. Force-open the LEAF group b/z: honoring it requires revealing its
+    // child leaves (f4,f5), but root {a,b}=2 → opening b→b/z=2 → b/z→leaves=3 busts hard=2.
+    // So b/z is retained and a "Detail limited" signal fires.
+    const tight = { ...opts, maxCards: 2, nodeBudget: 2 };
+    const intent: CollapseIntent = new Map([["directory:b/z", "open"]]);
+    const r = buildSceneRepresentationCut({
+      snapshot: snap,
+      nodeIds,
+      boxes: boxes(),
+      cam: { x: 0, y: 0, scale: 1 },
+      vp,
+      intent,
+      options: tight,
+    });
+    // Cards capped at the finite hard ceiling — never the whole graph.
+    expect(r.cut.cardCost).toBeLessThanOrEqual(r.budget.hardCards);
+    // The "Detail limited" signal is surfaced as a structured field (always populated).
+    expect(r.limitedDetails.length).toBeGreaterThan(0);
+    expect(r.limitedDetails[0].limitingBudget).toBe("cards");
+  });
+
+  test("an unconstrained solve surfaces no limitedDetails", () => {
+    const r = solve({ x: 0, y: 0, scale: 1 });
+    expect(r.limitedDetails.length).toBe(0);
+  });
+});
+
 describe("activeProxyBoxKeyOfNode — a selected hidden node highlights its active proxy", () => {
   test("a node inside a collapsed group maps to that group's proxy box key", () => {
     const r = solve({ x: 0, y: 0, scale: 0.01 }); // everything collapsed

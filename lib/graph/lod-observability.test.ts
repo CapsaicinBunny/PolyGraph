@@ -49,8 +49,8 @@ describe("summarizeRepLod — overlay stats (Appendix A §I)", () => {
     });
     expect(stats.generation).toBe(r.runtime.generation);
     expect(stats.committedReps).toBe(r.cut.selectedRepresentations.length);
-    expect(stats.nodes).toBe(r.cut.nodeCost);
-    expect(stats.targetNodes).toBe(r.budget.targetNodes);
+    expect(stats.cards).toBe(r.cut.cardCost);
+    expect(stats.targetCards).toBe(r.budget.targetCards);
     // A coarse cut left proxies unrefined → at least one why-not-refined reason recorded.
     const totalReasons = stats.whyNotRefined.reduce((s, row) => s + row.count, 0);
     expect(totalReasons).toBeGreaterThanOrEqual(0); // may be 0 if all collapsed to roots-as-leaves
