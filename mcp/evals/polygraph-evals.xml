@@ -1,0 +1,53 @@
+<!--
+  Evaluation questions for the PolyGraph MCP server, answered against the committed
+  fixture project in mcp/evals/fixture/ (6 TypeScript files: a db hub imported by
+  user/order/app, plus a two-file import cycle). Answers are verified and stable as
+  long as the fixture is unchanged. Point the MCP server at the absolute path of
+  mcp/evals/fixture and ask each question; each has a single verifiable answer.
+-->
+<evaluation>
+  <qa_pair>
+    <question>Scan the project in mcp/evals/fixture. How many nodes in its graph have kind "file"?</question>
+    <answer>6</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In the mcp/evals/fixture project, how many nodes match the query kind:class?</question>
+    <answer>2</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In the mcp/evals/fixture project, how many nodes match the query kind:function?</question>
+    <answer>4</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>How many edges of kind "import" does the mcp/evals/fixture project's graph contain?</question>
+    <answer>7</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In the mcp/evals/fixture project, how many nodes match the query "kind:file OR kind:class"?</question>
+    <answer>8</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>How many dependency-cycle insights does the mcp/evals/fixture project report?</question>
+    <answer>2</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In the mcp/evals/fixture project, how many other files import db.ts (its incoming import dependents)?</question>
+    <answer>2</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What is the total number of nodes in the mcp/evals/fixture project's graph?</question>
+    <answer>12</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Every edge in the mcp/evals/fixture project was resolved with the same confidence level. Which level (exact, inferred, or ambiguous)?</question>
+    <answer>exact</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Among the top-level functions in the mcp/evals/fixture project, exactly one is never called by any other function in the project. What is its name?</question>
+    <answer>main</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Read the file db.ts in the mcp/evals/fixture project. What string literal does its connect function return?</question>
+    <answer>connected</answer>
+  </qa_pair>
+</evaluation>
