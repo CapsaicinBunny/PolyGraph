@@ -42,6 +42,8 @@ interface SettingsPanelProps {
   onEdgeRouting: (v: "curved" | "orthogonal") => void;
   telemetryOn: boolean;
   onTelemetry: (v: boolean) => void;
+  lodOverlay: boolean;
+  onLodOverlay: (v: boolean) => void;
   onClose: () => void;
 }
 
@@ -139,6 +141,8 @@ export function SettingsPanel({
   onEdgeRouting,
   telemetryOn,
   onTelemetry,
+  lodOverlay,
+  onLodOverlay,
   onClose,
 }: SettingsPanelProps) {
   return (
@@ -180,6 +184,11 @@ export function SettingsPanel({
             checked={telemetryOn}
             onClick={() => onTelemetry(!telemetryOn)}
             label="Local logs"
+          />
+          <CheckRow
+            checked={lodOverlay}
+            onClick={() => onLodOverlay(!lodOverlay)}
+            label="Show LOD diagnostics"
           />
         </Stack>
         <HStack gap="2" mt="3">

@@ -178,6 +178,9 @@ export function Explorer() {
   // Navigation minimap overlay (graph extent + viewport rect). Default on; toggle
   // in Settings. Helps re-find the graph when zoomed out / panned out of bounds.
   const [minimap, setMinimap] = useState(true);
+  // Representation-LOD diagnostic overlay (dev/telemetry box, top-right of canvas).
+  // Default OFF — it's a dev overlay; toggle in Settings.
+  const [lodOverlay, setLodOverlay] = useState(false);
   // Analytics & logging (telemetry) — mirrors the bus's persisted enabled flag so the
   // Settings toggle reflects and controls it. Default on; persisted to localStorage.
   const [telemetryOn, setTelemetryOn] = useState(telemetry.isEnabled());
@@ -1078,7 +1081,7 @@ export function Explorer() {
             onRepLod={handleRepLod}
             fitSignature={fitSignature}
           />
-          {repLodStats && <RepLodOverlay stats={repLodStats} />}
+          {lodOverlay && repLodStats && <RepLodOverlay stats={repLodStats} />}
         </Box>
         {filtersOpen && (
           <FiltersPanel
@@ -1106,6 +1109,8 @@ export function Explorer() {
             onEdgeRouting={setEdgeRouting}
             telemetryOn={telemetryOn}
             onTelemetry={handleTelemetry}
+            lodOverlay={lodOverlay}
+            onLodOverlay={setLodOverlay}
             onClose={() => setSettingsOpen(false)}
           />
         )}
