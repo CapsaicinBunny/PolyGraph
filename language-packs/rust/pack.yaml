@@ -6,3 +6,36 @@ grammar: rust
 imports:
   style: rust
 queries: tags.scm
+
+# Facet dimensions this pack contributes (Phase E). Keys are namespaced
+# (rust.*); the native core attaches the per-node values via the @facet captures
+# in tags.scm, and the kernel merge surfaces these descriptors in
+# AnalyzeResult.dimensions. A value equal to `defaultValue` is never materialized
+# per node (the ubiquitous private/sync/safe case), so storage stays sparse.
+facets:
+  - key: rust.visibility
+    label: Visibility
+    cardinality: single
+    # Items with no `pub` are private — the implicit default (not stored).
+    defaultValue: private
+    values:
+      - { value: private, label: Private, color: "#94a3b8" }
+      - { value: pub, label: Public, color: "#22c55e" }
+      - { value: "pub(crate)", label: Crate, color: "#3b82f6" }
+      - { value: "pub(super)", label: Super, color: "#a855f7" }
+  - key: rust.async
+    label: Async
+    cardinality: single
+    # Most functions are synchronous — the implicit default (not stored).
+    defaultValue: sync
+    values:
+      - { value: sync, label: Sync, color: "#94a3b8" }
+      - { value: async, label: Async, color: "#f59e0b" }
+  - key: rust.unsafe
+    label: Safety
+    cardinality: single
+    # Most functions are safe — the implicit default (not stored).
+    defaultValue: safe
+    values:
+      - { value: safe, label: Safe, color: "#94a3b8" }
+      - { value: unsafe, label: Unsafe, color: "#ef4444" }
