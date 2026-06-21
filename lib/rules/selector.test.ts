@@ -75,6 +75,19 @@ describe("matchNode — generic facets", () => {
     expect(matchNode(sel({ facets: { language: ["RS"] } }), n)).toBe(false);
   });
 
+  test("language facet accepts human names (aliases), like the query language", () => {
+    const rs = node({ filePath: "crate/a.rs" });
+    // Human name → badge code, consistent with `language:rust` in the query language.
+    expect(matchNode(sel({ facets: { language: ["rust"] } }), rs)).toBe(true);
+    expect(matchNode(sel({ facets: { language: ["RS"] } }), rs)).toBe(true);
+    expect(matchNode(sel({ facets: { language: ["typescript"] } }), rs)).toBe(false);
+
+    const ts = node({ filePath: "src/api/users.ts" });
+    expect(matchNode(sel({ facets: { language: ["typescript"] } }), ts)).toBe(true);
+    // Mixed name + code in one OR-list both resolve to the badge-code space.
+    expect(matchNode(sel({ facets: { language: ["rust", "TS"] } }), ts)).toBe(true);
+  });
+
   test("category default (feature) matches a node with no explicit category", () => {
     expect(matchNode(sel({ facets: { category: ["feature"] } }), node())).toBe(true);
     expect(matchNode(sel({ facets: { category: ["ui"] } }), node())).toBe(false);

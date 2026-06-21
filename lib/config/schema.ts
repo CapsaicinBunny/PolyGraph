@@ -17,6 +17,10 @@ export type Severity = "error" | "warning";
  * arrays (`kinds`/`roles`/`environments`/`categories`) are kept as a compatibility
  * projection — the loader mirrors them INTO `facets` under their canonical key —
  * so old configs and old consumers keep working while matching reads `facets`.
+ *
+ * Spec note: these legacy arrays are part of the "remove legacy named fields"
+ * Phase D deliverable, DEFERRED to Phase E in lock-step with the GraphNode legacy
+ * fields (see graph/types.ts). They stay until every consumer reads only `facets`.
  */
 export interface NodeSelector {
   /** Globs on the node's relative `filePath`; any match qualifies. */

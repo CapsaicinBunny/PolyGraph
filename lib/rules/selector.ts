@@ -9,7 +9,7 @@
 // fallback so legacy-only nodes still match. The loader mirrors the legacy typed
 // selector fields into `facets`, so this one path covers both old and new configs.
 
-import { fileLanguage, topFolderOf } from "../graph/filters";
+import { canonicalLanguageKey, fileLanguage, topFolderOf } from "../graph/filters";
 import type { GraphNode } from "../graph/types";
 import { matchAnyGlob } from "../glob/match";
 import type { NodeSelector } from "../config/schema";
@@ -17,7 +17,12 @@ import type { NodeSelector } from "../config/schema";
 /** Implicit value for a facet key whose value is absent (only `category` today). */
 const FACET_DEFAULTS: Record<string, string> = { category: "feature" };
 
-/** Legacy typed field reads, so a node carrying only legacy fields still matches. */
+/**
+ * Legacy typed field reads, so a node carrying only legacy fields still matches.
+ * DEFERRED removal (Phase E): non-TS providers don't yet populate `node.facets`, so
+ * this fallback is load-bearing for legacy-only nodes. It retires with the legacy
+ * GraphNode fields once every provider writes facets (see GraphNode in graph/types.ts).
+ */
 function legacyFacetValues(node: GraphNode, key: string): string[] {
   switch (key) {
     case "role":
@@ -41,6 +46,9 @@ function legacyFacetValues(node: GraphNode, key: string): string[] {
  */
 function nodeFacetValues(node: GraphNode, key: string): string[] {
   if (key === "kind") return [node.kind];
+  // The structural `language` value space is the badge code (e.g. "RS"). Selector
+  // values are canonicalized to the same space in `matchNode`, so a config may use
+  // either a human name ("rust") or the code ("RS"), matching the query language.
   if (key === "language") return [fileLanguage(node.filePath).key];
   if (key === "folder") return [topFolderOf(node.filePath)];
   const stored = node.facets?.[key];
@@ -54,11 +62,20 @@ function nodeFacetValues(node: GraphNode, key: string): string[] {
 export function matchNode(selector: NodeSelector, node: GraphNode): boolean {
   if (selector.paths.length > 0 && !matchAnyGlob(selector.paths, node.filePath)) return false;
   // Generic facet store: every key with values must be satisfied (AND); a node's
-  // value(s) for the key must intersect the selector's values (OR).
+  // value(s) for the key must intersect the selector's values (OR). The `language`
+  // key compares in the canonical badge-code space (human names mapped, lowercased)
+  // so a selector value of "rust" matches an "RS" node — consistent with the query.
   for (const [key, wanted] of Object.entries(selector.facets)) {
     if (wanted.length === 0) continue; // empty constraint → ignored
     const have = nodeFacetValues(node, key);
-    if (!wanted.some((w) => have.includes(w))) return false;
+    const matched =
+      key === "language"
+        ? have.some((h) => {
+            const hv = canonicalLanguageKey(h);
+            return wanted.some((w) => canonicalLanguageKey(w) === hv);
+          })
+        : wanted.some((w) => have.includes(w));
+    if (!matched) return false;
   }
   return true;
 }

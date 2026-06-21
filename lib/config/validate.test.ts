@@ -59,6 +59,18 @@ function indexWithRust(): ReturnType<typeof buildDimensionIndex> {
   return buildDimensionIndex(graph, catalog);
 }
 
+/** Like indexWithRust, but one node carries an UNDECLARED closed value ("protected"). */
+function indexWithUndeclaredVisibility(): ReturnType<typeof buildDimensionIndex> {
+  const a = fileNode("crate/a.rs", { kind: "struct" });
+  writeFacet(a, "rust.visibility", ["pub"]);
+  const b = fileNode("crate/b.rs", { kind: "struct" });
+  // "protected" is NOT in RUST_VISIBILITY.values — admitted, surfaced declared:false.
+  writeFacet(b, "rust.visibility", ["protected"]);
+  const graph: GraphModel = { nodes: [a, b], edges: [] };
+  const catalog: DimensionCatalog = { descriptors: [...STRUCTURAL_DESCRIPTORS, RUST_VISIBILITY] };
+  return buildDimensionIndex(graph, catalog);
+}
+
 describe("PRE-analysis: generic facets in a selector", () => {
   test("a selector may carry a generic facets object", () => {
     const cfg = parseConfig({
@@ -131,6 +143,39 @@ describe("PRE-analysis: generic facets in a selector", () => {
       parseConfig({ rules: [{ name: "x", from: { kind: "widget" }, disallow: "b/**" }] }),
     ).toThrow(/unknown value/);
   });
+
+  test("a legacy field and a generic facets entry for the same key merge last-write-wins", () => {
+    // Object key order is the document order parseSelector iterates: the later key
+    // for the same canonical facet ("category") overwrites the earlier one.
+    const facetsLast = parseConfig({
+      rules: [
+        {
+          name: "x",
+          from: { category: "ui", facets: { category: ["feature"] } },
+          disallow: "b/**",
+        },
+      ],
+    });
+    const a = facetsLast.rules[0];
+    if (a.type === "dependency") {
+      expect(a.from.facets.category).toEqual(["feature"]); // facets came last → wins
+      expect(a.from.categories).toEqual(["ui"]); // legacy typed array is untouched
+    }
+
+    const legacyLast = parseConfig({
+      rules: [
+        {
+          name: "x",
+          from: { facets: { category: ["feature"] }, category: "ui" },
+          disallow: "b/**",
+        },
+      ],
+    });
+    const b = legacyLast.rules[0];
+    if (b.type === "dependency") {
+      expect(b.from.facets.category).toEqual(["ui"]); // legacy mirror came last → wins
+    }
+  });
 });
 
 describe("validation.unknownFacet severity (PRE-analysis parse)", () => {
@@ -173,7 +218,7 @@ describe("POST-analysis: validateConfigAgainstIndex", () => {
     expect(problems[0].where).toMatch(/rules\[0\]\.from/);
   });
 
-  test("an out-of-domain value on a closed dimension is flagged", () => {
+  test("an out-of-domain value NOT present on any node is flagged", () => {
     const cfg = parseConfig({
       rules: [
         {
@@ -183,9 +228,24 @@ describe("POST-analysis: validateConfigAgainstIndex", () => {
         },
       ],
     });
+    // No node carries "protected" in `index`, so it is neither declared nor present.
     const problems = validateConfigAgainstIndex(cfg, index);
     expect(problems).toHaveLength(1);
     expect(problems[0].message).toMatch(/protected/);
+  });
+
+  test("an undeclared-but-present closed value is admitted, not flagged", () => {
+    // Spec §6: a value not in a closed descriptor's domain is still ADMITTED (data
+    // not lost) and surfaced via present() with declared:false — the matcher would
+    // match nodes carrying it, so the validator must not call it out-of-domain.
+    const idx = indexWithUndeclaredVisibility();
+    expect(idx.present("rust.visibility")).toContainEqual({ value: "protected", declared: false });
+    const cfg = parseConfig({
+      rules: [
+        { name: "ok", from: { facets: { "rust.visibility": ["protected"] } }, disallow: "b/**" },
+      ],
+    });
+    expect(validateConfigAgainstIndex(cfg, idx)).toEqual([]);
   });
 
   test("severity follows validation.unknownFacet", () => {

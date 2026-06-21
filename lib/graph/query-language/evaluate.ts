@@ -3,7 +3,7 @@
 // `depends-on` is a single multi-source reverse BFS rather than a per-node walk.
 
 import type { DimensionIndex } from "../dimension-index";
-import { fileLanguage } from "../filters";
+import { canonicalLanguageKey, fileLanguage } from "../filters";
 import type { GraphModel, GraphNode } from "../types";
 import { buildMetrics, type MetricsIndex } from "./metrics";
 import { type CompareOp, type Node, parse } from "./parse";
@@ -64,55 +64,6 @@ const BUILTIN_FIELDS: ReadonlySet<string> = new Set([
   "depends_on",
 ]);
 
-// Human language names → the badge code returned by fileLanguage().key.
-const LANG_ALIASES: Record<string, string> = {
-  rust: "RS",
-  typescript: "TS",
-  ts: "TS",
-  tsx: "TX",
-  javascript: "JS",
-  js: "JS",
-  python: "PY",
-  py: "PY",
-  go: "GO",
-  golang: "GO",
-  java: "JV",
-  kotlin: "KT",
-  scala: "SC",
-  csharp: "C#",
-  "c#": "C#",
-  fsharp: "F#",
-  "f#": "F#",
-  cpp: "C+",
-  "c++": "C+",
-  c: "C",
-  objc: "OC",
-  "objective-c": "OC",
-  swift: "SW",
-  zig: "ZG",
-  haskell: "HS",
-  ruby: "RB",
-  rb: "RB",
-  php: "PH",
-  bash: "SH",
-  shell: "SH",
-  sh: "SH",
-  lua: "LU",
-  dart: "DT",
-  julia: "JL",
-  jl: "JL",
-  ocaml: "ML",
-  ml: "ML",
-  nix: "NX",
-  r: "R",
-  sql: "SQ",
-  json: "{}",
-  wasm: "WA",
-  wat: "WA",
-  vue: "VU",
-  svelte: "SV",
-};
-
 const DEP_TYPE_ALIASES: Record<string, string> = {
   prod: "dependency",
   dev: "devDependency",
@@ -149,9 +100,7 @@ function matchesText(node: GraphNode, text: string): boolean {
 }
 
 function languageMatches(node: GraphNode, value: string): boolean {
-  const v = value.toLowerCase();
-  const want = (LANG_ALIASES[v] ?? value).toLowerCase();
-  return fileLanguage(node.filePath).key.toLowerCase() === want;
+  return fileLanguage(node.filePath).key.toLowerCase() === canonicalLanguageKey(value);
 }
 
 function compareNum(actual: number, op: CompareOp, raw: string): boolean {
@@ -211,7 +160,10 @@ function matchesPredicate(
   // Built-in numeric/structural fields keep their bespoke handling. Every other
   // field is a dimension lookup: prefer the registry (so provider facets like
   // rust.visibility work and legacy aliases map to catalog keys), then fall back
-  // to the legacy typed fields, then a lenient text match.
+  // to the legacy typed fields, then a lenient text match. The legacy-field cases
+  // below (env/runtime/category/role) are a DEFERRED-removal fallback: they cover a
+  // graph queried without an index AND legacy-only nodes whose `facets` is unset,
+  // and retire with the GraphNode legacy fields in Phase E (see graph/types.ts).
   if (!BUILTIN_FIELDS.has(field) && opts.dimensions) {
     const hit = matchFacetViaIndex(opts.dimensions, ordinal, field, value);
     if (hit !== undefined) return hit;

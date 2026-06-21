@@ -327,13 +327,20 @@ export function validateConfigAgainstIndex(
         continue;
       }
       if (descriptor.domain !== "closed") continue; // open domains admit any value
-      const domain = new Set(descriptor.values.map((v) => v.value));
+      // The admissible set is the declared domain UNION the values actually present
+      // in the graph. A closed dimension keeps its domain closed but still ADMITS an
+      // undeclared value a node carries (surfaced via present() as declared:false —
+      // spec §6), and the matcher (matchNode / the index) would match such a value.
+      // Validating against the declared domain alone would flag a real, matchable
+      // value as out-of-domain — disagreeing with what the rule would actually do.
+      const admissible = new Set(descriptor.values.map((v) => v.value));
+      for (const p of index.present(key)) admissible.add(p.value);
       for (const value of values) {
-        if (!domain.has(value)) {
+        if (!admissible.has(value)) {
           problems.push({
             severity,
             where: `${where}.facets.${key}`,
-            message: `Value "${value}" is outside the closed domain of dimension "${key}" (allowed: ${[...domain].sort().join(", ")})`,
+            message: `Value "${value}" is outside the closed domain of dimension "${key}" (allowed: ${[...admissible].sort().join(", ")})`,
           });
         }
       }
