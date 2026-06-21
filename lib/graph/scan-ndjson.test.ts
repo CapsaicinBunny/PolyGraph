@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  type CatalogWarning,
-  type DimensionCatalog,
-  STRUCTURAL_DESCRIPTORS,
-} from "./dimensions";
+import { type CatalogWarning, type DimensionCatalog, STRUCTURAL_DESCRIPTORS } from "./dimensions";
 import {
   type ScanPayload,
   SCAN_NDJSON_CONTENT_TYPE,

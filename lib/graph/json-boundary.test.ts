@@ -87,8 +87,6 @@ describe("JSON-boundary integration (the gap that hid the scan crash)", () => {
       enabledFolders: new Set(availableFolders(graph).map((f) => f.name)),
       enabledLanguages: new Set(availableLanguages(graph).map((l) => l.key)),
     };
-    expect(() =>
-      buildSceneStructure(graph, new Set(), filters, "smart", "LR"),
-    ).not.toThrow();
+    expect(() => buildSceneStructure(graph, new Set(), filters, "smart", "LR")).not.toThrow();
   });
 });

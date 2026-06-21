@@ -142,7 +142,10 @@ export async function runAnalyze(files: SourceFileMap | undefined): Promise<Hand
     console.error(
       `[analyze] ${Object.keys(files).length} files | ${(performance.now() - t).toFixed(0)}ms | ${graph.nodes.length} nodes, ${graph.edges.length} edges`,
     );
-    return { ok: true, value: { graph, errors, unresolved, manifests, dimensions, catalogWarnings } };
+    return {
+      ok: true,
+      value: { graph, errors, unresolved, manifests, dimensions, catalogWarnings },
+    };
   } catch (err) {
     return {
       ok: false,
