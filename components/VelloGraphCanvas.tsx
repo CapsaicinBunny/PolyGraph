@@ -37,11 +37,13 @@ import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
 import { computeGroupCut, groupCutEquals, groupLodSelection } from "@/lib/graph/group-cut";
 import {
   type RepLodResult,
+  type RepresentationRuntime,
+  acquireRepresentationRuntime,
   activeProxyBoxKeyOfNode,
   buildSceneRepresentationCut,
   DEFAULT_REP_LOD_OPTIONS,
+  materialSignature,
 } from "@/lib/graph/lod-representation-cut";
-import { type EvictionController, makeEvictionController } from "@/lib/graph/lod-eviction";
 import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
 import {
   centerCameraOn,
@@ -489,12 +491,28 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // its active proxy"). Holds the hierarchy + runtimeCut for the representativeOf walk.
   const lastRep = useRef<RepLodResult | null>(null);
 
-  // The persistent eviction + runtime-cut controller (Phase C1c bug b): tracks auto-opened
-  // group proxies across recuts so a deadband retains on-screen opens through a small pan,
-  // bounds the retained offscreen opens via an LRU, and rolls the runtime cut in place (no
-  // fresh Uint32Array per recut). Rebuilt on a grouping-mode switch (the rep ids change
-  // domain). Lazily created in recomputeCut once the rep count is known.
-  const evictionCtrl = useRef<EvictionController | null>(null);
+  // The PERSISTENT representation runtime (design Gap 4): the cached hierarchy, node
+  // ordinals, group-id map, eviction + runtime-cut controller, and committed-generation
+  // runtime. A camera recut REUSES this (updating bounds/priorities/cut) rather than
+  // rebuilding the O(N) hierarchy; it is rebuilt only when the material signature changes
+  // (filtered-graph identity + grouping mode/version + node-cost inputs + builder version).
+  // Reset on a grouping-mode switch (the rep id domain moves). The eviction controller that
+  // was a standalone ref now lives INSIDE this runtime.
+  const repRuntimeRef = useRef<RepresentationRuntime | undefined>(undefined);
+  // Reference-identity tokens for the material signature: a monotonic id per distinct object
+  // reference (graph / snapshot / visible-set / cost inputs). React hands a NEW reference on
+  // a real change, so comparing references is a cheap, correct proxy for "did the material
+  // inputs change?" without an O(N) content hash each recut.
+  const idTokens = useRef(new WeakMap<object, number>());
+  const nextIdToken = useRef(1);
+  const tokenOf = (o: object): number => {
+    let t = idTokens.current.get(o);
+    if (t === undefined) {
+      t = nextIdToken.current++;
+      idTokens.current.set(o, t);
+    }
+    return t;
+  };
 
   // Adaptive level-of-detail state the (mount-time) wheel handler reads via refs.
   const dirTree = useMemo(() => buildDirTree(graph), [graph]);
@@ -535,7 +553,6 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     onRepLod?: (result: RepLodResult) => void;
     graph: GraphModel;
     directoryRepSnapshot: CompactGroupingSnapshot | null;
-    repRuntime: RepLodResult["runtime"] | undefined;
     // POST-FILTER visible base-node ids (Gap 7): the rep cut builds its hierarchy from this
     // projection so filtered-out nodes add no proxy-subtree cost / card pressure.
     visibleNodeIds: Set<string>;
@@ -554,7 +571,6 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     onRepLod,
     graph,
     directoryRepSnapshot,
-    repRuntime: undefined,
     visibleNodeIds,
   });
   lod.current.adaptiveLod = adaptiveLod;
@@ -574,13 +590,13 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // Carrying it over makes the first post-switch cut read every group as "was open" and
   // apply the relaxed hysteresis threshold to all of them. Reset so hysteresis compares
   // within the active mode's key domain (the fit effect resets lodBand but not rawCut).
-  // Also drop the representation runtime so the new mode starts a fresh generation chain.
+  // Also drop the persistent representation runtime so the new mode rebuilds its hierarchy
+  // and starts a fresh generation chain. (The runtime's material signature includes the
+  // mode key, so it would rebuild anyway; clearing the ref also frees the old eviction
+  // controller, whose tracked rep ids belong to the OLD mode's disjoint id domain.)
   if (lod.current.groupBy !== groupBy) {
     lod.current.rawCut = new Set();
-    lod.current.repRuntime = undefined;
-    // The eviction controller's tracked rep ids belong to the OLD mode's hierarchy (a
-    // disjoint id domain); reset so the new mode starts with no stale retained opens.
-    evictionCtrl.current?.reset();
+    repRuntimeRef.current = undefined;
   }
   lod.current.groupBy = groupBy;
   lod.current.groupingSnapshot = groupingSnapshot ?? null;
@@ -840,29 +856,47 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       // Directory has no snapshot prop, so it uses the canvas-built directoryRepSnapshot.
       const repSnap = l.groupingSnapshot ?? l.directoryRepSnapshot;
       if (l.representationLod && repSnap) {
-        const repNodeIds = l.graph.nodes.map((n) => n.id);
-        // POST-FILTER projection (Gap 7): a node is visible iff it survived the active
-        // filters (the scene's keptIds, pre-collapse). Filtered-out nodes are detached from
-        // the rep hierarchy — no proxy-subtree cost, no card pressure, no proxy from hidden
-        // nodes alone. A node absent from `visibleNodeIds` is treated as hidden; when nothing
-        // is filtered the set holds every node, so the mask is a no-op (prior behavior).
-        const visible = l.visibleNodeIds;
-        const visibleNode = (ordinal: number): boolean => visible.has(repNodeIds[ordinal]);
-        // Lazily create / re-size the persistent eviction controller for this hierarchy's
-        // rep count (group reps + leaf reps). A changed rep count (filter/grouping change)
-        // rebuilds it so its LRU key space matches the new hierarchy.
-        const repCount = repSnap.groupIds.length + repNodeIds.length;
-        if (!evictionCtrl.current || evictionCtrl.current.keySpace !== repCount) {
-          evictionCtrl.current = makeEvictionController(repCount, LOD_OFFSCREEN_OPEN_BUDGET);
-        }
-        const result = buildSceneRepresentationCut({
+        // MATERIAL-signature inputs (Gap 4): reference-identity tokens for the filtered graph
+        // (graph ref + visible-set ref), the grouping (snapshot ref), and the per-node cost
+        // inputs (expanded set + symbol-count map refs). React hands a NEW reference on a real
+        // change, so these tokens change iff the material inputs do — keying the persistent
+        // runtime's reuse-vs-rebuild without an O(N) content hash each recut.
+        const exp = l.expanded;
+        const sc = l.symbolCount;
+        const filteredGraphId = `${tokenOf(l.graph)}:${tokenOf(l.visibleNodeIds)}`;
+        const groupingVersion = tokenOf(repSnap);
+        const nodeCostSignature = `${tokenOf(exp)}:${tokenOf(sc)}`;
+        // The material signature reads only the signature inputs (not the node-id CONTENT),
+        // so compute it cheaply with an empty nodeIds to decide reuse vs rebuild.
+        const sigInputs = {
           snapshot: repSnap,
-          nodeIds: repNodeIds,
-          visibleNode,
           boxes,
           cam: c,
           vp,
           intent: l.intent ?? new Map(),
+          options: { ...DEFAULT_REP_LOD_OPTIONS, nodeCost },
+          filteredGraphId,
+          groupingVersion,
+          nodeCostSignature,
+        };
+        const sig = materialSignature({ ...sigInputs, nodeIds: [] });
+        const reuse = repRuntimeRef.current?.signature === sig;
+        // POST-FILTER projection (Gap 7): a node is visible iff it survived the active filters.
+        // Reuse the runtime's cached node-id order on a recut; only materialize a fresh node-id
+        // array + visibility mask when the runtime will actually be REBUILT — never per recut.
+        const visible = l.visibleNodeIds;
+        const repNodeIds = reuse
+          ? (repRuntimeRef.current as RepresentationRuntime).nodeIds
+          : l.graph.nodes.map((n) => n.id);
+        const visibleNode = (ordinal: number): boolean => visible.has(repNodeIds[ordinal]);
+
+        // Acquire the persistent runtime: reused verbatim (no O(N) hierarchy rebuild) when the
+        // signature is unchanged, rebuilt once when it changes. A camera recut takes the reuse
+        // path; only a graph/filter/grouping/cost change rebuilds.
+        const input = {
+          ...sigInputs,
+          nodeIds: repNodeIds,
+          visibleNode,
           options: {
             ...DEFAULT_REP_LOD_OPTIONS,
             openPx: LOD_OPEN_PX,
@@ -870,11 +904,15 @@ export function VelloGraphCanvas(props: GraphViewProps) {
             nodeBudget: LOD_NODE_BUDGET,
             nodeCost,
           },
-          previous: l.repRuntime,
           collectDiagnostics: !!l.onRepLod,
-          eviction: evictionCtrl.current,
-        });
-        l.repRuntime = result.runtime;
+        };
+        const runtime = acquireRepresentationRuntime(
+          input,
+          repRuntimeRef.current,
+          LOD_OFFSCREEN_OPEN_BUDGET,
+        );
+        repRuntimeRef.current = runtime;
+        const result = buildSceneRepresentationCut({ ...input, runtime });
         lastRep.current = result;
         l.onRepLod?.(result);
         // Only a committed generation drives a scene rebuild — hand up the open selection.

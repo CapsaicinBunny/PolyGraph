@@ -51,8 +51,17 @@ import {
   type LodRuntimeState,
   setPending,
 } from "./lod-runtime";
-import type { EvictionController } from "./lod-eviction";
+import { type EvictionController, makeEvictionController } from "./lod-eviction";
 import type { CollapseIntent, GroupId } from "./collapse-model";
+
+/**
+ * Version of the representation BUILDER (the hierarchy shape: proxy parenting, intermediate
+ * tiers, fan-out bounds, cost rollup). Folded into the {@link RepresentationMaterialSignature}
+ * so a builder change invalidates every cached {@link RepresentationRuntime} (and downstream
+ * proxy/local-layout caches keyed off the same version). Bump on ANY change to the structure
+ * `buildRepresentationHierarchy` emits.
+ */
+export const REPRESENTATION_BUILDER_VERSION = "rb1";
 
 /** Tuning for the representation cut, mirroring the C1a GroupCutOptions surface. */
 export interface RepLodOptions {
@@ -100,6 +109,28 @@ export interface RepLodInput {
   previous?: LodRuntimeState;
   /** Filter signature folded into the CutSignature (a filter change forces a commit). */
   filterSignature?: string;
+  /**
+   * Identity of the FILTERED graph this cut is built over (graph version + filter
+   * signature, or any caller token that changes iff the post-filter node/edge SET changes).
+   * Folded into the {@link RepresentationMaterialSignature}: when it (and the grouping /
+   * node-cost inputs) are unchanged, a recut REUSES the cached hierarchy rather than
+   * rebuilding it (Gap 4). Omitted → derived from `filterSignature` alone (no graph-version
+   * component — adequate for tests, but a production caller should pass the real identity).
+   */
+  filteredGraphId?: string;
+  /**
+   * Monotonic version of the active grouping (bumps when the grouping is recomputed, even
+   * if the mode string is unchanged — e.g. a re-run community detection relabels). Folded
+   * into the material signature so a regrouping rebuilds the hierarchy. Omitted → 0.
+   */
+  groupingVersion?: number;
+  /**
+   * Signature of the per-node COST inputs (the `nodeCost` closure's domain — e.g. the
+   * expanded-files set + symbol counts). When the costs change the hierarchy's rolled-up
+   * subtree costs change, so this is folded into the material signature. Omitted → "" (the
+   * caller asserts the cost function is stable for the cached runtime's lifetime).
+   */
+  nodeCostSignature?: string;
   /** Collect the solver's why-not-refined diagnostics (Appendix A §I observability). */
   collectDiagnostics?: boolean;
   /**
@@ -111,12 +142,125 @@ export interface RepLodInput {
    * the legacy behavior (a fresh runtime cut each call, no eviction).
    */
   eviction?: EvictionController;
+  /**
+   * A pre-acquired persistent runtime (Gap 4). When provided, the cut is computed AGAINST
+   * this runtime's cached hierarchy / node ordinals / group-id map rather than rebuilding
+   * them — a camera recut UPDATES bounds/priorities/cut but does NOT reconstruct the
+   * hierarchy. The caller obtains it via {@link acquireRepresentationRuntime}, which reuses
+   * the prior runtime when the material signature is unchanged and rebuilds it when it
+   * changes. Omitted → the legacy behavior (a fresh hierarchy + group-id map every call).
+   */
+  runtime?: RepresentationRuntime;
 }
+
+/**
+ * The PERSISTENT representation runtime (design Gap 4 — "Hierarchy rebuilt on every recut").
+ * Everything whose shape is a function of the MATERIAL signature (filtered-graph identity +
+ * grouping mode/version + node-cost inputs + builder version) — NOT of the camera — lives
+ * here and is reused across camera recuts. A recut updates per-rep bounds / priorities and
+ * re-solves the cut; it never rebuilds these O(N) structures. The runtime is rebuilt only
+ * when {@link materialSignature} changes (see {@link acquireRepresentationRuntime}).
+ */
+export interface RepresentationRuntime {
+  /** The material signature this runtime was built under (the reuse/rebuild key). */
+  signature: RepresentationMaterialSignature;
+  /** The proxy hierarchy (arrays, subtree-cost rollups, DFS intervals) — built ONCE. */
+  hierarchy: RepresentationHierarchy;
+  /** The canonical node-id order the hierarchy was built from (reused, not re-mapped). */
+  nodeIds: readonly string[];
+  /** namespaced group id → rep id, built once with the hierarchy (used for intent → constraints). */
+  repOfGroupId: Map<GroupId, number>;
+  /** The persistent eviction + runtime-cut controller (bounds offscreen auto-opens; rolls the cut). */
+  eviction: EvictionController;
+  /** The committed-generation runtime (pending/committed cut + generation), persisted across recuts. */
+  lodRuntime: LodRuntimeState | undefined;
+}
+
+/** The opaque material-signature string keying a {@link RepresentationRuntime}. */
+export type RepresentationMaterialSignature = string;
+
+/**
+ * Compute the MATERIAL signature for the cached runtime (Gap 4): the conjunction of inputs
+ * whose change requires REBUILDING the hierarchy — the filtered-graph identity, the grouping
+ * mode + version, the node-cost inputs, and the builder version. The camera, intent, and
+ * live boxes are DELIBERATELY excluded — they drive a recut, not a rebuild.
+ */
+export function materialSignature(input: RepLodInput): RepresentationMaterialSignature {
+  const graphId = input.filteredGraphId ?? input.filterSignature ?? "";
+  const mode = input.snapshot.modeKey;
+  const groupingVersion = input.groupingVersion ?? 0;
+  const nodeCostSig = input.nodeCostSignature ?? "";
+  // Stable, FIXED-order parts so the signature never drifts with object key order.
+  return [
+    `g=${graphId}`,
+    `m=${mode}`,
+    `gv=${groupingVersion}`,
+    `nc=${nodeCostSig}`,
+    `b=${REPRESENTATION_BUILDER_VERSION}`,
+  ].join("|");
+}
+
+/**
+ * Acquire the persistent runtime for `input` (Gap 4). When `previous` exists and its
+ * signature MATCHES the input's material signature, it is REUSED verbatim — the same
+ * hierarchy object, node ordinals, group-id map and eviction controller (a camera recut
+ * never reconstructs them). Otherwise a fresh runtime is built: the hierarchy + group-id
+ * map are constructed once here, a right-sized eviction controller is created, and the
+ * committed-generation runtime is carried over only when `previous` exists for the same
+ * grouping mode (else a fresh generation chain starts).
+ *
+ * The returned runtime is passed to {@link buildSceneRepresentationCut} on `input.runtime`.
+ */
+export function acquireRepresentationRuntime(
+  input: RepLodInput,
+  previous?: RepresentationRuntime,
+  offscreenOpenBudget = DEFAULT_OFFSCREEN_OPEN_BUDGET,
+): RepresentationRuntime {
+  const signature = materialSignature(input);
+  if (previous && previous.signature === signature) {
+    // MATERIAL match → reuse the cached hierarchy / ordinals / group-id map / eviction /
+    // generation runtime unchanged. This is the hot path of a camera recut.
+    return previous;
+  }
+
+  // Material change (or first build) → reconstruct the O(N) structures ONCE.
+  const nodeCost = input.options.nodeCost ?? (() => 1);
+  const hierarchy = buildRepresentationHierarchy(input.snapshot, input.nodeIds, {
+    nodeCost,
+    visibleNode: input.visibleNode,
+  });
+  const repOfGroupId = new Map<GroupId, number>();
+  for (let g = 0; g < input.snapshot.groupIds.length; g++) {
+    repOfGroupId.set(input.snapshot.groupIds[g], hierarchy.repOfGroup[g]);
+  }
+  // The eviction controller's key space is the rep count; rebuild it when the rep count
+  // changes (a new hierarchy), else reuse the prior controller (its tracking is stale only
+  // when the rep id domain moved, which a material change implies — so a fresh one is correct).
+  const eviction = makeEvictionController(hierarchy.repCount, offscreenOpenBudget);
+  return {
+    signature,
+    hierarchy,
+    nodeIds: input.nodeIds,
+    repOfGroupId,
+    eviction,
+    lodRuntime: undefined,
+  };
+}
+
+/** Default offscreen auto-open budget for a runtime's eviction controller (mirrors the canvas). */
+const DEFAULT_OFFSCREEN_OPEN_BUDGET = 64;
 
 export interface RepLodResult {
   hierarchy: RepresentationHierarchy;
   cut: LodCut;
   runtime: LodRuntimeState;
+  /**
+   * The persistent runtime this solve used (Gap 4). Hand it back to
+   * {@link acquireRepresentationRuntime} on the next recut: when the material signature is
+   * unchanged the SAME hierarchy/ordinals/group-id map are reused (no O(N) rebuild). Present
+   * whenever the solve ran against a runtime (always, since the entry point acquires one).
+   */
+  repRuntime: RepresentationRuntime;
   /** True iff this solve materially changed the committed cut (a generation fired). */
   committed: boolean;
   /** The box keys of selected proxy reps — the collapsed set the render path consumes. */
@@ -150,41 +294,46 @@ export interface RepLodResult {
  * when `committed` is true (the caller gates the scene rebuild on it).
  */
 export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
-  const { snapshot, nodeIds, boxes, cam, vp, intent, options } = input;
-  const nodeCost = options.nodeCost ?? (() => 1);
+  const { snapshot, boxes, cam, vp, intent, options } = input;
 
-  // 1. Hierarchy with rendered + subtree costs, built from the POST-FILTER projection
-  //    (Gap 7). The visibility mask detaches hidden nodes' leaf reps and fully-hidden
-  //    groups, so they contribute no subtree cost / card pressure and produce no proxy.
-  const hierarchy = buildRepresentationHierarchy(snapshot, nodeIds, {
-    nodeCost,
-    visibleNode: input.visibleNode,
-  });
+  // 0. Acquire the PERSISTENT runtime (Gap 4). When the caller passes a runtime whose
+  //    material signature already matches the input, the cached hierarchy / node ordinals /
+  //    group-id map are REUSED — a camera recut never rebuilds them. Otherwise (no runtime
+  //    passed, or a stale one) a fresh runtime is constructed once here. The hierarchy,
+  //    repOfGroupId and eviction controller all come FROM the runtime from this point on.
+  const runtime = acquireRepresentationRuntime(input, input.runtime);
+  const hierarchy = runtime.hierarchy;
   const cols = hierarchy.columns;
+  const repOfGroupId = runtime.repOfGroupId;
 
   // A group rep detached by the post-filter mask (no visible members) is skipped throughout:
   // it gets no bounds, no intent constraint, and no place in the cut.
   const isDetachedGroup = (rep: number): boolean =>
     cols.parentByRep[rep] === DETACHED_REP && cols.firstChildByRep[rep] === -1;
 
-  // 2. Populate proxy bounds from live scene boxes (group reps only; leaf reps keep 0).
+  // 2. UPDATE proxy bounds from live scene boxes (group reps only; leaf reps keep 0). This is
+  //    the per-recut camera update — it mutates the cached hierarchy's geometry columns IN
+  //    PLACE, never reconstructing them. A group whose box vanished this frame is reset to 0
+  //    (so a reused hierarchy carries no stale bounds from a prior camera position).
   for (let g = 0; g < snapshot.groupIds.length; g++) {
     const rep = hierarchy.repOfGroup[g];
     if (isDetachedGroup(rep)) continue; // fully filtered out — no proxy to place
     const box = boxes.get(snapshot.boxKeyByGroup[g]);
-    if (!box) continue;
+    if (!box) {
+      cols.boundsX[rep] = 0;
+      cols.boundsY[rep] = 0;
+      cols.boundsW[rep] = 0;
+      cols.boundsH[rep] = 0;
+      continue;
+    }
     cols.boundsX[rep] = box.x;
     cols.boundsY[rep] = box.y;
     cols.boundsW[rep] = box.w;
     cols.boundsH[rep] = box.h;
   }
 
-  // 3a. Intent → constraints. A group id with no rep (stale id from another mode) is
-  //     ignored. forceClosed/forceOpen are rep ids.
-  const repOfGroupId = new Map<GroupId, number>();
-  for (let g = 0; g < snapshot.groupIds.length; g++) {
-    repOfGroupId.set(snapshot.groupIds[g], hierarchy.repOfGroup[g]);
-  }
+  // 3a. Intent → constraints (rep ids from the cached group-id map). A group id with no rep
+  //     (stale id from another mode) is ignored.
   const forceClosed = new Set<number>();
   const forceOpen = new Set<number>();
   for (const [gid, state] of intent) {
@@ -257,9 +406,17 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   //     tracked set exceeds the offscreen-open budget, the oldest are evicted (re-collapsed).
   //     A second solve folds the retention into forceOpen and the evictions into forceClosed.
   //     Forced (user-intent) opens/closes are untouched — eviction never fights user intent.
+  // The eviction controller is the ACQUIRED runtime's own (Gap 4) when the caller opted into
+  // the persistent runtime — read from `runtime`, NOT `input.runtime`: when the passed runtime
+  // was stale (signature mismatch) `acquire` rebuilt it with a controller sized to the NEW rep
+  // count, and the old controller's key space would be wrong. A legacy per-call `input.eviction`
+  // override still wins for callers that haven't adopted the persistent runtime. When the caller
+  // passes neither `runtime` nor `eviction`, the legacy no-eviction path runs (a fresh runtime
+  // cut, evictions = 0) — so guard on `input.runtime` having been supplied.
+  const eviction = input.eviction ?? (input.runtime ? runtime.eviction : undefined);
   let evictions = 0;
   let totalEvictions = 0;
-  if (input.eviction) {
+  if (eviction) {
     const onScreen = (rep: number): boolean => {
       const g = cols.groupByRep[rep];
       if (g === NO_GROUP) return false;
@@ -270,13 +427,13 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
     // Candidate open set = groups freshly auto-opened on-screen this frame ∪ those retained
     // from prior frames (the deadband). User-forced opens are excluded (tracked separately).
     const freshOpens = autoOpenGroupReps(hierarchy, cut, forceOpen);
-    const candidates = new Set<number>(input.eviction.retained());
+    const candidates = new Set<number>(eviction.retained());
     for (const rep of freshOpens) candidates.add(rep);
     for (const rep of forceOpen) candidates.delete(rep);
 
-    const outcome = input.eviction.recordOpen(candidates, onScreen);
+    const outcome = eviction.recordOpen(candidates, onScreen);
     evictions = outcome.count;
-    totalEvictions = input.eviction.totalEvictions;
+    totalEvictions = eviction.totalEvictions;
 
     // Retained-open after eviction → forceOpen (stay open even offscreen); evicted → closed.
     const retainOpen = new Set<number>(candidates);
@@ -301,34 +458,42 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   }
   const cutSolveMs = nowMs() - t0;
 
-  // 5. Commit through the runtime (only a material change bumps the generation).
+  // 5. Commit through the committed-generation runtime (only a material change bumps the
+  //    generation). When the caller adopted the persistent runtime, ITS own `lodRuntime`
+  //    (Gap 4) is authoritative — carried across recuts, and `undefined` after a rebuild so a
+  //    material change starts a fresh chain (committed=true). A legacy `previous` override is
+  //    used ONLY when no runtime was supplied, so it can never hijack a live runtime's chain.
+  //    The committed result is written back onto the persistent runtime so the NEXT recut
+  //    continues the same generation chain without rebuilding anything.
   const filterSignature = input.filterSignature ?? "";
   const sig = cutSignature(cut, 0, 0, filterSignature);
-  let runtime = input.previous;
+  let lodRuntime = input.runtime ? runtime.lodRuntime : input.previous;
   let committed: boolean;
-  if (!runtime) {
-    runtime = createLodRuntime(cut, sig);
+  if (!lodRuntime) {
+    lodRuntime = createLodRuntime(cut, sig);
     committed = true; // the first cut is the initial committed generation
   } else {
-    setPending(runtime, cut, sig);
-    committed = commitIfMaterial(runtime);
+    setPending(lodRuntime, cut, sig);
+    committed = commitIfMaterial(lodRuntime);
   }
+  runtime.lodRuntime = lodRuntime;
 
   // Derive the collapsed box-key set from the SELECTED proxy reps. (Use the committed cut
   // so the derived scene matches what the renderer will draw.)
-  const effective = runtime.committedCut;
+  const effective = lodRuntime.committedCut;
   const collapsedBoxKeys = collapsedBoxKeysOf(hierarchy, effective);
   const openSelection = openSelectionOf(hierarchy, effective);
   // Roll the runtime cut IN PLACE via the controller (reuses the epoch array when the rep
   // count is unchanged — no fresh Uint32Array per recut); else a one-off fresh cut.
-  const runtimeCut = input.eviction
-    ? input.eviction.advanceCut(effective, hierarchy.repCount)
+  const runtimeCut = eviction
+    ? eviction.advanceCut(effective, hierarchy.repCount)
     : makeRuntimeCut(effective, hierarchy.repCount);
 
   return {
     hierarchy,
     cut: effective,
-    runtime,
+    runtime: lodRuntime,
+    repRuntime: runtime,
     committed,
     collapsedBoxKeys,
     openSelection,
