@@ -14,6 +14,12 @@
 // property insertion order — the same robustness the scene layout signature has.
 //
 // Pure data structures; no React, no GPU, no layout ALGORITHM (this is orchestration).
+//
+// INTEGRATION STATUS (Phase C1c): staged, unit-tested primitive — NOT yet wired. No live
+// path constructs a ProxyCacheKey from real scene inputs yet (only local-refine.ts and
+// tests reference this), so the cache-invalidation guarantee is proven only against
+// hand-built keys. When wiring lands, add a test that builds a ProxyCacheKey from the
+// real scene-signature inputs so this key's field set and scene.signature cannot drift.
 
 import type { ClusterBox, LayoutDirection, XYPosition } from "../layout";
 

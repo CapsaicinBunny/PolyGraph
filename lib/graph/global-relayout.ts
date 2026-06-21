@@ -13,6 +13,12 @@
 // names the material change (or null). The camera/LOD cut lives entirely in the C1b
 // runtime (lod-runtime.ts) and the local-refinement layer (local-refine.ts); neither feeds
 // this signature. Pure; no React, no GPU.
+//
+// INTEGRATION STATUS (Phase C1c): staged, unit-tested gate — NOT yet wired (only its own
+// test references it). The live relayout-on-material-change behavior is currently achieved
+// by scene.signature (scene.ts) + fitSignature (Explorer.tsx), which already carry
+// filter/grouping/direction. When wiring this gate, reconcile its FIELDS with those two
+// signatures so there is a single source of truth (and delete whichever becomes redundant).
 
 import type { LayoutDirection } from "../layout";
 

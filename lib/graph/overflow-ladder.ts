@@ -16,6 +16,12 @@
 // `global` is always false. Refinement is gated by the envelope: once even a scoped
 // relayout is the answer, the caller may instead retain the proxy (over-envelope =
 // over-budget). Pure geometry; no layout ALGORITHM, no React, no GPU.
+//
+// INTEGRATION STATUS (Phase C1c): staged, unit-tested primitive — NOT yet wired into the
+// scene pipeline. (Integration note for the borrow-slack rung: if siblingSlackW/H can ever
+// originate from the SAME under-filled sibling reserve, pass an area-aware / per-donor
+// slack budget so a simultaneous two-axis borrow can't double-count one sibling's free
+// space. Not a concern at this pure-geometry layer.)
 
 import type { Rect } from "./representation";
 
