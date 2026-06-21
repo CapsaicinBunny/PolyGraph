@@ -24,6 +24,7 @@
     "bench:check": "bun run bench/run.ts --check",
     "bench:update": "bun run bench/run.ts --update",
     "bench:fetch": "bun run bench/fetch.ts",
+    "bench:parity": "bun run bench/lod-parity.ts",
     "lint": "oxlint --type-aware",
     "lint:fix": "oxlint --type-aware --fix",
     "format": "oxfmt --ignore-path .gitignore --ignore-path .oxfmtignore .",
