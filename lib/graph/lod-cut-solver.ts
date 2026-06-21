@@ -40,10 +40,47 @@ export interface LodCut {
  * `forceClosed`: select this rep (or the nearest legal ancestor) and exclude its
  * descendants. `forceOpen`: this rep may NOT stand in for its descendants — the solver
  * descends ≥1 level past it. Parent-closed beats a descendant-open (precedence).
+ *
+ * `arbitration` (optional) pins the DETERMINISTIC order in which `forceOpen` reps are
+ * honored when they jointly exceed a hard budget (design "Deterministic forced-open
+ * arbitration"). Without it, `forceOpen` is a Set and its iteration order is insertion-
+ * dependent — so WHICH open wins the budget (and which hits "Detail limited") would be
+ * non-deterministic. The solver always sorts `forceOpen` by this total order before
+ * honoring it; even when `arbitration` is omitted the fallback (viewport-center proximity
+ * then stable rep id) is fully deterministic regardless of Set iteration order.
  */
 export interface CutConstraints {
   forceClosed: ReadonlySet<number>;
   forceOpen: ReadonlySet<number>;
+  arbitration?: ForceOpenArbitration;
+}
+
+/**
+ * The priority SIGNALS that order competing forced opens (design "Deterministic forced-open
+ * arbitration", spec point 7). All fields are OPTIONAL — every missing signal simply doesn't
+ * discriminate, and the final two tiers (viewport-center proximity, stable rep id) are
+ * always computable, so arbitration is total and deterministic with or without these. The
+ * total priority order is:
+ *
+ *   1. the currently-CLICKED open request (`clicked`),
+ *   2. the SELECTED / highlighted path — incl. Problems-panel focusedIds (`highlightedPath`),
+ *   3. MOST-RECENTLY-INTERACTED (`recency`: higher value = more recent),
+ *   4. VIEWPORT-CENTER proximity (computed from `cam` + the rep's bounds),
+ *   5. STABLE rep id (ascending — the final, fully-deterministic tiebreak).
+ *
+ * Higher priority is honored FIRST, so it wins the budget; a lower-priority open that no
+ * longer fits within the hard ceiling is the one that surfaces "Detail limited".
+ */
+export interface ForceOpenArbitration {
+  /** The rep the user just clicked to open (highest priority). */
+  clicked?: number;
+  /** Reps on the selected / highlighted path (incl. Problems-panel `focusedIds`). */
+  highlightedPath?: ReadonlySet<number>;
+  /**
+   * Per-rep recency of interaction — a higher value is MORE recent (a monotonic counter or
+   * timestamp). Reps absent from the map are treated as least-recent (−∞).
+   */
+  recency?: ReadonlyMap<number, number>;
 }
 
 /**
@@ -203,6 +240,113 @@ function sumCost(cols: RepresentationColumns, reps: ArrayLike<number>): CostVec 
   return { cards, edges, labels, gpu, layout };
 }
 
+// ── Deterministic forced-open arbitration (design point 7 / "forced-open arbitration") ──
+
+/**
+ * Order `forceOpen` reps by the TOTAL priority order (design "Deterministic forced-open
+ * arbitration"). The returned array is the deterministic sequence in which the solver
+ * honors the opens — higher priority FIRST (so it wins a contested budget). Pure: the input
+ * Set is not mutated, and the result depends ONLY on the reps + signals + camera/geometry,
+ * NEVER on the Set's iteration order. When two opens jointly exceed a hard budget, the one
+ * earlier in this order is honored and the later one surfaces "Detail limited".
+ *
+ * Tiers (most significant first):
+ *   1. clicked              — exactly the `arbitration.clicked` rep
+ *   2. highlighted path     — membership in `arbitration.highlightedPath`
+ *   3. recency              — `arbitration.recency` value, higher = more recent
+ *   4. viewport-center      — proximity of the rep's bounds centre to the viewport centre
+ *   5. stable rep id        — ascending (the final, fully-deterministic tiebreak)
+ */
+export function arbitrateForceOpen(
+  cols: RepresentationColumns,
+  cam: CameraState,
+  forceOpen: ReadonlySet<number>,
+  arbitration?: ForceOpenArbitration,
+): number[] {
+  const reps = [...forceOpen];
+  // Precompute the viewport-centre distance per rep once (tier 4) so the comparator is O(1).
+  const centreDist = new Map<number, number>();
+  const vpCx = cam.viewport.w / 2;
+  const vpCy = cam.viewport.h / 2;
+  for (const r of reps) {
+    centreDist.set(r, viewportCentreDistance(cols, cam, r, vpCx, vpCy));
+  }
+  const clicked = arbitration?.clicked;
+  const highlighted = arbitration?.highlightedPath;
+  const recency = arbitration?.recency;
+  // Sort by the descending priority order. We return a NEW array; ties fall through to the
+  // stable rep id, so the order is total and Set-iteration-independent.
+  reps.sort((a, b) => {
+    // 1. clicked — the single just-clicked open wins outright.
+    const ca = clicked !== undefined && a === clicked ? 1 : 0;
+    const cb = clicked !== undefined && b === clicked ? 1 : 0;
+    if (ca !== cb) return cb - ca; // clicked first
+    // 2. selected / highlighted path (incl. Problems-panel focusedIds).
+    const ha = highlighted?.has(a) ? 1 : 0;
+    const hb = highlighted?.has(b) ? 1 : 0;
+    if (ha !== hb) return hb - ha; // highlighted first
+    // 3. most-recently-interacted (higher recency value = more recent → first). A missing OR
+    //    non-finite (NaN/±∞ from a malformed counter) recency normalizes to "least recent" so
+    //    the comparator can never return NaN — a NaN result makes Array.sort order-dependent,
+    //    which would reintroduce exactly the Set-iteration non-determinism this function exists
+    //    to kill. We compare with `<`/`>` (not subtraction) so even equal-magnitude infinities
+    //    fall through cleanly to the next tier.
+    const ra = recencyValue(recency, a);
+    const rb = recencyValue(recency, b);
+    if (ra > rb) return -1; // a more recent → first
+    if (ra < rb) return 1; // b more recent → first
+    // 4. viewport-center proximity (smaller distance = nearer the centre → first). Distances are
+    //    finite or +∞ (geometry-less) by construction; compare with `<`/`>` so an +∞ vs +∞ tie
+    //    falls through rather than yielding NaN.
+    const da = centreDist.get(a) ?? Number.POSITIVE_INFINITY;
+    const db = centreDist.get(b) ?? Number.POSITIVE_INFINITY;
+    if (da < db) return -1; // a nearer the centre → first
+    if (da > db) return 1; // b nearer the centre → first
+    // 5. stable rep id — the fully-deterministic final tiebreak (ascending).
+    return a - b;
+  });
+  return reps;
+}
+
+/**
+ * The recency of `rep` for arbitration tier 3, normalized so the comparator stays a TOTAL order.
+ * A missing entry is least-recent (−∞). A present-but-non-finite value (NaN from a malformed
+ * counter, or ±∞) ALSO collapses to −∞ — otherwise `NaN` would leak into the comparator and make
+ * `Array.sort`'s result depend on the input order, reintroducing the very Set-iteration
+ * non-determinism this module eliminates. (A legitimately huge finite timestamp is preserved.)
+ */
+function recencyValue(recency: ReadonlyMap<number, number> | undefined, rep: number): number {
+  const v = recency?.get(rep);
+  if (v === undefined || !Number.isFinite(v)) return Number.NEGATIVE_INFINITY;
+  return v;
+}
+
+/**
+ * Screen-space distance from a rep's bounds centre to the viewport centre (arbitration tier
+ * 4). A rep with no geometry yet (zero bounds — geometry is filled later) returns +∞ so it
+ * sorts AFTER every positioned rep but still ahead of nothing (the stable-id tiebreak then
+ * orders the geometry-less reps deterministically).
+ */
+function viewportCentreDistance(
+  cols: RepresentationColumns,
+  cam: CameraState,
+  rep: number,
+  vpCx: number,
+  vpCy: number,
+): number {
+  const w = cols.boundsW[rep];
+  const hgt = cols.boundsH[rep];
+  if (w <= 0 || hgt <= 0) return Number.POSITIVE_INFINITY; // no geometry → least proximate
+  const cx = (cols.boundsX[rep] + w / 2) * cam.scale + cam.x;
+  const cy = (cols.boundsY[rep] + hgt / 2) * cam.scale + cam.y;
+  const dx = cx - vpCx;
+  const dy = cy - vpCy;
+  const d2 = dx * dx + dy * dy; // squared distance — monotonic, avoids a sqrt
+  // Guard against NaN/∞ leaking from malformed bounds or camera (NaN would make the comparator
+  // return NaN → order-dependent sort). A non-finite distance is treated as "no geometry" (+∞).
+  return Number.isFinite(d2) ? d2 : Number.POSITIVE_INFINITY;
+}
+
 // ── The solve ────────────────────────────────────────────────────────────────
 
 /**
@@ -270,7 +414,19 @@ export function solveLodCut(
   //    covers it, refine down until the rep is strictly below the cut. Forced opens may
   //    spend up to the FINITE HARD ceiling; one that can't descend within hard is retained
   //    at the nearest proxy and recorded as a "Detail limited" signal (§B).
-  for (const rep of constraints.forceOpen) {
+  //
+  //    The opens are honored in a DETERMINISTIC priority order (design "Deterministic
+  //    forced-open arbitration"), NOT the `forceOpen` Set's insertion order. When several
+  //    opens jointly exceed the hard budget, the higher-priority ones spend the budget first
+  //    and the lower-priority ones surface "Detail limited" — and that outcome is identical
+  //    regardless of how the Set happened to be built.
+  const orderedOpens = arbitrateForceOpen(
+    cols,
+    cam,
+    constraints.forceOpen,
+    constraints.arbitration,
+  );
+  for (const rep of orderedOpens) {
     const limited = forceOpenRep(cols, selected, rep, cur, budget);
     if (limited && gate?.diagnostics) gate.diagnostics.limited.push(limited);
   }
