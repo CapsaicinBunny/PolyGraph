@@ -40,7 +40,11 @@ describe("smartLayout via injected snapshot == legacy smartLayout (Directory, by
     test(`direction ${direction}: positions + clusters are byte-identical`, () => {
       const snapshot = buildSmartGroupingSnapshot(view, "directory", undefined, "directory");
       const legacy = smartLayout(view, { direction, groupBy: "directory" });
-      const viaSnap = smartLayout(view, { direction, groupBy: "directory", groupingSnapshot: snapshot });
+      const viaSnap = smartLayout(view, {
+        direction,
+        groupBy: "directory",
+        groupingSnapshot: snapshot,
+      });
       expect([...viaSnap.nodes.entries()]).toEqual([...legacy.nodes.entries()]);
       expect(viaSnap.clusters).toEqual(legacy.clusters);
     });
@@ -61,7 +65,11 @@ describe("smartLayout via injected snapshot == legacy smartLayout (Directory, by
 
   test("the cluster box ids are the directory paths (LOD contract intact)", () => {
     const snapshot = buildSmartGroupingSnapshot(view, "directory", undefined, "directory");
-    const viaSnap = smartLayout(view, { direction: "LR", groupBy: "directory", groupingSnapshot: snapshot });
+    const viaSnap = smartLayout(view, {
+      direction: "LR",
+      groupBy: "directory",
+      groupingSnapshot: snapshot,
+    });
     const ids = new Set(viaSnap.clusters.map((c) => c.id));
     expect(ids.has("pkg")).toBe(true);
     expect(ids.has("util")).toBe(true);
@@ -88,7 +96,11 @@ describe("smartLayout via snapshot == legacy (Community), byte-identical", () =>
   test("community grouping matches between snapshot and legacy paths", () => {
     const snapshot = buildSmartGroupingSnapshot(cv, "community", undefined, "community");
     const legacy = smartLayout(cv, { direction: "LR", groupBy: "community" });
-    const viaSnap = smartLayout(cv, { direction: "LR", groupBy: "community", groupingSnapshot: snapshot });
+    const viaSnap = smartLayout(cv, {
+      direction: "LR",
+      groupBy: "community",
+      groupingSnapshot: snapshot,
+    });
     expect([...viaSnap.nodes.entries()]).toEqual([...legacy.nodes.entries()]);
     expect(viaSnap.clusters).toEqual(legacy.clusters);
   });

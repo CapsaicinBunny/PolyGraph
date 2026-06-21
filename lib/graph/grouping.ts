@@ -159,8 +159,7 @@ export const PACKAGE_NS = "package:";
 export const COMMUNITY_NS = "community:";
 export const COMPONENT_NS = "component:";
 /** facet ids are "facet:<key>:<value>" — the prefix carries the dimension key. */
-export const facetGroupId = (key: string, value: string): GroupId =>
-  `facet:${key}:${value}`;
+export const facetGroupId = (key: string, value: string): GroupId => `facet:${key}:${value}`;
 
 /** Strip a known namespace prefix from a group id, returning the bare remainder. */
 function stripPrefix(id: GroupId, prefix: string): string {

@@ -1,7 +1,4 @@
-import {
-  type CompactGroupingSnapshot,
-  NO_GROUP,
-} from "../graph/grouping-snapshot";
+import { type CompactGroupingSnapshot, NO_GROUP } from "../graph/grouping-snapshot";
 import type { LayoutInput } from "../layout";
 
 /** A node in the directory cluster tree. `id` is "" for the root, else a full path like "src/lib/graph". */
@@ -190,7 +187,12 @@ export function buildClusterTreeFromSnapshot(
   // Materialize a ClusterTreeNode per group.
   const treeNodes: ClusterTreeNode[] = new Array(n);
   for (let g = 0; g < n; g++) {
-    treeNodes[g] = { id: boxKeyByGroup[g], label: groupLabels[g], children: new Map(), nodeIds: [] };
+    treeNodes[g] = {
+      id: boxKeyByGroup[g],
+      label: groupLabels[g],
+      children: new Map(),
+      nodeIds: [],
+    };
   }
   // Link children under their parent using the buildClusterTree map key.
   for (let g = 0; g < n; g++) {

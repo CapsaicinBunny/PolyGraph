@@ -62,6 +62,12 @@ interface SidebarProps {
   onDirection: (direction: LayoutDirection) => void;
   groupBy: GroupBy;
   onGroupBy: (groupBy: GroupBy) => void;
+  /**
+   * The eligible grouping modes for this graph (Phase C1a) — Directory, Package (when
+   * manifests exist), Community, eligible groupable facets, then None. Replaces the
+   * fixed directory/community/none chips.
+   */
+  groupByOptions: { key: string; label: string; glyph: string }[];
 }
 
 const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
@@ -74,12 +80,6 @@ const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
   { value: "force", label: "Force", glyph: "✸" },
   { value: "stress", label: "Stress", glyph: "◈" },
   { value: "backbone", label: "Backbone", glyph: "⊕" },
-];
-
-const GROUP_BY: { value: GroupBy; label: string; glyph: string }[] = [
-  { value: "directory", label: "Directory", glyph: "🗀" },
-  { value: "community", label: "Community", glyph: "⬡" },
-  { value: "none", label: "None", glyph: "∅" },
 ];
 
 const DIRECTIONS: { value: LayoutDirection; label: string; glyph: string }[] = [
@@ -403,6 +403,7 @@ export function Sidebar({
   onDirection,
   groupBy,
   onGroupBy,
+  groupByOptions,
 }: SidebarProps) {
   const directionEnabled = DIRECTIONAL_ALGORITHMS.includes(algorithm);
   const [facetQuery, setFacetQuery] = useState("");
@@ -494,13 +495,13 @@ export function Sidebar({
           <Box mt="3">
             <MiniLabel>Group by</MiniLabel>
             <ChipRow>
-              {GROUP_BY.map((g) => (
+              {groupByOptions.map((g) => (
                 <Chip
-                  key={g.value}
+                  key={g.key}
                   label={g.label}
                   glyph={g.glyph}
-                  active={groupBy === g.value}
-                  onClick={() => onGroupBy(g.value)}
+                  active={groupBy === g.key}
+                  onClick={() => onGroupBy(g.key)}
                 />
               ))}
             </ChipRow>

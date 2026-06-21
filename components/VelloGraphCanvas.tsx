@@ -17,6 +17,7 @@ import {
 } from "@/lib/graph/connections";
 import type { Scene, SceneEdge, SceneFilters } from "@/lib/graph/scene";
 import type { GraphModel } from "@/lib/graph/types";
+import type { PackageManifest } from "@/lib/graph/levels/types";
 import type { DimensionCatalog, FacetKey } from "@/lib/graph/dimensions";
 import type { FacetSelection } from "@/lib/graph/facet-selection";
 import {
@@ -88,6 +89,8 @@ export interface GraphViewProps {
   highlightIds: Set<string> | null;
   /** True at the Package/Workspace levels, where the graph is a projection. */
   projected: boolean;
+  /** Package manifests, for the "package" grouping mode's layout snapshot. */
+  manifests?: PackageManifest[];
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
@@ -237,6 +240,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     queryIds,
     highlightIds,
     projected,
+    manifests,
     onSelect,
     onToggleExpand,
     onToggleCollapse,
@@ -277,6 +281,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     queryIds,
     projected,
     catalog,
+    manifests,
   );
   const { resolvedTheme } = useTheme();
 
@@ -702,7 +707,13 @@ export function VelloGraphCanvas(props: GraphViewProps) {
           boxes,
           c,
           vp,
-          { openPx: LOD_OPEN_PX, maxCards: LOD_MAX_CARDS, prevCut: l.rawCut, nodeBudget: LOD_NODE_BUDGET, nodeCost },
+          {
+            openPx: LOD_OPEN_PX,
+            maxCards: LOD_MAX_CARDS,
+            prevCut: l.rawCut,
+            nodeBudget: LOD_NODE_BUDGET,
+            nodeCost,
+          },
           graph.nodes.map((n) => n.id),
         );
         if (!groupCutEquals(next, l.rawCut)) {

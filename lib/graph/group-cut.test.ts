@@ -22,7 +22,15 @@ const vp: Viewport = { w: 800, h: 600 };
 // ── A community-grouped graph: two cliques → two community groups. ────────────
 const cgraph: GraphModel = {
   nodes: ["a", "b", "c", "x", "y", "z"].map(file),
-  edges: [E("a", "b"), E("b", "c"), E("a", "c"), E("x", "y"), E("y", "z"), E("x", "z"), E("c", "x")],
+  edges: [
+    E("a", "b"),
+    E("b", "c"),
+    E("a", "c"),
+    E("x", "y"),
+    E("y", "z"),
+    E("x", "z"),
+    E("c", "x"),
+  ],
 };
 const chier = communityGrouping(cgraph);
 const cnodeIds = cgraph.nodes.map((n) => n.id);
@@ -128,7 +136,11 @@ describe("computeGroupCut — facet mode (boxKey == namespaced facet id)", () =>
     edges: [],
   };
   const fhier = facetGrouping(fgraph, envDescriptor)!;
-  const fsnap = buildGroupingSnapshot(fhier, "facet:env", fgraph.nodes.map((n) => n.id));
+  const fsnap = buildGroupingSnapshot(
+    fhier,
+    "facet:env",
+    fgraph.nodes.map((n) => n.id),
+  );
 
   test("the facet box key is the namespaced id, and the cut measures it", () => {
     const boxes = new Map<string, Box>([

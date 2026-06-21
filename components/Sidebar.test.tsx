@@ -58,6 +58,11 @@ function baseProps(filterDimensions: FilterDimension[] = []) {
     onDirection: noop,
     groupBy: "directory" as const,
     onGroupBy: noop,
+    groupByOptions: [
+      { key: "directory", label: "Directory", glyph: "🗀" },
+      { key: "community", label: "Community", glyph: "⬡" },
+      { key: "none", label: "None", glyph: "∅" },
+    ],
   };
 }
 

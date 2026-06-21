@@ -10,6 +10,10 @@ import {
   type XYPosition,
 } from "../layout";
 import { buildSmartGroupingSnapshot } from "../layout/smart";
+import { facetGrouping, type GroupingHierarchy, packageGrouping } from "./grouping";
+import { buildFlatGroupingSnapshot, type CompactGroupingSnapshot } from "./grouping-snapshot";
+import { facetKeyOfGroupBy } from "./group-by-options";
+import type { PackageManifest } from "./levels/types";
 import type { EdgeEvidence, ExternalKind, GraphModel, NodeKind, NodeRole } from "./types";
 import { detectCommunities } from "../layout/community";
 import { edgeWeight } from "../layout/weight";
@@ -178,6 +182,43 @@ function ser<T>(set: Set<T>): string {
 }
 
 /**
+ * Build the Smart layout grouping snapshot for the active mode (Phase C1a). Directory
+ * and Community use the byte-identical buildClusterTree path; Package and facet build a
+ * FLAT snapshot from their grouping hierarchy — resolved over the FULL graph (which
+ * carries the facets/manifest info the bare layout nodes lack), then projected onto the
+ * post-collapse layout node ids (so empty groups are pruned and aggregates fall to root).
+ */
+function buildGroupingSnapshotForMode(
+  layoutInput: LayoutInput,
+  groupBy: GroupBy,
+  communityOf: Map<string, string> | undefined,
+  graph: GraphModel,
+  catalog: DimensionCatalog,
+  manifests: PackageManifest[],
+): CompactGroupingSnapshot {
+  const facetKey = facetKeyOfGroupBy(groupBy);
+  let hierarchy: GroupingHierarchy | null = null;
+  if (groupBy === "package") hierarchy = packageGrouping(graph, manifests);
+  else if (facetKey) {
+    const descriptor = catalog.descriptors.find((d) => d.key === facetKey);
+    if (descriptor) hierarchy = facetGrouping(graph, descriptor);
+  }
+  if (hierarchy) {
+    const h = hierarchy;
+    return buildFlatGroupingSnapshot(
+      layoutInput.nodes.map((n) => n.id),
+      groupBy,
+      (nodeId) => {
+        const gid = h.groupOfNode(nodeId);
+        return gid == null ? null : { id: gid, boxKey: h.boxKey(gid), label: h.label(gid) };
+      },
+    );
+  }
+  // Directory / Community / unknown → the byte-identical buildClusterTree path.
+  return buildSmartGroupingSnapshot(layoutInput, groupBy, communityOf, groupBy);
+}
+
+/**
  * Build the geometry-free scene (filter -> view -> styled nodes/edges) plus the layout
  * input + signature. Pure and synchronous; the layout itself runs separately (worker).
  */
@@ -202,6 +243,8 @@ export function buildSceneStructure(
    * TS/JS fallback so the TS-only path (no `result.dimensions`) still filters.
    */
   catalog: DimensionCatalog = clientCatalog(undefined),
+  /** Package manifests, for the "package" grouping mode's layout snapshot (else []). */
+  manifests: PackageManifest[] = [],
 ): SceneStructure {
   const { showExternal, enabledFacets, enabledEdgeKinds, enabledFolders, enabledLanguages } =
     filters;
@@ -220,9 +263,7 @@ export function buildSceneStructure(
   const gatedDims = gatedFilterDims(catalog).filter((key) => {
     const sel = enabledFacets.get(key);
     const constrained =
-      sel !== undefined &&
-      sel.mode !== "all" &&
-      !(sel.mode === "exclude" && sel.values.size === 0);
+      sel !== undefined && sel.mode !== "all" && !(sel.mode === "exclude" && sel.values.size === 0);
     if (constrained) return true;
     return index.descriptor(key)?.missing.filter === "exclude";
   });
@@ -399,10 +440,13 @@ export function buildSceneStructure(
   // Phase C1a: build the grouping snapshot the Smart layout consumes (the new layout
   // INPUT contract) from the post-filter/post-collapse layout nodes, here on the main
   // thread; its typed arrays transfer to the worker. Only Smart WITH containers uses
-  // it — classic engines and Smart+None lay out flat (no cluster tree).
+  // it — classic engines and Smart+None lay out flat (no cluster tree). Directory and
+  // Community go through the byte-identical buildClusterTree path; Package and facet
+  // build a flat snapshot from their grouping hierarchy (resolved over the full graph,
+  // which carries the facets/manifest info the bare layout nodes lack).
   const groupingSnapshot =
     algorithm === "smart" && groupBy !== "none"
-      ? buildSmartGroupingSnapshot(layoutInput, groupBy, communityOf, groupBy)
+      ? buildGroupingSnapshotForMode(layoutInput, groupBy, communityOf, graph, catalog, manifests)
       : undefined;
 
   return {

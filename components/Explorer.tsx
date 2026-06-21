@@ -38,14 +38,14 @@ import {
   ancestorDirectoryGroupIds,
   communityGrouping,
   directoryGroupId,
+  facetGrouping,
   type GroupingHierarchy,
+  packageGrouping,
   toDirectoryBoxKeys,
   toDirectoryGroupIds,
 } from "@/lib/graph/grouping";
-import {
-  buildGroupingSnapshot,
-  type CompactGroupingSnapshot,
-} from "@/lib/graph/grouping-snapshot";
+import { buildGroupingSnapshot, type CompactGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
+import { deriveGroupByOptions, facetKeyOfGroupBy } from "@/lib/graph/group-by-options";
 import { FiltersPanel } from "./FiltersPanel";
 import { graphKeyFor, type SceneEdge } from "@/lib/graph/scene";
 import { EdgeDetailPanel } from "./EdgeDetailPanel";
@@ -161,12 +161,11 @@ export function Explorer() {
 
   const baseGraph = result?.graph ?? null;
 
-  // Directory-scoped views of the per-mode layers — the Directory wiring (seed, collapse-
-  // all, drill, workspace restore) reads/writes ONLY these, so its behavior is unchanged
-  // (byte-identical) while the underlying state is now per-mode. Stable setters update the
-  // "directory" entry of each per-mode map.
-  const bootstrapClosed = bootstrapByMode.get(DIRECTORY_MODE) ?? EMPTY_SET;
-  const lodSelection = selectionByMode.get(DIRECTORY_MODE) ?? EMPTY_SET;
+  // Directory-scoped setters for the per-mode layers — the Directory wiring (seed,
+  // collapse-all, drill, workspace restore) writes ONLY these, so its behavior is
+  // unchanged (byte-identical) while the underlying state is now per-mode. They update the
+  // "directory" entry of each per-mode map; the effective set is composed below from the
+  // ACTIVE mode's layers.
   const setDirectoryBootstrap = useCallback((set: Set<GroupId>) => {
     setBootstrapByMode((prev) => new Map(prev).set(DIRECTORY_MODE, set));
   }, []);
@@ -192,24 +191,27 @@ export function Explorer() {
   // universe (the LOD safety net) and the selection opens everything ABOVE the seed
   // frontier, so the initial render matches the seed exactly while the camera can refine
   // by opening more. This NEVER writes intent — a seed is derived safety, not a user act.
-  const seedDirectoryLod = useCallback((g: GraphModel, seed: AutoCollapse | null) => {
-    setIntentByMode((prev) => {
-      if (!prev.has(DIRECTORY_MODE)) return prev;
-      const next = new Map(prev);
-      next.delete(DIRECTORY_MODE);
-      return next;
-    });
-    if (!seed) {
-      setDirectoryBootstrap(new Set());
-      setDirectorySelection(new Set());
-      return;
-    }
-    setDirectoryBootstrap(allDirectoryGroupIds(g));
-    const open = new Set<GroupId>();
-    for (const path of seed.collapsed)
-      for (const anc of ancestorDirectoryGroupIds(path)) open.add(anc);
-    setDirectorySelection(open);
-  }, [setDirectoryBootstrap, setDirectorySelection]);
+  const seedDirectoryLod = useCallback(
+    (g: GraphModel, seed: AutoCollapse | null) => {
+      setIntentByMode((prev) => {
+        if (!prev.has(DIRECTORY_MODE)) return prev;
+        const next = new Map(prev);
+        next.delete(DIRECTORY_MODE);
+        return next;
+      });
+      if (!seed) {
+        setDirectoryBootstrap(new Set());
+        setDirectorySelection(new Set());
+        return;
+      }
+      setDirectoryBootstrap(allDirectoryGroupIds(g));
+      const open = new Set<GroupId>();
+      for (const path of seed.collapsed)
+        for (const anc of ancestorDirectoryGroupIds(path)) open.add(anc);
+      setDirectorySelection(open);
+    },
+    [setDirectoryBootstrap, setDirectorySelection],
+  );
 
   // The active graph reflects the chosen abstraction level. Symbol/File/Directory use the
   // base graph (file/symbol granularity is driven by expand/collapse); Package and
@@ -251,6 +253,31 @@ export function Explorer() {
       graph ? [...analyzeInsights(graph), ...unresolvedToInsights(result?.unresolved ?? [])] : [],
     [graph, result],
   );
+
+  // The eligible Group-by modes for this graph (Phase C1a): Directory, Package (when
+  // manifests exist), Community, every eligible groupable facet, then None. Replaces the
+  // fixed directory/community/none chips — so a C/Rust repo offers whatever it actually
+  // supports. Empty graph → just the built-ins.
+  const groupByOptions = useMemo(
+    () =>
+      graph && dimensionIndex
+        ? deriveGroupByOptions(graph, catalog, dimensionIndex, manifests.length > 0)
+        : [
+            { key: "directory", label: "Directory", glyph: "🗀" },
+            { key: "community", label: "Community", glyph: "⬡" },
+            { key: "none", label: "None", glyph: "∅" },
+          ],
+    [graph, catalog, dimensionIndex, manifests.length],
+  );
+
+  // If the active mode is no longer offered (e.g. a facet became ineligible after a
+  // filter change, or a workspace restored a mode this graph doesn't support), fall back
+  // to Directory so the layout never wedges on an unresolvable grouping.
+  useEffect(() => {
+    if (graph && groupByOptions.length > 0 && !groupByOptions.some((o) => o.key === groupBy)) {
+      setGroupBy("directory");
+    }
+  }, [graph, groupByOptions, groupBy]);
 
   // Mirror telemetry to logs/session.ndjson on desktop so the LOD/render trace
   // survives a crash (no-op in the browser; Settings "Download session log" there).
@@ -396,10 +423,21 @@ export function Explorer() {
   // builds no snapshot here; Community (and later Package/facet) build one over the
   // active graph so the camera can run computeGroupCut. None has no visible containers,
   // so it builds none — the cut is inert for it (its budget is bounded elsewhere).
-  const cutGrouping = useMemo<{ hierarchy: GroupingHierarchy; snapshot: CompactGroupingSnapshot } | null>(() => {
+  const cutGrouping = useMemo<{
+    hierarchy: GroupingHierarchy;
+    snapshot: CompactGroupingSnapshot;
+  } | null>(() => {
     if (!graph || groupBy === "directory" || groupBy === "none") return null;
     let hierarchy: GroupingHierarchy | null = null;
     if (groupBy === "community") hierarchy = communityGrouping(graph);
+    else if (groupBy === "package") hierarchy = packageGrouping(graph, manifests);
+    else {
+      const facetKey = facetKeyOfGroupBy(groupBy);
+      if (facetKey) {
+        const descriptor = catalog.descriptors.find((d) => d.key === facetKey);
+        if (descriptor) hierarchy = facetGrouping(graph, descriptor);
+      }
+    }
     if (!hierarchy) return null;
     const snapshot = buildGroupingSnapshot(
       hierarchy,
@@ -407,7 +445,7 @@ export function Explorer() {
       graph.nodes.map((n) => n.id),
     );
     return { hierarchy, snapshot };
-  }, [graph, groupBy]);
+  }, [graph, groupBy, manifests, catalog]);
 
   // The effective collapsed set (box keys) for the ACTIVE grouping mode, composed from
   // that mode's three layers. This is the single value the scene pipeline consumes — it
@@ -532,35 +570,38 @@ export function Explorer() {
   );
 
   // Apply a loaded/imported workspace's view state onto the current graph.
-  const applyWorkspace = useCallback((s: ExplorerWorkspaceState) => {
-    setSelectedId(s.selectedId);
-    setExpanded(s.expanded);
-    // The workspace persists the effective collapsed set (bare paths). Restore it into
-    // the BOOTSTRAP layer (derived/auto, camera-overridable) — not intent — preserving the
-    // pre-refactor restore semantics where the camera could still refine the restored cut.
-    // C0 keeps the workspace format unchanged; intent persistence arrives with C1a.
-    setIntentByMode((prev) => {
-      if (!prev.has(DIRECTORY_MODE)) return prev;
-      const next = new Map(prev);
-      next.delete(DIRECTORY_MODE);
-      return next;
-    });
-    setDirectoryBootstrap(toDirectoryGroupIds(s.collapsedClusters));
-    setDirectorySelection(new Set());
-    setFocusedIds(s.focusedIds);
-    setShowExternal(s.showExternal);
-    setSearch(s.search);
-    setEnabledEdgeKinds(s.enabledEdgeKinds);
-    setEnabledFacets(s.enabledFacets);
-    setEnabledFolders(s.enabledFolders);
-    setEnabledLanguages(s.enabledLanguages);
-    setAlgorithm(s.algorithm);
-    setDirection(s.direction);
-    setGroupBy(s.groupBy);
-    setDensity(s.density);
-    setEdgeRouting(s.edgeRouting);
-    setCommunityCollapse(s.communityCollapse);
-  }, [setDirectoryBootstrap, setDirectorySelection]);
+  const applyWorkspace = useCallback(
+    (s: ExplorerWorkspaceState) => {
+      setSelectedId(s.selectedId);
+      setExpanded(s.expanded);
+      // The workspace persists the effective collapsed set (bare paths). Restore it into
+      // the BOOTSTRAP layer (derived/auto, camera-overridable) — not intent — preserving the
+      // pre-refactor restore semantics where the camera could still refine the restored cut.
+      // C0 keeps the workspace format unchanged; intent persistence arrives with C1a.
+      setIntentByMode((prev) => {
+        if (!prev.has(DIRECTORY_MODE)) return prev;
+        const next = new Map(prev);
+        next.delete(DIRECTORY_MODE);
+        return next;
+      });
+      setDirectoryBootstrap(toDirectoryGroupIds(s.collapsedClusters));
+      setDirectorySelection(new Set());
+      setFocusedIds(s.focusedIds);
+      setShowExternal(s.showExternal);
+      setSearch(s.search);
+      setEnabledEdgeKinds(s.enabledEdgeKinds);
+      setEnabledFacets(s.enabledFacets);
+      setEnabledFolders(s.enabledFolders);
+      setEnabledLanguages(s.enabledLanguages);
+      setAlgorithm(s.algorithm);
+      setDirection(s.direction);
+      setGroupBy(s.groupBy);
+      setDensity(s.density);
+      setEdgeRouting(s.edgeRouting);
+      setCommunityCollapse(s.communityCollapse);
+    },
+    [setDirectoryBootstrap, setDirectorySelection],
+  );
 
   const handleSelect = useCallback(
     (id: string) => {
@@ -814,6 +855,7 @@ export function Explorer() {
           onDirection={setDirection}
           groupBy={groupBy}
           onGroupBy={setGroupBy}
+          groupByOptions={groupByOptions}
         />
         <Box flex="1" minW="0" position="relative">
           <VelloGraphCanvas
@@ -839,6 +881,7 @@ export function Explorer() {
             queryIds={queryIds}
             highlightIds={highlightIds}
             projected={projected}
+            manifests={manifests}
             onSelect={handleSelect}
             onToggleExpand={handleToggleExpand}
             onToggleCollapse={handleToggleCollapse}

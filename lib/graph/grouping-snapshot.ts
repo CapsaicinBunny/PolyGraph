@@ -116,6 +116,62 @@ export function buildGroupingSnapshot(
   };
 }
 
+/** A node's resolved flat group: its namespaced id, layout box key, and label. */
+export interface ResolvedGroup {
+  id: GroupId;
+  boxKey: string;
+  label: string;
+}
+
+/**
+ * Build a FLAT (single-level) snapshot over a node-id list, including ONLY the groups
+ * that actually have a member among those nodes (Phase C1a). Unlike
+ * `buildGroupingSnapshot` (which enumerates the whole hierarchy, incl. empty groups),
+ * this is for the LAYOUT snapshot of the flat modes (Package / facet): every group is a
+ * root, ordinals are assigned by first appearance in node order, and a node with no
+ * group is {@link NO_GROUP}. `resolve(nodeId)` returns the node's group (or null).
+ */
+export function buildFlatGroupingSnapshot(
+  nodeIds: readonly string[],
+  modeKey: string,
+  resolve: (nodeId: string) => ResolvedGroup | null,
+): CompactGroupingSnapshot {
+  const groupIds: string[] = [];
+  const groupLabels: string[] = [];
+  const boxKeyByGroup: string[] = [];
+  const ordinalOf = new Map<GroupId, number>();
+
+  const directGroupByNode = new Uint32Array(nodeIds.length);
+  for (let i = 0; i < nodeIds.length; i++) {
+    const g = resolve(nodeIds[i]);
+    if (!g) {
+      directGroupByNode[i] = NO_GROUP;
+      continue;
+    }
+    let ord = ordinalOf.get(g.id);
+    if (ord === undefined) {
+      ord = groupIds.length;
+      ordinalOf.set(g.id, ord);
+      groupIds.push(g.id);
+      groupLabels.push(g.label);
+      boxKeyByGroup.push(g.boxKey);
+    }
+    directGroupByNode[i] = ord;
+  }
+
+  const n = groupIds.length;
+  return {
+    modeKey,
+    groupIds,
+    groupLabels,
+    parentByGroup: new Int32Array(n).fill(-1), // flat: every group is a root
+    depthByGroup: new Uint16Array(n), // all depth 0
+    boxKeyByGroup,
+    directGroupByNode,
+    roots: Uint32Array.from({ length: n }, (_, i) => i),
+  };
+}
+
 /**
  * The full group path of a group ordinal, outermost-first and INCLUDING the group
  * itself, derived by walking `parentByGroup` (paths are never stored per node — the

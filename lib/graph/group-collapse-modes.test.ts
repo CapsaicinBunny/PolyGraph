@@ -114,7 +114,14 @@ describe("C1a (b) — the adaptive cut runs in a non-directory mode (LOD not dis
   test("user intent still wins over the community camera cut (intent not clobbered)", () => {
     const boxes = new Map<string, Box>([[boxA, { x: 0, y: 0, w: 1000, h: 1000 }]]);
     const selection = groupLodSelection(
-      computeGroupCut(snap, boxes, { x: 0, y: 0, scale: 1 }, vp, { openPx: 220, maxCards: 100 }, nodeIds),
+      computeGroupCut(
+        snap,
+        boxes,
+        { x: 0, y: 0, scale: 1 },
+        vp,
+        { openPx: 220, maxCards: 100 },
+        nodeIds,
+      ),
       snap,
     );
     expect(selection.has(groupA)).toBe(true); // the camera wants A open

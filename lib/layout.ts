@@ -73,8 +73,17 @@ export type LayoutAlgorithm =
 /** Algorithms for which the direction selector is meaningful. */
 export const DIRECTIONAL_ALGORITHMS: LayoutAlgorithm[] = ["smart", "layered", "tree"];
 
-/** How the Smart layout groups nodes into clusters. */
-export type GroupBy = "directory" | "community" | "none";
+/**
+ * How the Smart layout groups nodes into clusters — a grouping-mode KEY (Phase C1a).
+ * The well-known built-ins are "directory" / "community" / "none"; provider-eligible
+ * modes add "package" and "facet:<key>" (e.g. "facet:env"). A `string` because the set
+ * is open (eligible groupable facets are discovered per graph); consumers branch only on
+ * the built-ins and otherwise drive the layout from the injected grouping snapshot.
+ */
+export type GroupBy = string;
+
+/** The always-available built-in grouping modes (no provider/manifest needed). */
+export const BUILTIN_GROUP_BY = ["directory", "community", "none"] as const;
 
 export interface LayoutOptions {
   algorithm?: LayoutAlgorithm;
