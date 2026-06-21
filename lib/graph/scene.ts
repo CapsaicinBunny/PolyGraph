@@ -133,6 +133,14 @@ export interface SceneStructure {
   signature: string;
   layoutInput: LayoutInput;
   options: LayoutOptions;
+  /**
+   * The POST-FILTER visible base-node ids (files + symbols that survive the active filters),
+   * BEFORE collapse (Gap 7 — "Cut is not clearly post-filter"). The representation cut builds
+   * its hierarchy from this projection so filtered-out nodes add no proxy-subtree cost / card
+   * pressure and no proxy exists only because of hidden nodes. Pre-collapse, so a collapsed
+   * (but visible) group's members are still counted.
+   */
+  visibleNodeIds: Set<string>;
 }
 
 export interface Scene {
@@ -469,6 +477,8 @@ export function buildSceneStructure(
     signature,
     layoutInput,
     options: { algorithm, direction, groupBy, density, communityOf, groupingSnapshot },
+    // The post-filter visible base nodes (pre-collapse) — the projection the rep cut uses.
+    visibleNodeIds: keptIds,
   };
 }
 

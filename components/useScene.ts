@@ -52,6 +52,8 @@ export function useScene(
   ready: boolean;
   /** The community assignment this scene laid out (filtered-graph detection), or undefined. */
   communityOf: Map<string, string> | undefined;
+  /** Post-filter visible base-node ids (pre-collapse) — feeds the rep cut's Gap 7 mask. */
+  visibleNodeIds: Set<string>;
 } {
   const structure = useMemo(
     () =>
@@ -177,5 +179,11 @@ export function useScene(
     () => applyPositions(structure, positions, clusters),
     [structure, positions, clusters],
   );
-  return { scene, layingOut, ready, communityOf: structure.options.communityOf };
+  return {
+    scene,
+    layingOut,
+    ready,
+    communityOf: structure.options.communityOf,
+    visibleNodeIds: structure.visibleNodeIds,
+  };
 }

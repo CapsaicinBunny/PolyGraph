@@ -311,6 +311,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     layingOut,
     ready: layoutReady,
     communityOf,
+    visibleNodeIds,
   } = useScene(
     graph,
     expanded,
@@ -535,6 +536,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     graph: GraphModel;
     directoryRepSnapshot: CompactGroupingSnapshot | null;
     repRuntime: RepLodResult["runtime"] | undefined;
+    // POST-FILTER visible base-node ids (Gap 7): the rep cut builds its hierarchy from this
+    // projection so filtered-out nodes add no proxy-subtree cost / card pressure.
+    visibleNodeIds: Set<string>;
   }>({
     adaptiveLod,
     onCut,
@@ -551,6 +555,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     graph,
     directoryRepSnapshot,
     repRuntime: undefined,
+    visibleNodeIds,
   });
   lod.current.adaptiveLod = adaptiveLod;
   lod.current.onCut = onCut;
@@ -563,6 +568,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.onRepLod = onRepLod;
   lod.current.graph = graph;
   lod.current.directoryRepSnapshot = directoryRepSnapshot;
+  lod.current.visibleNodeIds = visibleNodeIds;
   // On a grouping-mode switch, drop the raw cut: it holds the PREVIOUS mode's box keys
   // (e.g. directory paths while now in Community), which live in a disjoint key domain.
   // Carrying it over makes the first post-switch cut read every group as "was open" and
@@ -835,6 +841,13 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       const repSnap = l.groupingSnapshot ?? l.directoryRepSnapshot;
       if (l.representationLod && repSnap) {
         const repNodeIds = l.graph.nodes.map((n) => n.id);
+        // POST-FILTER projection (Gap 7): a node is visible iff it survived the active
+        // filters (the scene's keptIds, pre-collapse). Filtered-out nodes are detached from
+        // the rep hierarchy — no proxy-subtree cost, no card pressure, no proxy from hidden
+        // nodes alone. A node absent from `visibleNodeIds` is treated as hidden; when nothing
+        // is filtered the set holds every node, so the mask is a no-op (prior behavior).
+        const visible = l.visibleNodeIds;
+        const visibleNode = (ordinal: number): boolean => visible.has(repNodeIds[ordinal]);
         // Lazily create / re-size the persistent eviction controller for this hierarchy's
         // rep count (group reps + leaf reps). A changed rep count (filter/grouping change)
         // rebuilds it so its LRU key space matches the new hierarchy.
@@ -845,6 +858,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         const result = buildSceneRepresentationCut({
           snapshot: repSnap,
           nodeIds: repNodeIds,
+          visibleNode,
           boxes,
           cam: c,
           vp,

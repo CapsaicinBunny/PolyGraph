@@ -121,7 +121,27 @@ export interface RepresentationCosts {
   labelCost?: (nodeId: string, ordinal: number) => number;
   /** GPU bytes a node's geometry occupies (default 0; tuned later). */
   gpuByteCost?: (nodeId: string, ordinal: number) => number;
+  /**
+   * POST-FILTER visibility mask (design Gap 7 — "Cut is not clearly post-filter"). When
+   * provided, a node ordinal for which this returns false is treated as HIDDEN: its leaf
+   * rep is DETACHED from the hierarchy (never a child, never a root, never selectable) and
+   * contributes ZERO to every cost dim. A group rep whose entire subtree is hidden likewise
+   * detaches — so a proxy never exists ONLY because of filtered-out nodes, and hidden nodes
+   * add no proxy-subtree cost or card-budget pressure. Omitted → every node is visible (the
+   * raw-graph behavior; the snapshot is assumed already post-filter). The snapshot itself is
+   * NOT rebuilt — the already-filtered community detection is reused as-is.
+   */
+  visibleNode?: (ordinal: number) => boolean;
 }
+
+/**
+ * Tree-link sentinel for a rep that is DETACHED from the hierarchy (a hidden leaf or an
+ * empty group under the post-filter {@link RepresentationCosts.visibleNode} mask). Distinct
+ * from the root sentinel (-1) so detached reps are excluded from roots, child adjacency, the
+ * subtree-cost rollup, and the DFS intervals — they can never be selected by the cut. Rep
+ * ids stay stable (group ordinal == rep id) regardless of how many are detached.
+ */
+export const DETACHED_REP = -2;
 
 /**
  * The full hierarchy: the columnar runtime plus the convenience handles a consumer
@@ -156,6 +176,11 @@ export function buildRepresentationHierarchy(
   const edgeCostOf = costs.edgeCost ?? (() => 0);
   const labelCostOf = costs.labelCost ?? (() => 1);
   const gpuCostOf = costs.gpuByteCost ?? (() => 0);
+  // POST-FILTER mask (Gap 7). Detachment is applied ONLY when a mask is provided; without
+  // one the hierarchy is built exactly as before (every node visible, empty groups kept as
+  // roots/children) so the un-masked raw-graph behavior is byte-identical.
+  const masked = typeof costs.visibleNode === "function";
+  const isVisible = costs.visibleNode ?? (() => true);
 
   const groupCount = snapshot.groupIds.length;
   const nodeCount = snapshot.directGroupByNode.length;
@@ -163,6 +188,31 @@ export function buildRepresentationHierarchy(
 
   // Group reps occupy [0, groupCount); leaf reps occupy [groupCount, repCount).
   const leafRepOf = (nodeOrdinal: number) => groupCount + nodeOrdinal;
+
+  // POST-FILTER detachment (Gap 7). A leaf rep is detached iff its node is hidden; a group
+  // rep is detached iff NONE of its descendant VISIBLE leaves exist. Detached reps are wired
+  // as neither child nor root, contribute zero cost, and can never be selected — so hidden
+  // nodes add no subtree/card pressure and no proxy exists only because of hidden nodes.
+  // `groupHasVisible[g]` is rolled up over the GROUP parent chain (parentByGroup), the only
+  // structure available before the rep tree is built. When unmasked every entry is 1 (no
+  // detachment), preserving the prior treatment of genuinely-empty groups.
+  const groupHasVisible = new Uint8Array(groupCount);
+  if (!masked) {
+    groupHasVisible.fill(1);
+  } else {
+    for (let i = 0; i < nodeCount; i++) {
+      if (!isVisible(i)) continue;
+      const g = snapshot.directGroupByNode[i];
+      if (g === NO_GROUP || g >= groupCount) continue;
+      let cur = g;
+      let guard = groupCount + 1;
+      while (cur !== -1 && guard-- > 0) {
+        if (groupHasVisible[cur]) break; // ancestors already marked — stop early
+        groupHasVisible[cur] = 1;
+        cur = snapshot.parentByGroup[cur];
+      }
+    }
+  }
 
   const parentByRep = new Int32Array(repCount).fill(-1);
   const groupByRep = new Uint32Array(repCount);
@@ -183,11 +233,16 @@ export function buildRepresentationHierarchy(
   // selected proxy renders as ONE aggregate card → rendered nodeCost/labelCost = 1, no
   // edges/gpu of its own. The subtree* aggregate is rolled up below.
   for (let g = 0; g < groupCount; g++) {
-    parentByRep[g] = snapshot.parentByGroup[g]; // already a group ordinal or -1
     groupByRep[g] = g;
+    proxyKeys[g] = `${snapshot.modeKey}|${snapshot.groupIds[g]}`;
+    if (groupHasVisible[g] === 0) {
+      // Empty under the post-filter mask — detach (no proxy from hidden nodes alone).
+      parentByRep[g] = DETACHED_REP;
+      continue;
+    }
+    parentByRep[g] = snapshot.parentByGroup[g]; // already a group ordinal or -1
     nodeCost[g] = 1; // one aggregate card
     labelCost[g] = 1; // one proxy label
-    proxyKeys[g] = `${snapshot.modeKey}|${snapshot.groupIds[g]}`;
   }
 
   // Leaf reps: one per node, parented to its direct group rep (or a root for NO_GROUP).
@@ -197,14 +252,19 @@ export function buildRepresentationHierarchy(
     leafRepresentationByNode[i] = rep;
     const g = snapshot.directGroupByNode[i];
     const hasGroup = g !== NO_GROUP && g < groupCount;
-    parentByRep[rep] = hasGroup ? g : -1;
-    groupByRep[rep] = hasGroup ? g : NO_GROUP;
     const id = nodeIds[i] ?? String(i);
+    groupByRep[rep] = hasGroup ? g : NO_GROUP;
+    proxyKeys[rep] = `${snapshot.modeKey}|node|${id}`;
+    if (!isVisible(i)) {
+      // Hidden under the post-filter mask — detach, zero cost (no card/layout pressure).
+      parentByRep[rep] = DETACHED_REP;
+      continue;
+    }
+    parentByRep[rep] = hasGroup ? g : -1;
     nodeCost[rep] = nodeCostOf(id, i);
     edgeCost[rep] = edgeCostOf(id, i);
     labelCost[rep] = labelCostOf(id, i);
     gpuByteCost[rep] = gpuCostOf(id, i);
-    proxyKeys[rep] = `${snapshot.modeKey}|node|${id}`;
   }
 
   // Build child adjacency as firstChild/nextSibling. Children are kept in ASCENDING
@@ -216,10 +276,12 @@ export function buildRepresentationHierarchy(
   const roots: number[] = [];
   for (let r = repCount - 1; r >= 0; r--) {
     const p = parentByRep[r];
-    if (p === -1) continue;
+    if (p < 0) continue; // -1 root or -2 DETACHED_REP — no parent link
     nextSiblingByRep[r] = firstChildByRep[p];
     firstChildByRep[p] = r;
   }
+  // Roots are reps with NO parent — but a DETACHED_REP (-2) is excluded from the tree
+  // entirely (it is not a root, so the cut never selects it and it costs nothing).
   for (let r = 0; r < repCount; r++) if (parentByRep[r] === -1) roots.push(r);
 
   // Aggregate subtree cost = the cost of FULLY opening the subtree (Σ over its leaves).
@@ -339,7 +401,9 @@ export function representativeOf(
   const { parentByRep, leafRepresentationByNode } = h.columns;
   let cur = leafRepresentationByNode[nodeOrdinal];
   let guard = h.repCount + 1;
-  while (cur !== -1 && guard-- > 0) {
+  // Stop on any negative sentinel: -1 root or -2 DETACHED_REP (a hidden leaf under the
+  // post-filter mask has no representative — it is not in the rendered scene).
+  while (cur >= 0 && guard-- > 0) {
     if (isSelected(cur)) return cur;
     cur = parentByRep[cur];
   }

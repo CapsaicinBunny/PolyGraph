@@ -3,6 +3,7 @@ import { directoryGrouping } from "./grouping";
 import { buildGroupingSnapshot } from "./grouping-snapshot";
 import {
   buildRepresentationHierarchy,
+  DETACHED_REP,
   isRepAncestor,
   type RepresentationHierarchy,
   representativeOf,
@@ -116,6 +117,77 @@ describe("buildRepresentationHierarchy — structure", () => {
     });
     expect(h2.columns.subtreeNodeCost[groupRep(h2, "directory:a/x")]).toBe(11); // 10 + 1
     expect(h2.columns.subtreeNodeCost[groupRep(h2, "directory:a")]).toBe(12); // 11 + 1 (a/y)
+  });
+});
+
+describe("buildRepresentationHierarchy — POST-FILTER visibility mask (Gap 7)", () => {
+  // Hide the entire `b` subtree (f4, f5, f6) and one file in a/x (f2).
+  const hidden = new Set(["b/z/f4.c", "b/z/f5.c", "b/z/f6.c", "a/x/f2.c"]);
+  const h = buildRepresentationHierarchy(snap, nodeIds, {
+    visibleNode: (ord) => !hidden.has(nodeIds[ord]),
+  });
+
+  test("a hidden leaf rep is DETACHED (parent -2, not a root, not a child)", () => {
+    const f4 = leafRep(h, "b/z/f4.c");
+    expect(h.columns.parentByRep[f4]).toBe(DETACHED_REP);
+    expect(h.roots).not.toContain(f4);
+    // It is no longer enumerated under its group.
+    const bz = groupRep(h, "directory:b/z");
+    const children: number[] = [];
+    let c = h.columns.firstChildByRep[bz];
+    let guard = 100;
+    while (c !== -1 && guard-- > 0) {
+      children.push(c);
+      c = h.columns.nextSiblingByRep[c];
+    }
+    expect(children).not.toContain(f4);
+  });
+
+  test("a group with NO visible members is DETACHED and carries zero cost", () => {
+    const b = groupRep(h, "directory:b");
+    const bz = groupRep(h, "directory:b/z");
+    expect(h.columns.parentByRep[b]).toBe(DETACHED_REP);
+    expect(h.columns.parentByRep[bz]).toBe(DETACHED_REP);
+    expect(h.roots).not.toContain(b);
+    // No phantom card cost from a fully-hidden group.
+    expect(h.columns.nodeCost[b]).toBe(0);
+    expect(h.columns.subtreeNodeCost[b]).toBe(0);
+  });
+
+  test("a partially-hidden group keeps a proxy, but only visible leaves roll up", () => {
+    const ax = groupRep(h, "directory:a/x");
+    const a = groupRep(h, "directory:a");
+    // a/x had {f1, f2}; f2 hidden → only f1 (cost 1) contributes.
+    expect(h.columns.subtreeNodeCost[ax]).toBe(1);
+    // a = a/x(1 visible) + a/y(f3, 1) = 2 (was 3 unfiltered).
+    expect(h.columns.subtreeNodeCost[a]).toBe(2);
+    // The visible proxy still renders as one card.
+    expect(h.columns.nodeCost[ax]).toBe(1);
+    expect(h.roots).toContain(a);
+  });
+
+  test("a hidden leaf has no representative among ATTACHED reps (walk stops at -2)", () => {
+    // A detached leaf's path to the root is severed at -2, so no ATTACHED ancestor (the only
+    // reps the cut ever selects) can represent it. Selecting every group rep proves it: the
+    // hidden leaf still resolves to nothing.
+    const f4Ord = nodeIds.indexOf("b/z/f4.c");
+    const groupReps = new Set(
+      Array.from({ length: snap.groupIds.length }, (_, g) => h.repOfGroup[g]),
+    );
+    expect(representativeOf(h, f4Ord, (r) => groupReps.has(r))).toBe(-1);
+    // A visible node still resolves to its selected ancestor proxy.
+    const f1Ord = nodeIds.indexOf("a/x/f1.c");
+    const ax = groupRep(h, "directory:a/x");
+    expect(representativeOf(h, f1Ord, (r) => r === ax)).toBe(ax);
+  });
+
+  test("an unmasked build is unchanged (empty/visible groups still kept as before)", () => {
+    const plain = buildRepresentationHierarchy(snap, nodeIds);
+    // Every group rep is attached (no DETACHED_REP) when no mask is supplied.
+    for (let g = 0; g < snap.groupIds.length; g++) {
+      expect(plain.columns.parentByRep[plain.repOfGroup[g]]).not.toBe(DETACHED_REP);
+    }
+    expect(plain.columns.subtreeNodeCost[groupRep(plain, "directory:b")]).toBe(3);
   });
 });
 

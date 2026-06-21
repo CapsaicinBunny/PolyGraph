@@ -328,6 +328,113 @@ describe("buildSceneRepresentationCut — bounded offscreen eviction + in-place 
   });
 });
 
+describe("buildSceneRepresentationCut — POST-FILTER projection (Gap 7)", () => {
+  // Hide the whole `b` subtree (f4, f5). Its proxies (b, b/z) and leaves must vanish from the
+  // cut: no budget contribution, no proxy that exists only because of filtered-out nodes.
+  const hidden = new Set(["b/z/f4.c", "b/z/f5.c"]);
+  const visibleNode = (ord: number) => !hidden.has(nodeIds[ord]);
+
+  // All groups on-screen + tall so the cut WOULD open them if they had visible members.
+  const allOpenBoxes = (): Map<string, Box> =>
+    new Map<string, Box>([
+      ["a", { x: 0, y: 0, w: 1000, h: 1000 }],
+      ["a/x", { x: 0, y: 0, w: 500, h: 500 }],
+      ["a/y", { x: 0, y: 600, w: 500, h: 400 }],
+      ["b", { x: 0, y: 0, w: 1000, h: 1000 }],
+      ["b/z", { x: 0, y: 0, w: 1000, h: 1000 }],
+    ]);
+
+  const filtered = (cam: Camera, intent: CollapseIntent = noIntent) =>
+    buildSceneRepresentationCut({
+      snapshot: snap,
+      nodeIds,
+      visibleNode,
+      boxes: allOpenBoxes(),
+      cam,
+      vp,
+      intent,
+      options: opts,
+    });
+  const unfiltered = (cam: Camera, intent: CollapseIntent = noIntent) =>
+    buildSceneRepresentationCut({
+      snapshot: snap,
+      nodeIds,
+      boxes: allOpenBoxes(),
+      cam,
+      vp,
+      intent,
+      options: opts,
+    });
+
+  test("a filtered-out subtree produces NO proxy (no collapsed box key, no open selection)", () => {
+    const r = filtered({ x: 0, y: 0, scale: 0.01 }); // fully zoomed out → coarsest proxies
+    // `a` still proxies its visible members; `b`/`b/z` have no visible members → no proxy.
+    expect(r.collapsedBoxKeys.has("a")).toBe(true);
+    expect(r.collapsedBoxKeys.has("b")).toBe(false);
+    // The open selection never mentions the fully-hidden groups.
+    expect(r.openSelection.has("directory:b")).toBe(false);
+    expect(r.openSelection.has("directory:b/z")).toBe(false);
+  });
+
+  test("the hidden subtree drops its contribution to the cut budget (cards + layout)", () => {
+    // Coarsest cut: unfiltered selects {a, b} (2 cards); filtered selects {a} only (1 card).
+    const f = filtered({ x: 0, y: 0, scale: 0.01 });
+    const u = unfiltered({ x: 0, y: 0, scale: 0.01 });
+    expect(f.cut.cardCost).toBeLessThan(u.cut.cardCost);
+    expect(f.cut.layoutCost).toBeLessThanOrEqual(u.cut.layoutCost);
+    // Concretely: the coarsest filtered cut is the single top group `a`.
+    expect(f.cut.cardCost).toBe(1);
+    expect(u.cut.cardCost).toBe(2);
+  });
+
+  test("the hidden subtree's proxy carries ZERO subtree cost (no card-budget pressure)", () => {
+    const r = filtered({ x: 0, y: 0, scale: 1 });
+    const cols = r.hierarchy.columns;
+    const bOrd = snap.groupIds.indexOf("directory:b");
+    const bRep = r.hierarchy.repOfGroup[bOrd];
+    // The fully-hidden `b` proxy rolls up to zero underlying-node cost — it can't pressure
+    // the budget or be selected.
+    expect(cols.subtreeNodeCost[bRep]).toBe(0);
+    expect(cols.nodeCost[bRep]).toBe(0);
+    expect(new Set(r.cut.selectedRepresentations).has(bRep)).toBe(false);
+  });
+
+  test("a hidden leaf has no representative; the visible cut stays a valid antichain", () => {
+    const r = filtered({ x: 0, y: 0, scale: 1 });
+    const selected = new Set(r.cut.selectedRepresentations);
+    const { parentByRep, leafRepresentationByNode } = r.hierarchy.columns;
+    for (let i = 0; i < nodeIds.length; i++) {
+      let cur = leafRepresentationByNode[i];
+      let hits = 0;
+      let guard = r.hierarchy.repCount + 1;
+      while (cur >= 0 && guard-- > 0) {
+        if (selected.has(cur)) hits++;
+        cur = parentByRep[cur];
+      }
+      // Visible nodes are represented exactly once; hidden nodes are represented zero times.
+      expect(hits).toBe(visibleNode(i) ? 1 : 0);
+    }
+  });
+
+  test("no mask → identical to building over the raw graph (the mask is opt-in)", () => {
+    const withMaskAllVisible = buildSceneRepresentationCut({
+      snapshot: snap,
+      nodeIds,
+      visibleNode: () => true, // mask present but hides nothing
+      boxes: allOpenBoxes(),
+      cam: { x: 0, y: 0, scale: 0.01 },
+      vp,
+      intent: noIntent,
+      options: opts,
+    });
+    const noMask = unfiltered({ x: 0, y: 0, scale: 0.01 });
+    expect(withMaskAllVisible.cut.cardCost).toBe(noMask.cut.cardCost);
+    expect([...withMaskAllVisible.collapsedBoxKeys].sort()).toEqual(
+      [...noMask.collapsedBoxKeys].sort(),
+    );
+  });
+});
+
 /** Assert every node is represented exactly once by the solved cut. */
 function assertValidAntichain(r: ReturnType<typeof solve>) {
   const selected = new Set(r.cut.selectedRepresentations);
@@ -336,7 +443,9 @@ function assertValidAntichain(r: ReturnType<typeof solve>) {
     let cur = leafRepresentationByNode[i];
     let hits = 0;
     let guard = r.hierarchy.repCount + 1;
-    while (cur !== -1 && guard-- > 0) {
+    // `>= 0` also stops on -2 (DETACHED_REP); harmless here (this helper runs on unmasked
+    // solves) but keeps the walk correct if ever reused with a post-filter mask.
+    while (cur >= 0 && guard-- > 0) {
       if (selected.has(cur)) hits++;
       cur = parentByRep[cur];
     }

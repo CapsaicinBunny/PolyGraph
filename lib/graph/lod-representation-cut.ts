@@ -27,6 +27,7 @@ import type { Box, Camera, Viewport } from "./lod-screen";
 import { intersectsViewport, screenHeight, worldToScreen } from "./lod-screen";
 import {
   buildRepresentationHierarchy,
+  DETACHED_REP,
   type RepresentationHierarchy,
   representativeOf,
 } from "./representation";
@@ -78,6 +79,16 @@ export const DEFAULT_REP_LOD_OPTIONS: RepLodOptions = {
 export interface RepLodInput {
   snapshot: CompactGroupingSnapshot;
   nodeIds: readonly string[];
+  /**
+   * POST-FILTER visibility mask over node ordinals (Gap 7 — "Cut is not clearly
+   * post-filter"). Returns false for a node hidden by the active filters (folders,
+   * languages, edge kinds, query filter). When provided, the cut is built from the
+   * post-filter projection: hidden nodes' leaf reps are DETACHED — they add no proxy-subtree
+   * cost, no card-budget pressure, and a group with no visible members produces no proxy.
+   * Omitted → every node visible (the prior raw-graph behavior). The already-filtered
+   * community detection is reused via the snapshot; it is NOT re-run over the full graph.
+   */
+  visibleNode?: (ordinal: number) => boolean;
   /** Live scene boxes per layout box key (open ClusterBoxes + collapsed aggregate cards). */
   boxes: Map<string, Box>;
   cam: Camera;
@@ -142,13 +153,24 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   const { snapshot, nodeIds, boxes, cam, vp, intent, options } = input;
   const nodeCost = options.nodeCost ?? (() => 1);
 
-  // 1. Hierarchy with rendered + subtree costs.
-  const hierarchy = buildRepresentationHierarchy(snapshot, nodeIds, { nodeCost });
+  // 1. Hierarchy with rendered + subtree costs, built from the POST-FILTER projection
+  //    (Gap 7). The visibility mask detaches hidden nodes' leaf reps and fully-hidden
+  //    groups, so they contribute no subtree cost / card pressure and produce no proxy.
+  const hierarchy = buildRepresentationHierarchy(snapshot, nodeIds, {
+    nodeCost,
+    visibleNode: input.visibleNode,
+  });
   const cols = hierarchy.columns;
+
+  // A group rep detached by the post-filter mask (no visible members) is skipped throughout:
+  // it gets no bounds, no intent constraint, and no place in the cut.
+  const isDetachedGroup = (rep: number): boolean =>
+    cols.parentByRep[rep] === DETACHED_REP && cols.firstChildByRep[rep] === -1;
 
   // 2. Populate proxy bounds from live scene boxes (group reps only; leaf reps keep 0).
   for (let g = 0; g < snapshot.groupIds.length; g++) {
     const rep = hierarchy.repOfGroup[g];
+    if (isDetachedGroup(rep)) continue; // fully filtered out — no proxy to place
     const box = boxes.get(snapshot.boxKeyByGroup[g]);
     if (!box) continue;
     cols.boundsX[rep] = box.x;
@@ -168,6 +190,7 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   for (const [gid, state] of intent) {
     const rep = repOfGroupId.get(gid);
     if (rep === undefined) continue;
+    if (isDetachedGroup(rep)) continue; // intent on a fully filtered-out group is inert
     if (state === "closed") forceClosed.add(rep);
     else if (state === "open") forceOpen.add(rep);
   }
@@ -365,7 +388,7 @@ function autoOpenGroupReps(
     let cur = g;
     let open = true;
     let guard = h.repCount + 1;
-    while (cur !== -1 && guard-- > 0) {
+    while (cur >= 0 && guard-- > 0) {
       if (selected.has(cur)) {
         open = false;
         break;
@@ -399,11 +422,17 @@ function openSelectionOf(h: RepresentationHierarchy, cut: LodCut): Set<GroupId> 
   const out = new Set<GroupId>();
   for (let g = 0; g < groupCount; g++) {
     const rep = h.repOfGroup[g];
+    // A DETACHED group (fully hidden under the post-filter mask — parent -2, no children)
+    // has no visible members: it is neither open nor part of the rendered selection. Skip
+    // it so a filtered-out group never leaks into the open set (Gap 7).
+    if (h.columns.parentByRep[rep] === DETACHED_REP && h.columns.firstChildByRep[rep] === -1) {
+      continue;
+    }
     // Walk up the GROUP rep chain; open iff no selected group rep on the path.
     let cur = rep;
     let collapsed = false;
     let guard = h.repCount + 1;
-    while (cur !== -1 && guard-- > 0) {
+    while (cur >= 0 && guard-- > 0) {
       if (selected.has(cur)) {
         collapsed = true;
         break;

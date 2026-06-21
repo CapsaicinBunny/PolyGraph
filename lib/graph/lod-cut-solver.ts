@@ -623,7 +623,9 @@ function visibilityWeight(cols: RepresentationColumns, cam: CameraState, rep: nu
 function coveringSelected(cols: RepresentationColumns, selected: Set<number>, rep: number): number {
   let cur = rep;
   let guard = cols.parentByRep.length + 1;
-  while (cur !== -1 && guard-- > 0) {
+  // `>= 0` stops on -1 (root) AND -2 (DETACHED_REP, a fully-hidden rep under the post-filter
+  // mask); a detached rep is never in `selected`, so it covers nothing.
+  while (cur >= 0 && guard-- > 0) {
     if (selected.has(cur)) return cur;
     cur = cols.parentByRep[cur];
   }

@@ -75,7 +75,10 @@ function isValidAntichain(h: RepresentationHierarchy, selected: Set<number>): bo
     let cur = leafRepresentationByNode[i];
     let hits = 0;
     let guard = h.repCount + 1;
-    while (cur !== -1 && guard-- > 0) {
+    // `>= 0` stops on -1 (root) AND -2 (DETACHED_REP — a hidden leaf under a post-filter
+    // mask). The bench passes no mask today, but the walk must honor the sentinel so it
+    // never reads parentByRep[-2] if filtering is later exercised here.
+    while (cur >= 0 && guard-- > 0) {
       if (selected.has(cur)) hits++;
       cur = parentByRep[cur];
     }
