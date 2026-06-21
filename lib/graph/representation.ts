@@ -148,6 +148,33 @@ export interface RepresentationCosts {
    * an independent {@link RepresentationHierarchy.roots} entry).
    */
   bootstrapRoots?: boolean;
+  /**
+   * Intermediate render-only proxy tiers (design B1 "Nanite-style render-only intermediate
+   * proxies" + invariants (a)-(d) + impl note (c)). When true, any group rep that would directly
+   * parent more than {@link MAX_FANOUT} children — counting BOTH its child group reps AND its
+   * direct leaf reps (fan-out is over child count, so a directory group with many subgroups is
+   * tiered even with no direct leaves) — has a BOUNDED tree of synthetic INTERMEDIATE proxy reps
+   * inserted between it and those children, built by the DETERMINISTIC BALANCED-CHUNK strategy
+   * (stable fan-out-bounded buckets over ascending rep-id order: child groups, then leaves in
+   * canonical node order — design B1 source 4, the always-available fallback that GUARANTEES the
+   * invariants).
+   *
+   * Why this matters: WITHOUT intermediate tiers a flat group with ~20k members parents every
+   * leaf DIRECTLY, so the ONLY refinement of that group is the atomic reveal of its WHOLE leaf
+   * set — which the solver's hard budget rejects, stranding the group at one aggregate card
+   * forever (design B1 "the biggest gap"). The inserted tiers give refinement bounded
+   * intermediate antichains to land on: a one-level refine yields the group's intermediate
+   * children (≤ {@link MAX_FANOUT}), never its leaf set (invariant d).
+   *
+   * The intermediate reps are render-only structural proxies: NO semantic group
+   * (groupByRep === {@link NO_GROUP}), one aggregate card (nodeCost/labelCost 1), no
+   * box/snapshot semantics — they exist only so refinement has intermediate levels. Costs roll
+   * up bottom-up unchanged (a proxy's subtree cost is still Σ of its underlying leaves). They
+   * are appended alongside the bootstrap buckets at `[groupCount + nodeCount, …)`, so group-rep
+   * and leaf-rep ids stay byte-identical to a build without this option. Omitted/false → the
+   * prior behavior (every leaf parents DIRECTLY under its group rep, unbounded fan-out).
+   */
+  intermediateTiers?: boolean;
 }
 
 /**
@@ -180,7 +207,7 @@ export const MAX_PARTITION_WORK_MS = 50; // soft wall-clock budget for one parti
  * the downstream proxy/local-layout caches keyed off the same version. Bump on ANY change to
  * the hierarchy shape — including the tiering constants above.
  */
-export const representationBuilderVersion = "rb2";
+export const representationBuilderVersion = "rb3";
 
 /**
  * The full hierarchy: the columnar runtime plus the convenience handles a consumer
@@ -236,6 +263,7 @@ export function buildRepresentationHierarchy(
   const isVisible = costs.visibleNode ?? (() => true);
 
   const bootstrap = costs.bootstrapRoots === true;
+  const tiered = costs.intermediateTiers === true;
 
   const groupCount = snapshot.groupIds.length;
   const nodeCount = snapshot.directGroupByNode.length;
@@ -290,10 +318,59 @@ export function buildRepresentationHierarchy(
       if (g === NO_GROUP || g >= groupCount) naturalRoots.push(leafRepOf(i)); // orphan leaf
     }
   }
+  // INTERMEDIATE TIERS (design B1). Collect, for every group rep that would directly parent
+  // more than MAX_FANOUT children, ALL of its direct children — its CHILD GROUP reps AND its
+  // direct VISIBLE leaf reps — then plan a bounded balanced-chunk tree of render-only
+  // intermediate proxies between the group and those children. Without this, a flat group with
+  // thousands of members can only refine by atomically revealing its WHOLE child set — which the
+  // solver's hard budget rejects, stranding the group at one card (design B1 "the biggest gap").
+  //
+  // A group rep's fan-out is NOT leaf-only: nested groups parent onto their group rep via
+  // `parentByGroup` (set at the group loop below to `snapshot.parentByGroup[g]`), so a directory
+  // group with >MAX_FANOUT SUBGROUPS exceeds the bound even with zero direct leaves. Invariant (b)
+  // is over CHILD COUNT, so both kinds of child must be tiered together. Children are collected in
+  // ASCENDING rep-id order — child-group reps first (ids < groupCount), then leaf reps in canonical
+  // node order (ids ≥ groupCount) — matching the firstChild/nextSibling adjacency order built later
+  // so the planned chunks are contiguous in that order. Planned BEFORE allocation so the appended
+  // intermediate reps are sized into the typed arrays. NOTE: orphan-leaf / root-group fan-out is
+  // bounded by the bootstrap buckets (each ≤MAX_FANOUT) — only semantic groups need tiering here.
+  const groupDirectChildren = new Map<number, number[]>();
+  if (tiered) {
+    // (1) Child GROUP reps — appended first so they sort ahead of every leaf rep (group ids are
+    //     all < groupCount ≤ every leaf rep id). A detached child group (no visible members) is
+    //     never wired into the tree, so it is not a child here either.
+    for (let g = 0; g < groupCount; g++) {
+      if (groupHasVisible[g] === 0) continue; // detached — never a child
+      const p = snapshot.parentByGroup[g];
+      if (p === -1 || p >= groupCount) continue; // root group — not a child of any group rep
+      let list = groupDirectChildren.get(p);
+      if (list === undefined) groupDirectChildren.set(p, (list = []));
+      list.push(g);
+    }
+    // (2) Direct leaf reps in canonical node order (leaf rep ids ascend with node ordinal, so the
+    //     existing group-first ordering is preserved by appending after the child-group reps).
+    for (let i = 0; i < nodeCount; i++) {
+      if (!isVisible(i)) continue; // detached leaf — never a child
+      const g = snapshot.directGroupByNode[i];
+      if (g === NO_GROUP || g >= groupCount) continue; // orphan — handled by buckets, not tiers
+      let list = groupDirectChildren.get(g);
+      if (list === undefined) groupDirectChildren.set(g, (list = []));
+      list.push(leafRepOf(i));
+    }
+    // Drop groups that are already bounded so planIntermediateTiers only sees oversized parents.
+    for (const [g, list] of groupDirectChildren) {
+      if (list.length <= MAX_FANOUT) groupDirectChildren.delete(g);
+    }
+  }
+  const inter = planIntermediateTiers(groupDirectChildren, baseRepCount);
+
   // Plan the synthetic super-root / root-bucket tier over the natural roots (deterministic,
   // fan-out-bounded). `plan.count === 0` → no normalization needed (off, or ≤0 natural roots).
-  const plan = planRootBuckets(naturalRoots, baseRepCount);
-  const repCount = baseRepCount + plan.count;
+  // Bucket reps are appended AFTER the intermediate-tier reps (which start at baseRepCount), so
+  // both kinds of synthetic proxy coexist with byte-identical group/leaf rep ids.
+  const bucketBase = baseRepCount + inter.count;
+  const plan = planRootBuckets(naturalRoots, bucketBase);
+  const repCount = bucketBase + plan.count;
 
   const parentByRep = new Int32Array(repCount).fill(-1);
   const groupByRep = new Uint32Array(repCount);
@@ -321,7 +398,11 @@ export function buildRepresentationHierarchy(
       parentByRep[g] = DETACHED_REP;
       continue;
     }
-    parentByRep[g] = snapshot.parentByGroup[g]; // already a group ordinal or -1
+    // A child group under an OVERSIZED parent group is re-parented onto its planned intermediate
+    // proxy (design B1 invariant b — fan-out is over CHILD COUNT, which includes subgroups), else
+    // it parents directly onto its parent group rep (or -1 for a root). Its rep id is unchanged.
+    const interParent = inter.parentByChild.get(g);
+    parentByRep[g] = interParent !== undefined ? interParent : snapshot.parentByGroup[g];
     nodeCost[g] = 1; // one aggregate card
     labelCost[g] = 1; // one proxy label
   }
@@ -341,11 +422,29 @@ export function buildRepresentationHierarchy(
       parentByRep[rep] = DETACHED_REP;
       continue;
     }
-    parentByRep[rep] = hasGroup ? g : -1;
+    // A leaf under an OVERSIZED group is re-parented onto its planned intermediate proxy (design
+    // B1); otherwise it parents directly under its group rep (or -1 for an orphan, which the
+    // bootstrap buckets adopt). The leaf's rep id and cost are unchanged either way.
+    const interParent = inter.parentByChild.get(rep);
+    parentByRep[rep] = interParent !== undefined ? interParent : hasGroup ? g : -1;
     nodeCost[rep] = nodeCostOf(id, i);
     edgeCost[rep] = edgeCostOf(id, i);
     labelCost[rep] = labelCostOf(id, i);
     gpuByteCost[rep] = gpuCostOf(id, i);
+  }
+
+  // INTERMEDIATE-TIER wiring (design B1). Each intermediate rep is render-only — NO group
+  // (groupByRep === NO_GROUP), one aggregate card (nodeCost/labelCost 1), no edges/gpu of its
+  // own — exactly like a group proxy's per-level cost; its subtree cost rolls up below. Its
+  // parent is another intermediate rep or the original oversized group rep (planIntermediateTiers
+  // stamps parentOf accordingly). The leaves it adopts were re-parented in the leaf loop above.
+  for (let k = 0; k < inter.count; k++) {
+    const rep = baseRepCount + k;
+    parentByRep[rep] = inter.parentOf[k]; // intermediate rep, or the original group rep
+    groupByRep[rep] = NO_GROUP; // render-only structural proxy — no semantic group
+    nodeCost[rep] = 1; // one aggregate card
+    labelCost[rep] = 1; // one proxy label
+    proxyKeys[rep] = `${snapshot.modeKey}|tier|${k}`;
   }
 
   // BOOTSTRAP super-root / root-bucket wiring (design B1). Re-parent each natural root onto
@@ -353,7 +452,8 @@ export function buildRepresentationHierarchy(
   // is render-only: NO group (groupByRep === NO_GROUP), one aggregate card (nodeCost 1, one
   // label), no edges/gpu of its own — exactly like a group proxy's per-level cost. Its subtree
   // cost rolls up below. The super-root becomes the sole entry in `roots`, so the coarsest cut
-  // is one card regardless of orphan count (invariant a).
+  // is one card regardless of orphan count (invariant a). Bucket rep ids start at `bucketBase`
+  // (== baseRepCount + inter.count), after the intermediate-tier reps.
   let superRoot = -1;
   if (plan.count > 0) {
     superRoot = plan.superRoot;
@@ -361,7 +461,7 @@ export function buildRepresentationHierarchy(
     for (const [nat, bucket] of plan.bucketByNaturalRoot) parentByRep[nat] = bucket;
     // Wire each synthetic rep: parent from the plan, render-only single-card cost.
     for (let k = 0; k < plan.count; k++) {
-      const rep = baseRepCount + k;
+      const rep = bucketBase + k;
       parentByRep[rep] = plan.parentOf[k]; // another synthetic rep, or -1 for the super-root
       groupByRep[rep] = NO_GROUP; // render-only structural proxy — no semantic group
       nodeCost[rep] = 1; // one aggregate card
@@ -556,6 +656,91 @@ function planRootBuckets(
     }
   }
   return { count, superRoot, parentOf, bucketByNaturalRoot };
+}
+
+/**
+ * Plan a bounded tree of render-only INTERMEDIATE proxy reps for every oversized parent
+ * (design B1 "Nanite-style render-only intermediate proxies" + invariants (a)-(d) + impl
+ * note (c)). A parent is OVERSIZED when it would directly parent more than {@link MAX_FANOUT}
+ * children, or stand in for more than {@link MAX_LEAVES_PER_PROXY} leaves. Each oversized
+ * parent's direct children are partitioned by the DETERMINISTIC BALANCED-CHUNK strategy
+ * (design B1 source 4): contiguous chunks of ≤{@link MAX_FANOUT} over the children IN THE
+ * GIVEN ORDER (the canonical node order for a group's leaves), each chunk adopted by one new
+ * synthetic intermediate proxy, repeated bottom-up until the top level is ≤{@link MAX_FANOUT}
+ * — which the original parent then adopts directly. The balanced-chunk fallback is always
+ * available and GUARANTEES the invariants: every rep ends with ≤{@link MAX_FANOUT} children
+ * (b) and a one-level refine of the parent yields its bounded intermediate children, never its
+ * whole leaf set (d). With chunk size {@link MAX_FANOUT} ≤ {@link MAX_LEAVES_PER_PROXY}, a
+ * bottom-tier proxy stands in for ≤{@link MAX_FANOUT} leaves, so the leaf-per-proxy bound holds.
+ *
+ * The intermediate reps are appended at `[base, base + count)`; like the bootstrap buckets they
+ * carry NO group and a single-card render cost (stamped by the caller). `parentByChild` maps a
+ * direct child rep id (a leaf, in the P0.5 group case) to the bottom intermediate proxy that now
+ * adopts it; `parentOf[k]` maps intermediate index k to its parent — another intermediate rep,
+ * or the ORIGINAL parent rep id (`< base`) for the top tier. `count === 0` when no parent is
+ * oversized (every parent already ≤{@link MAX_FANOUT} children — the small-graph common case).
+ *
+ * {@link MAX_PARTITION_DEPTH} caps the tiering (a safety bound; fan-out 32 × depth 12 spans
+ * ~1.15e18 leaves). If hit, the original parent adopts the remaining (wider-than-MAX_FANOUT)
+ * level directly — a bounded-depth/over-fan trade, mirroring {@link planRootBuckets}.
+ */
+function planIntermediateTiers(
+  childrenByParent: ReadonlyMap<number, readonly number[]>,
+  base: number,
+): {
+  count: number;
+  /** synthetic index k → parent rep id (another intermediate rep, or the original parent < base). */
+  parentOf: Int32Array;
+  /** original direct child rep id → the intermediate rep id that now adopts it. */
+  parentByChild: Map<number, number>;
+} {
+  // Accumulate synthetic reps. `parentOf` is filled directly as ids are assigned (each new
+  // proxy's parent is known by the time the level above it is built); the top tier's parent is
+  // the original oversized parent rep, stamped when that parent adopts the final level.
+  let count = 0;
+  const parentOfList: number[] = [];
+  const newSynthetic = (parent: number): number => {
+    const id = base + count++;
+    parentOfList.push(parent); // re-stamped by the tier above; the top tier keeps `parent`
+    return id;
+  };
+
+  const parentByChild = new Map<number, number>();
+  for (const [parent, directChildren] of childrenByParent) {
+    if (directChildren.length <= MAX_FANOUT) continue; // already bounded — no tier needed
+
+    // Bottom tier: chunk the direct children into ≤MAX_FANOUT contiguous buckets (canonical
+    // order preserved). Each child is re-parented onto its chunk's new intermediate proxy. The
+    // proxy's own parent is provisionally `parent` (corrected below if more tiers are added).
+    let level: number[] = [];
+    for (let i = 0; i < directChildren.length; i += MAX_FANOUT) {
+      const proxy = newSynthetic(parent);
+      for (let j = i; j < Math.min(i + MAX_FANOUT, directChildren.length); j++) {
+        parentByChild.set(directChildren[j], proxy);
+      }
+      level.push(proxy);
+    }
+    // Coarsen further while the tier itself exceeds MAX_FANOUT (the original parent must end
+    // with ≤MAX_FANOUT children too — invariant b applies to the semantic group, not just the
+    // intermediate reps). Bounded by MAX_PARTITION_DEPTH.
+    let depth = 1;
+    while (level.length > MAX_FANOUT && depth < MAX_PARTITION_DEPTH) {
+      const next: number[] = [];
+      for (let i = 0; i < level.length; i += MAX_FANOUT) {
+        const proxy = newSynthetic(parent);
+        for (let j = i; j < Math.min(i + MAX_FANOUT, level.length); j++) {
+          parentOfList[level[j] - base] = proxy; // the lower tier now parents onto this proxy
+        }
+        next.push(proxy);
+      }
+      level = next;
+      depth++;
+    }
+    // The remaining `level` is the top tier; its proxies keep `parent` (the original oversized
+    // rep) as their parentOf — already stamped by newSynthetic, so nothing more to do.
+  }
+
+  return { count, parentOf: Int32Array.from(parentOfList), parentByChild };
 }
 
 /**
