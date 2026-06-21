@@ -58,12 +58,23 @@ export interface ProxyLayoutOptions {
 }
 
 /**
+ * Side length of the FIXED square world canvas the whole proxy forest is tiled within. The
+ * stable bounds are therefore in a coordinate space that is INDEPENDENT of the live visual
+ * layout's extent — which is exactly why the cut's refine gate must rescale them by
+ * `liveExtent / PROXY_WORLD_SIZE` before measuring them against the camera (which is fit to the
+ * LIVE layout's much larger world). Without that calibration a top-level proxy projects to a few
+ * pixels at the fitted camera and nothing clears `openPx` — the collapse↔refine limit cycle. The
+ * cut owns the calibration; this module just defines the canonical canvas size both sides agree on.
+ */
+export const PROXY_WORLD_SIZE = 4096;
+
+/**
  * Defaults sized so a typical proxy box is ~hundreds of world units — the same order as the
  * Smart layout's cluster boxes, so the cut's screen-size gate (`openPx`, hundreds of px at
  * scale ~1) behaves comparably whether bounds come from the engine or from this stable layout.
  */
 export const DEFAULT_PROXY_LAYOUT_OPTIONS: ProxyLayoutOptions = {
-  worldSize: 4096,
+  worldSize: PROXY_WORLD_SIZE,
   padding: 8,
   minSide: 24,
 };

@@ -90,7 +90,16 @@ function recut(
   boxes: Map<string, Box>,
   intent: CollapseIntent = noIntent,
 ): RepLodResult {
-  const input: RepLodInput = { snapshot: snap, nodeIds, boxes, cam, vp, intent, options: opts, runtime };
+  const input: RepLodInput = {
+    snapshot: snap,
+    nodeIds,
+    boxes,
+    cam,
+    vp,
+    intent,
+    options: opts,
+    runtime,
+  };
   return buildSceneRepresentationCut(input);
 }
 

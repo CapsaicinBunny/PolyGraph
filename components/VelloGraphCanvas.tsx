@@ -47,7 +47,7 @@ import {
   LOD_BUDGET,
   materialSignature,
 } from "@/lib/graph/lod-representation-cut";
-import { cameraBand, proxyBoxes, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
+import { cameraBand, proxyBoxes, sceneBoxes, sceneExtent, shouldFit } from "@/lib/graph/lod-scene";
 import { decideRecut, type RecutTrigger } from "@/lib/graph/lod-recut-mode";
 import {
   BoundedLayoutCache,
@@ -981,6 +981,16 @@ export function VelloGraphCanvas(props: GraphViewProps) {
           : l.graph.nodes.map((n) => n.id);
         const visibleNode = (ordinal: number): boolean => visible.has(repNodeIds[ordinal]);
 
+        // SCALE CALIBRATION (the collapse↔refine limit-cycle fix). Measure the LIVE scene's world
+        // extent and hand it to the cut, which rescales its fixed-4096 stable bounds by
+        // (liveExtent / PROXY_WORLD_SIZE) so a top-level group projects to the same on-screen size
+        // at the FITTED camera that the live boxes did — instead of a few pixels that never clear
+        // openPx (which collapsed the view to 1 card and drove the camera-refit limit cycle). The
+        // cut caches it on the runtime per material signature, so it is only CONSUMED when the
+        // runtime is rebuilt; on the reuse (camera-recut) hot path we skip the O(scene) measure
+        // entirely and pass undefined — the runtime's cached extent stays authoritative. Mirrors
+        // how `repNodeIds` is only materialized on a rebuild.
+        const liveExtent = reuse ? undefined : sceneExtent(l.scene);
         // Acquire the persistent runtime: reused verbatim (no O(N) hierarchy rebuild) when the
         // signature is unchanged, rebuilt once when it changes. A camera recut takes the reuse
         // path; only a graph/filter/grouping/cost change rebuilds.
@@ -988,6 +998,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
           ...sigInputs,
           nodeIds: repNodeIds,
           visibleNode,
+          liveExtent,
           options: {
             ...DEFAULT_REP_LOD_OPTIONS,
             openPx: LOD_OPEN_PX,
@@ -1006,6 +1017,28 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         const result = buildSceneRepresentationCut({ ...input, runtime });
         lastRep.current = result;
         l.onRepLod?.(result);
+        // DEEP RECUT TELEMETRY (the collapse↔refine investigation). The recut path previously
+        // logged NOTHING to ndjson — which is why the camera-driven limit cycle took three rounds
+        // to find. Emit one structured event on every COMMITTED recut with the exact state needed
+        // to spot the cycle in the session log: the trigger source, the camera scale + the live
+        // extent the gate was calibrated against (the two coordinate spaces whose mismatch caused
+        // the bug), the committed card count, and the `collapsed` flag (cards ≤ 1 = the super-root
+        // 1-card scene that the camera then refits to). A healthy session shows a steady card
+        // count; the cycle shows `collapsed:true` alternating with large counts and `camScale`
+        // swinging tiny↔huge. Gated on `committed` (an idempotent no-op recut writes nothing).
+        if (result.committed) {
+          const cards = result.cut.selectedRepresentations.length;
+          telemetry.event("lod", "recut", {
+            trigger,
+            camScale: c.scale,
+            liveExtent: result.liveExtent ?? null,
+            boundsScale: result.boundsScale,
+            cards,
+            collapsed: cards <= 1,
+            committed: result.committed,
+            generation: result.runtime.generation,
+          });
+        }
         // Only a committed generation drives a scene rebuild.
         if (result.committed) {
           // Hand up the open selection. This still feeds compose() → collapsedClusters, but ONLY
@@ -1301,6 +1334,15 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     // keeps the same fitSignature — so none of them yank the camera. prevFitSig advances ONLY on
     // an actual fit, so when positions lag the structure by a render the fit still fires the
     // moment they arrive (instead of locking onto the degenerate intermediate scene).
+    //
+    // CAMERA REFIT GUARD (the collapse↔refine limit-cycle precondition). The cycle REQUIRES the
+    // camera to refit between the 1-card (super-root) scene and the N-card scene — that refit is
+    // what swings cam.scale tiny↔huge and re-triggers the gate. This guard PREVENTS it: a pure
+    // cut/relayout writes a new repScene/cutSignature (hence a new `scene` object → sceneChanged)
+    // but NEVER a new `fitSignature` (the cut generation and camera selection are deliberately
+    // EXCLUDED from fitSignature — see cutInputSignature below), so `shouldFit` returns false and
+    // the else-branch preserves the user's camera. The camera fits ONLY on a true material change
+    // (fitSignature flips) or an explicit user fit. Confirmed: nothing here can refit on a cut.
     const sceneChanged = scene !== prevScene.current;
     prevScene.current = scene;
     if (sceneChanged && layoutReady && shouldFit(fitSignature, prevFitSig.current)) {

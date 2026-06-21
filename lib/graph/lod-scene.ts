@@ -66,6 +66,33 @@ export function proxyBoxes(scene: Scene, hierarchy: RepresentationHierarchy): Ma
   return boxes;
 }
 
+/**
+ * The LIVE scene's overall world-space extent: max(width, height) of the union bounding box of
+ * every positioned node + cluster the visual engine placed. This is the SCALE-CALIBRATION input
+ * the representation cut needs (the collapse↔refine limit-cycle fix): `cam.scale` is fit to THIS
+ * extent, but the cut's stable proxy bounds live in a FIXED 4096 world, so the cut rescales them
+ * by `liveExtent / PROXY_WORLD_SIZE` to project at the size the camera expects. It is captured
+ * ONCE per material signature (the runtime caches it) because it is stable across relayouts of the
+ * same material — the overall cloud size barely moves even as individual nodes drift. Returns 0
+ * for an empty / unpositioned scene (the cut then falls back to no calibration).
+ */
+export function sceneExtent(scene: Scene): number {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  const fold = (x: number, y: number, w: number, h: number): void => {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x + w > maxX) maxX = x + w;
+    if (y + h > maxY) maxY = y + h;
+  };
+  for (const c of scene.clusters) fold(c.x, c.y, c.width, c.height);
+  for (const n of scene.nodes) fold(n.x, n.y, n.width, n.height);
+  if (maxX <= minX || maxY <= minY) return 0; // empty / unpositioned → no calibration
+  return Math.max(maxX - minX, maxY - minY);
+}
+
 /** Each integer band spans a ~1.5x zoom range — the recompute granularity. */
 const BAND_BASE = 1.5;
 

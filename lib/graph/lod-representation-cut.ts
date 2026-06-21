@@ -39,6 +39,7 @@ import {
 import {
   computeStableProxyBounds,
   PROXY_LAYOUT_VERSION,
+  PROXY_WORLD_SIZE,
   type StableProxyBounds,
 } from "./representation-proxy-layout";
 import { computeRepresentationBounds } from "./representation-bounds";
@@ -178,6 +179,22 @@ export interface RepLodInput {
   edges?: readonly EdgeIndexInput[];
   /** Live scene boxes per layout box key (open ClusterBoxes + collapsed aggregate cards). */
   boxes: Map<string, Box>;
+  /**
+   * SCALE CALIBRATION (the collapse↔refine limit-cycle fix). The overall world-space extent of
+   * the LIVE rendered scene — max(width, height) of the union of every node/cluster box the visual
+   * engine placed. The `cam.scale` the canvas hands in is FIT to this live world (so a ~2000-node
+   * Stress cloud spanning ~10k–50k units fits at scale ≈ 0.05), but the stable proxy bounds the
+   * gate measures live in a FIXED {@link PROXY_WORLD_SIZE}=4096 canvas — a different scale entirely.
+   * The cut therefore rescales the stable bounds by `liveExtent / PROXY_WORLD_SIZE` so a top-level
+   * group projects to the same on-screen size at the fitted camera that the live boxes did before
+   * the stable-bounds gate landed (623dce2) — WITHOUT tracking the per-frame drift of individual
+   * boxes. Captured ONCE per material signature and cached on the runtime (it is stable across
+   * relayouts of the same material — the overall cloud size barely moves even as nodes drift), so
+   * it is NOT recomputed per recut. Omitted (or ≤ 0) → no calibration (the legacy 1:1 behavior:
+   * `boundsScale` = 1), which is correct for box-less engines / tests where the camera is already
+   * in proxy-world units.
+   */
+  liveExtent?: number;
   cam: Camera;
   vp: Viewport;
   /** User collapse intent for the active mode (group id → open/closed). */
@@ -270,6 +287,18 @@ export interface RepresentationRuntime {
   eviction: EvictionController;
   /** The committed-generation runtime (pending/committed cut + generation), persisted across recuts. */
   lodRuntime: LodRuntimeState | undefined;
+  /**
+   * SCALE-CALIBRATION cache (the collapse↔refine limit-cycle fix). The LIVE layout's world extent
+   * (max width/height of the rendered cloud) captured ONCE when this runtime was built, from
+   * `input.liveExtent`. The refine gate rescales the fixed-4096 stable bounds by
+   * `liveExtent / PROXY_WORLD_SIZE` so they project at the same on-screen size the camera (fit to
+   * the live world) expects. Cached HERE — on the material signature — precisely so it is NOT
+   * recomputed per camera recut: it is stable across relayouts of the same material (the overall
+   * cloud size barely moves while individual nodes drift), and recomputing it per frame would
+   * re-introduce a drifting, camera-coupled gate. `undefined` when the caller passed no extent
+   * (→ `boundsScale` = 1, the legacy uncalibrated behavior).
+   */
+  liveExtent: number | undefined;
 }
 
 /** The opaque material-signature string keying a {@link RepresentationRuntime}. */
@@ -372,6 +401,11 @@ export function acquireRepresentationRuntime(
     repOfGroupId,
     eviction,
     lodRuntime: undefined,
+    // Capture the live extent ONCE here (on the material signature). A camera recut reuses this
+    // runtime verbatim, so this is never recomputed per frame — exactly the "cache it on the
+    // persistent runtime, do NOT recompute per frame" requirement of the calibration fix.
+    liveExtent:
+      input.liveExtent !== undefined && input.liveExtent > 0 ? input.liveExtent : undefined,
   };
 }
 
@@ -414,6 +448,14 @@ export interface RepLodResult {
   evictions: number;
   /** Cumulative evictions since the controller was created; 0 without one. */
   totalEvictions: number;
+  /**
+   * The live layout extent the gate was calibrated against (cached on the runtime), or undefined
+   * when the caller passed none. Surfaced for the recut telemetry so the log records the exact
+   * coordinate-space calibration that produced this cut (debugging the collapse↔refine cycle).
+   */
+  liveExtent: number | undefined;
+  /** The applied calibration factor (liveExtent / PROXY_WORLD_SIZE), or 1 when uncalibrated. */
+  boundsScale: number;
 }
 
 /**
@@ -438,6 +480,25 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   const repOfGroupId = runtime.repOfGroupId;
   const stableBounds = runtime.stableBounds;
 
+  // SCALE CALIBRATION (the collapse↔refine limit-cycle fix). The stable bounds live in a FIXED
+  // PROXY_WORLD_SIZE (4096) canvas, but `cam.scale` is fit to the LIVE layout's world extent
+  // (~10k–50k units for a few-thousand-node Stress cloud → cam.scale ≈ 0.05 when fit). At that
+  // scale an un-rescaled top-level stable box (~580 units) projects to ~27px ≪ openPx(240), so
+  // NOTHING clears the gate, the cut collapses to the super-root (1 card), the 1-node scene refits
+  // the camera to a tiny extent (cam.scale ≈ 7), the same stable boxes now project huge, everything
+  // refines (~1100 cards), the camera refits to the large extent, cam.scale goes tiny — and the
+  // cycle repeats. Rescaling every stable box by (liveExtent / PROXY_WORLD_SIZE) puts the gate's
+  // geometry into the SAME world the camera was fit to, so a top-level group clears openPx at the
+  // fitted camera the way the live boxes did before 623dce2. `liveExtent` is cached on the runtime
+  // (per material signature) so this factor is CONSTANT across recuts of the same material — it is
+  // NOT the per-frame drifting live box, so idempotency (the recut-loop fix) is preserved.
+  // Worked example: liveExtent=30000 → boundsScale ≈ 7.32 → a 580-unit stable group → ~4250 units
+  // → ×0.05 ≈ 212px, comparable to the ~hundreds-of-px the live box gave (see the calibration test).
+  const boundsScale =
+    runtime.liveExtent !== undefined && runtime.liveExtent > 0
+      ? runtime.liveExtent / PROXY_WORLD_SIZE
+      : 1;
+
   // A group rep detached by the post-filter mask (no visible members) is skipped throughout:
   // it gets no bounds, no intent constraint, and no place in the cut.
   const isDetachedGroup = (rep: number): boolean =>
@@ -458,11 +519,16 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   //    bounds are also non-zero under every engine (Grid / classic / None emit no cluster boxes),
   //    so the cut OPERATES with every engine, not merely ignores its name. Zoom still refines:
   //    the gate scales the STABLE screen height by cam.scale.
+  //    The stable bounds are rescaled by `boundsScale` (= liveExtent / PROXY_WORLD_SIZE, captured
+  //    once on the runtime) so EVERY geometry consumer below — the refine gate, the solver's
+  //    visibility/arbitration, the eviction onScreen test — measures the proxies in the SAME
+  //    coordinate space the camera was fit to. Multiplying a CONSTANT (per material) factor keeps
+  //    the seeding idempotent across recuts (the recut-loop fix); it only re-projects, never drifts.
   for (let rep = 0; rep < hierarchy.repCount; rep++) {
-    cols.boundsX[rep] = stableBounds.x[rep];
-    cols.boundsY[rep] = stableBounds.y[rep];
-    cols.boundsW[rep] = stableBounds.w[rep];
-    cols.boundsH[rep] = stableBounds.h[rep];
+    cols.boundsX[rep] = stableBounds.x[rep] * boundsScale;
+    cols.boundsY[rep] = stableBounds.y[rep] * boundsScale;
+    cols.boundsW[rep] = stableBounds.w[rep] * boundsScale;
+    cols.boundsH[rep] = stableBounds.h[rep] * boundsScale;
   }
 
   // 3a. Intent → constraints (rep ids from the cached group-id map). A group id with no rep
@@ -488,23 +554,57 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
     const w = stableBounds.w[rep];
     const h = stableBounds.h[rep];
     if (w <= 0 || h <= 0) return undefined; // detached / empty — genuinely no geometry
-    return { x: stableBounds.x[rep], y: stableBounds.y[rep], w, h };
+    // Rescale into the live camera's world (SCALE CALIBRATION) so worldToScreen(box, cam) yields
+    // the on-screen size the user actually sees. boundsScale is constant per material → idempotent.
+    return {
+      x: stableBounds.x[rep] * boundsScale,
+      y: stableBounds.y[rep] * boundsScale,
+      w: w * boundsScale,
+      h: h * boundsScale,
+    };
   };
 
-  // 3b. Refine gate: a proxy auto-refines only when its STABLE box is on-screen AND at least
-  //     openPx tall (legible). Gating on the stable box (never the drifting live box) makes a
-  //     recut of the same material at the same camera IDEMPOTENT — the property the canvas's
-  //     scene-ready effect relies on to avoid the layout↔cut feedback loop. The group and
-  //     no-group paths are now identical: both read the rep's stable box. Zoom still refines
-  //     (cam.scale grows the stable screen height past openPx). Forced opens ignore this gate
-  //     (handled in the solver).
+  // HYSTERESIS (the residual collapse↔refine damping). A rep that was OPEN in the PREVIOUS
+  // committed cut stays refine-eligible until its on-screen height falls well below openPx; a rep
+  // that was CLOSED becomes eligible only once it clears openPx. This deadband stops a proxy from
+  // flip-flopping at the exact openPx boundary (where calibration leaves it marginal): without it,
+  // a group whose calibrated height sits at ~openPx ± ε would open one recut and close the next,
+  // re-seeding the limit cycle. `wasOpen(rep)` reads the prior committed cut off the persistent
+  // runtime (runtime.lodRuntime.committedCut): a rep is OPEN there iff neither it nor any ancestor
+  // was selected (the cut refined past it into its children). On the very first solve there is no
+  // prior cut → every rep is treated as CLOSED (the strict openPx threshold), which is the correct
+  // conservative bootstrap.
+  const OPEN_RETAIN_FRACTION = 0.6; // an open rep stays open down to 0.6×openPx (the deadband)
+  const priorCut = runtime.lodRuntime?.committedCut;
+  const priorSelected = priorCut ? new Set(priorCut.selectedRepresentations) : undefined;
+  const wasOpen = (rep: number): boolean => {
+    if (!priorSelected) return false; // no prior cut → treat as closed (strict threshold)
+    let cur = rep;
+    let guard = hierarchy.repCount + 1;
+    while (cur >= 0 && guard-- > 0) {
+      if (priorSelected.has(cur)) return false; // selected on the chain → was collapsed, not open
+      cur = cols.parentByRep[cur];
+    }
+    return true; // no selected ancestor-or-self → the prior cut refined past it (was open)
+  };
+
+  // 3b. Refine gate: a proxy auto-refines only when its STABLE box is on-screen AND clears the
+  //     hysteresis threshold (legible). Gating on the stable box (never the drifting live box)
+  //     makes a recut of the same material at the same camera IDEMPOTENT — the property the
+  //     canvas's scene-ready effect relies on to avoid the layout↔cut feedback loop. The group and
+  //     no-group paths are identical: both read the rep's stable box. Zoom still refines (cam.scale
+  //     grows the calibrated stable screen height past the threshold). Forced opens ignore this
+  //     gate (handled in the solver). The threshold is `openPx` for a previously-CLOSED rep and a
+  //     lower `OPEN_RETAIN_FRACTION × openPx` for a previously-OPEN rep — the deadband that damps
+  //     the residual boundary oscillation.
   const canRefine = (rep: number): boolean => {
     // Leaf reps (no children) never reach the solver's refine path.
     if (cols.firstChildByRep[rep] === -1) return false;
     const box = stableBoxOf(rep);
     if (!box) return false;
     if (!intersectsViewport(worldToScreen(box, cam), vp, options.margin)) return false;
-    return screenHeight(box, cam.scale) >= options.openPx;
+    const threshold = wasOpen(rep) ? options.openPx * OPEN_RETAIN_FRACTION : options.openPx;
+    return screenHeight(box, cam.scale) >= threshold;
   };
 
   // 4. Budget — the FINITE split model (design "Finite budget model"; Gap 6). Soft targets
@@ -661,6 +761,8 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
     limitedDetails: limitSink.limited,
     evictions,
     totalEvictions,
+    liveExtent: runtime.liveExtent,
+    boundsScale,
   };
 }
 
