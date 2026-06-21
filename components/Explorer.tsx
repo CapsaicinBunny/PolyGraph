@@ -81,8 +81,9 @@ const AUTO_COLLAPSE_MAX_CARDS = 2000;
 // in VelloGraphCanvas. See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
 const LOD_NODE_BUDGET = 2500;
 
-// The grouping mode whose collapse intent C0 wires. Directory only here; Package /
-// Community / facet become peer modes (each with its own intent map) in later phases.
+// The modeKey the Directory-scoped collapse wiring targets. Package / Community /
+// facet are now peer modes too (each with its own per-mode intent map, Phase C1a);
+// this constant just names the Directory entry the Directory-scoped helpers write.
 const DIRECTORY_MODE = "directory";
 // Stable empty intent/set so the derived collapse memo doesn't churn before any user action.
 const EMPTY_INTENT: CollapseIntent = new Map();

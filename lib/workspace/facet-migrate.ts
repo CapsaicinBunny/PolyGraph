@@ -2,7 +2,7 @@
 //
 // The durable workspace stores facet selections as JSON (`FacetSelectionState`,
 // values as `string[]`); the live Explorer state uses the runtime
-// `RuntimeFacetSelection` (values as `Set`). This module converts between them
+// `FacetSelection` (values as `Set`). This module converts between them
 // and migrates the LEGACY named arrays (enabledNodeKinds/Categories/
 // Environments/Runtimes) — which were the *enabled* value lists — into the
 // generic `enabledFacets` map, so old workspaces still load with identical
