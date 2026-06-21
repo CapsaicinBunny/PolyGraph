@@ -10,6 +10,7 @@ import {
 import { stratify, tree as d3tree } from "d3-hierarchy";
 import { Layout as ColaLayout } from "webcola";
 import type { ViewEdgeKind } from "./aggregate";
+import type { CompactGroupingSnapshot } from "./graph/grouping-snapshot";
 import { coreness } from "./layout/backbone";
 import { detectCommunities } from "./layout/community";
 import {
@@ -92,6 +93,13 @@ export interface LayoutOptions {
    * reshuffling. Nodes without a prior position fall back to the engine default.
    */
   previousPositions?: Map<string, XYPosition>;
+  /**
+   * The injected grouping snapshot (Phase C1a). When present, the Smart layout builds
+   * its cluster tree from it (the new grouping INPUT contract) rather than deriving
+   * directory ancestry from node ids. Built once on the main thread; its typed arrays
+   * transfer to the worker. See lib/graph/grouping-snapshot.ts.
+   */
+  groupingSnapshot?: CompactGroupingSnapshot;
 }
 
 /** Why the budget guard downgraded a leaf cluster's planner choice to grid (null = it didn't). */
@@ -1240,6 +1248,7 @@ function smartOptions(options: LayoutOptions) {
     density: options.density,
     communityOf: options.communityOf,
     previousPositions: options.previousPositions,
+    groupingSnapshot: options.groupingSnapshot,
   };
 }
 
@@ -1359,6 +1368,7 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
         density: options.density,
         communityOf: options.communityOf,
         previousPositions: options.previousPositions,
+        groupingSnapshot: options.groupingSnapshot,
       }).nodes;
     case "tree":
       return cappedComponents(view, HEAVY_COMPONENT_CAP.tree, (sub) => treeLayout(sub, direction));

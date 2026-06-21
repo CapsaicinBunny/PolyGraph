@@ -9,6 +9,7 @@ import {
   nodeSize,
   type XYPosition,
 } from "../layout";
+import { buildSmartGroupingSnapshot } from "../layout/smart";
 import type { EdgeEvidence, ExternalKind, GraphModel, NodeKind, NodeRole } from "./types";
 import { detectCommunities } from "../layout/community";
 import { edgeWeight } from "../layout/weight";
@@ -384,21 +385,32 @@ export function buildSceneStructure(
     };
   });
 
+  const layoutInput: LayoutInput = {
+    nodes: view.nodes.map((n) => ({ id: n.id, kind: n.kind })),
+    edges: visibleEdges.map((e) => ({
+      source: e.source,
+      target: e.target,
+      kind: e.kind,
+      count: e.count,
+      weight: edgeWeight(e.kind, e.count),
+    })),
+  };
+
+  // Phase C1a: build the grouping snapshot the Smart layout consumes (the new layout
+  // INPUT contract) from the post-filter/post-collapse layout nodes, here on the main
+  // thread; its typed arrays transfer to the worker. Only Smart WITH containers uses
+  // it — classic engines and Smart+None lay out flat (no cluster tree).
+  const groupingSnapshot =
+    algorithm === "smart" && groupBy !== "none"
+      ? buildSmartGroupingSnapshot(layoutInput, groupBy, communityOf, groupBy)
+      : undefined;
+
   return {
     nodes,
     edges,
     signature,
-    layoutInput: {
-      nodes: view.nodes.map((n) => ({ id: n.id, kind: n.kind })),
-      edges: visibleEdges.map((e) => ({
-        source: e.source,
-        target: e.target,
-        kind: e.kind,
-        count: e.count,
-        weight: edgeWeight(e.kind, e.count),
-      })),
-    },
-    options: { algorithm, direction, groupBy, density, communityOf },
+    layoutInput,
+    options: { algorithm, direction, groupBy, density, communityOf, groupingSnapshot },
   };
 }
 

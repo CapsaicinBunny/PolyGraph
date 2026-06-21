@@ -128,6 +128,10 @@ export function layoutInWorker(input: LayoutInput, options: LayoutOptions): Prom
       finish(layoutSync(input, gridOptions(opts)));
     }, LAYOUT_TIMEOUT_MS);
     pending.set(id, finish);
+    // The grouping snapshot's typed arrays cross to the worker inside `options`. We do
+    // NOT add them to the transfer list (no second arg): the main thread retains the
+    // scene's snapshot (sync fallback, re-post), so structured-clone COPY-on-send is
+    // correct — transferring would detach buffers the sender still reads (spec App. G).
     w.postMessage({ id, input, options: opts });
   });
 }
