@@ -163,11 +163,12 @@ export function Explorer() {
   // Adaptive level-of-detail (LOD): recompute the collapsed cut as the camera
   // zooms so a huge repo stays drawable. Off by default — see docs/SCALE-100K.md.
   const [adaptiveLod, setAdaptiveLod] = useState(true);
-  // Phase C1b — REPRESENTATION LOD: the budgeted valid-antichain cut through the proxy
-  // hierarchy (Appendix A) replaces the C1a collapse-shaped cut for the rendered scene.
-  // Opt-in (default off) so the C1a path stays the byte-identical fallback; gated by
-  // adaptiveLod in the canvas. Toggle in Settings.
-  const [representationLod, setRepresentationLod] = useState(false);
+  // REPRESENTATION LOD: the budgeted valid-antichain cut through the proxy hierarchy
+  // (Appendix A) is now the ONLY rendered-scene LOD algorithm — always on as the cut kind,
+  // gated by `adaptiveLod` (the master on/off the single top-bar "LOD" button toggles). So
+  // "LOD: on" == this layout-independent cut running; "LOD: off" == no cut. (Was an opt-in
+  // experimental toggle against the old C1a collapse cut, which is retired as a UI choice.)
+  const representationLod = true;
   // The latest committed representation-cut stats, for the dev overlay (Phase C1b §I). Only
   // populated while representationLod is on (the canvas reports each committed generation).
   const [repLodStats, setRepLodStats] = useState<RepLodOverlayStats | null>(null);
@@ -929,9 +930,9 @@ export function Explorer() {
           variant={adaptiveLod ? "subtle" : "ghost"}
           colorPalette={adaptiveLod ? "teal" : "gray"}
           onClick={() => setAdaptiveLod((v) => !v)}
-          title="Adaptive level-of-detail: open directories into detail as you zoom in (experimental)"
+          title="Level-of-detail: bound the on-screen graph to a budget as you zoom (the representation cut). Layout-independent — stays on across layout/group changes."
         >
-          {adaptiveLod ? "Adaptive LOD: on" : "Adaptive LOD: off"}
+          {adaptiveLod ? "LOD: on" : "LOD: off"}
         </Button>
         <Button
           size="sm"
@@ -1090,12 +1091,8 @@ export function Explorer() {
             onMinimap={setMinimap}
             edgeRouting={edgeRouting}
             onEdgeRouting={setEdgeRouting}
-            communityCollapse={communityCollapse}
-            onCommunityCollapse={setCommunityCollapse}
             telemetryOn={telemetryOn}
             onTelemetry={handleTelemetry}
-            representationLod={representationLod}
-            onRepresentationLod={setRepresentationLod}
             onClose={() => setSettingsOpen(false)}
           />
         )}

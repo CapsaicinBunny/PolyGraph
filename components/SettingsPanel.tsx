@@ -40,13 +40,8 @@ interface SettingsPanelProps {
   onMinimap: (v: boolean) => void;
   edgeRouting: "curved" | "orthogonal";
   onEdgeRouting: (v: "curved" | "orthogonal") => void;
-  communityCollapse: boolean;
-  onCommunityCollapse: (v: boolean) => void;
   telemetryOn: boolean;
   onTelemetry: (v: boolean) => void;
-  /** Phase C1b — the representation-LOD cut (proxies + budgeted antichain) vs the C1a path. */
-  representationLod: boolean;
-  onRepresentationLod: (v: boolean) => void;
   onClose: () => void;
 }
 
@@ -142,12 +137,8 @@ export function SettingsPanel({
   onMinimap,
   edgeRouting,
   onEdgeRouting,
-  communityCollapse,
-  onCommunityCollapse,
   telemetryOn,
   onTelemetry,
-  representationLod,
-  onRepresentationLod,
   onClose,
 }: SettingsPanelProps) {
   return (
@@ -189,11 +180,6 @@ export function SettingsPanel({
             checked={telemetryOn}
             onClick={() => onTelemetry(!telemetryOn)}
             label="Local logs"
-          />
-          <CheckRow
-            checked={representationLod}
-            onClick={() => onRepresentationLod(!representationLod)}
-            label="Representation LOD (experimental)"
           />
         </Stack>
         <HStack gap="2" mt="3">
@@ -256,16 +242,6 @@ export function SettingsPanel({
             Orthogonal
           </Choice>
         </HStack>
-      </Box>
-
-      <Box>
-        <GroupLabel title="Collapse community groups" />
-        <Choice active={communityCollapse} onClick={() => onCommunityCollapse(!communityCollapse)}>
-          {communityCollapse ? "On" : "Off"}
-        </Choice>
-        <Text fontSize="xs" color="fg.muted" mt="2">
-          Folds every detected community into one card. Smart layout, Community grouping only.
-        </Text>
       </Box>
     </Stack>
   );
