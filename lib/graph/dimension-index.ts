@@ -50,8 +50,6 @@ interface KeyState {
   strings: string[];
   /** interned id → node-ordinal posting. */
   postings: Uint32Array[];
-  /** interned id → declared in the (closed) domain? open domains are always true. */
-  declared: boolean[];
   /** present() snapshot in first-seen order. */
   present: PresentDimensionValue[];
 }
@@ -145,7 +143,7 @@ export function buildDimensionIndex(graph: GraphModel, catalog: DimensionCatalog
       declared: declaredFlags[id],
     }));
 
-    return { idOf, strings, postings, declared: declaredFlags, present };
+    return { idOf, strings, postings, present };
   }
 
   function stateOf(key: FacetKey): KeyState | undefined {
