@@ -41,6 +41,7 @@ import {
   buildSceneRepresentationCut,
   DEFAULT_REP_LOD_OPTIONS,
 } from "@/lib/graph/lod-representation-cut";
+import { type EvictionController, makeEvictionController } from "@/lib/graph/lod-eviction";
 import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
 import {
   centerCameraOn,
@@ -62,6 +63,11 @@ const LOD_MAX_CARDS = 800;
 // Smart always finishes within the worker timeout (never degrading to the grid
 // fallback). See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
 const LOD_NODE_BUDGET = 2500;
+// Bound on RETAINED auto-opened group proxies (the deadband set): a group opened while
+// on-screen stays open through a small pan/zoom-out, but exploring many regions can't grow
+// the open set without limit — the IntrusiveLru evicts the oldest offscreen opens past this
+// (spec "auto open & offscreen → eviction-eligible … over budget → evict … (LRU)").
+const LOD_OFFSCREEN_OPEN_BUDGET = 64;
 // Debounce the adaptive recompute so a single zoom *gesture* (many wheel ticks
 // across bands) triggers ONE cut+rebuild after it settles — not one per tick. The
 // rebuild reprocesses the whole base graph (1.39M nodes on the kernel), so coalescing
@@ -481,6 +487,13 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // its active proxy"). Holds the hierarchy + runtimeCut for the representativeOf walk.
   const lastRep = useRef<RepLodResult | null>(null);
 
+  // The persistent eviction + runtime-cut controller (Phase C1c bug b): tracks auto-opened
+  // group proxies across recuts so a deadband retains on-screen opens through a small pan,
+  // bounds the retained offscreen opens via an LRU, and rolls the runtime cut in place (no
+  // fresh Uint32Array per recut). Rebuilt on a grouping-mode switch (the rep ids change
+  // domain). Lazily created in recomputeCut once the rep count is known.
+  const evictionCtrl = useRef<EvictionController | null>(null);
+
   // Adaptive level-of-detail state the (mount-time) wheel handler reads via refs.
   const dirTree = useMemo(() => buildDirTree(graph), [graph]);
   // Phase C1b: Directory mode has no `groupingSnapshot` prop (it uses the DirNode cut), so
@@ -558,6 +571,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   if (lod.current.groupBy !== groupBy) {
     lod.current.rawCut = new Set();
     lod.current.repRuntime = undefined;
+    // The eviction controller's tracked rep ids belong to the OLD mode's hierarchy (a
+    // disjoint id domain); reset so the new mode starts with no stale retained opens.
+    evictionCtrl.current?.reset();
   }
   lod.current.groupBy = groupBy;
   lod.current.groupingSnapshot = groupingSnapshot ?? null;
@@ -817,9 +833,17 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       // Directory has no snapshot prop, so it uses the canvas-built directoryRepSnapshot.
       const repSnap = l.groupingSnapshot ?? l.directoryRepSnapshot;
       if (l.representationLod && repSnap) {
+        const repNodeIds = l.graph.nodes.map((n) => n.id);
+        // Lazily create / re-size the persistent eviction controller for this hierarchy's
+        // rep count (group reps + leaf reps). A changed rep count (filter/grouping change)
+        // rebuilds it so its LRU key space matches the new hierarchy.
+        const repCount = repSnap.groupIds.length + repNodeIds.length;
+        if (!evictionCtrl.current || evictionCtrl.current.keySpace !== repCount) {
+          evictionCtrl.current = makeEvictionController(repCount, LOD_OFFSCREEN_OPEN_BUDGET);
+        }
         const result = buildSceneRepresentationCut({
           snapshot: repSnap,
-          nodeIds: l.graph.nodes.map((n) => n.id),
+          nodeIds: repNodeIds,
           boxes,
           cam: c,
           vp,
@@ -833,6 +857,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
           },
           previous: l.repRuntime,
           collectDiagnostics: !!l.onRepLod,
+          eviction: evictionCtrl.current,
         });
         l.repRuntime = result.runtime;
         lastRep.current = result;
