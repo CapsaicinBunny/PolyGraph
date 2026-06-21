@@ -36,10 +36,16 @@ import { type CollapseIntent, compose, type GroupId } from "@/lib/graph/collapse
 import {
   allDirectoryGroupIds,
   ancestorDirectoryGroupIds,
+  communityGrouping,
   directoryGroupId,
+  type GroupingHierarchy,
   toDirectoryBoxKeys,
   toDirectoryGroupIds,
 } from "@/lib/graph/grouping";
+import {
+  buildGroupingSnapshot,
+  type CompactGroupingSnapshot,
+} from "@/lib/graph/grouping-snapshot";
 import { FiltersPanel } from "./FiltersPanel";
 import { graphKeyFor, type SceneEdge } from "@/lib/graph/scene";
 import { EdgeDetailPanel } from "./EdgeDetailPanel";
@@ -74,8 +80,9 @@ const LOD_NODE_BUDGET = 2500;
 // The grouping mode whose collapse intent C0 wires. Directory only here; Package /
 // Community / facet become peer modes (each with its own intent map) in later phases.
 const DIRECTORY_MODE = "directory";
-// Stable empty intent so the derived collapse memo doesn't churn before any user action.
+// Stable empty intent/set so the derived collapse memo doesn't churn before any user action.
 const EMPTY_INTENT: CollapseIntent = new Map();
+const EMPTY_SET: ReadonlySet<GroupId> = new Set();
 
 interface Stats {
   fileCount: number;
@@ -97,9 +104,16 @@ export function Explorer() {
   // The effective collapsed set is composed from these (below); user intent can never be
   // clobbered by the camera. Namespaced GroupIds ("directory:<path>"); translated to the
   // bare layout/LOD path at the boundary.
+  // All three layers are keyed by grouping mode (Phase C1a): switching modes preserves
+  // each mode's collapse state. C0 wired Directory only; the camera selection + bootstrap
+  // are now per-mode too. The active mode is `groupBy` (the modeKey).
   const [intentByMode, setIntentByMode] = useState<Map<string, CollapseIntent>>(() => new Map());
-  const [bootstrapClosed, setBootstrapClosed] = useState<Set<GroupId>>(() => new Set());
-  const [lodSelection, setLodSelection] = useState<Set<GroupId>>(() => new Set());
+  const [bootstrapByMode, setBootstrapByMode] = useState<Map<string, Set<GroupId>>>(
+    () => new Map(),
+  );
+  const [selectionByMode, setSelectionByMode] = useState<Map<string, Set<GroupId>>>(
+    () => new Map(),
+  );
   const [enabledEdgeKinds, setEnabledEdgeKinds] = useState<Set<ViewEdgeKind>>(
     () => new Set(FILTERABLE_EDGE_KINDS),
   );
@@ -147,18 +161,18 @@ export function Explorer() {
 
   const baseGraph = result?.graph ?? null;
 
-  // The effective collapsed directory set (bare layout/LOD paths), composed from the
-  // three layers. This is the single value the scene pipeline consumes — it drops in
-  // exactly where the old `collapsedClusters` state did. Precedence (inside compose):
-  // user-closed > user-open > camera selection-open > bootstrap > default-open.
-  const directoryIntent = intentByMode.get(DIRECTORY_MODE) ?? EMPTY_INTENT;
-  const collapsedClusters = useMemo(
-    () =>
-      toDirectoryBoxKeys(
-        compose({ intent: directoryIntent, bootstrapClosed, selection: lodSelection }),
-      ),
-    [directoryIntent, bootstrapClosed, lodSelection],
-  );
+  // Directory-scoped views of the per-mode layers — the Directory wiring (seed, collapse-
+  // all, drill, workspace restore) reads/writes ONLY these, so its behavior is unchanged
+  // (byte-identical) while the underlying state is now per-mode. Stable setters update the
+  // "directory" entry of each per-mode map.
+  const bootstrapClosed = bootstrapByMode.get(DIRECTORY_MODE) ?? EMPTY_SET;
+  const lodSelection = selectionByMode.get(DIRECTORY_MODE) ?? EMPTY_SET;
+  const setDirectoryBootstrap = useCallback((set: Set<GroupId>) => {
+    setBootstrapByMode((prev) => new Map(prev).set(DIRECTORY_MODE, set));
+  }, []);
+  const setDirectorySelection = useCallback((set: Set<GroupId>) => {
+    setSelectionByMode((prev) => new Map(prev).set(DIRECTORY_MODE, set));
+  }, []);
 
   // Mutate the directory-mode collapse intent (the ONLY writer of user intent). Copies
   // the per-mode map so a stale closure can't mutate live state.
@@ -186,16 +200,16 @@ export function Explorer() {
       return next;
     });
     if (!seed) {
-      setBootstrapClosed(new Set());
-      setLodSelection(new Set());
+      setDirectoryBootstrap(new Set());
+      setDirectorySelection(new Set());
       return;
     }
-    setBootstrapClosed(allDirectoryGroupIds(g));
+    setDirectoryBootstrap(allDirectoryGroupIds(g));
     const open = new Set<GroupId>();
     for (const path of seed.collapsed)
       for (const anc of ancestorDirectoryGroupIds(path)) open.add(anc);
-    setLodSelection(open);
-  }, []);
+    setDirectorySelection(open);
+  }, [setDirectoryBootstrap, setDirectorySelection]);
 
   // The active graph reflects the chosen abstraction level. Symbol/File/Directory use the
   // base graph (file/symbol granularity is driven by expand/collapse); Package and
@@ -377,6 +391,54 @@ export function Explorer() {
   );
   const topDirs = useMemo(() => dirTree?.children.map((c) => c.path) ?? [], [dirTree]);
 
+  // The active grouping mode's CUT hierarchy + snapshot, for the mode-agnostic adaptive
+  // cut (Phase C1a). Directory keeps its dedicated DirNode path (byte-identical) so it
+  // builds no snapshot here; Community (and later Package/facet) build one over the
+  // active graph so the camera can run computeGroupCut. None has no visible containers,
+  // so it builds none — the cut is inert for it (its budget is bounded elsewhere).
+  const cutGrouping = useMemo<{ hierarchy: GroupingHierarchy; snapshot: CompactGroupingSnapshot } | null>(() => {
+    if (!graph || groupBy === "directory" || groupBy === "none") return null;
+    let hierarchy: GroupingHierarchy | null = null;
+    if (groupBy === "community") hierarchy = communityGrouping(graph);
+    if (!hierarchy) return null;
+    const snapshot = buildGroupingSnapshot(
+      hierarchy,
+      groupBy,
+      graph.nodes.map((n) => n.id),
+    );
+    return { hierarchy, snapshot };
+  }, [graph, groupBy]);
+
+  // The effective collapsed set (box keys) for the ACTIVE grouping mode, composed from
+  // that mode's three layers. This is the single value the scene pipeline consumes — it
+  // drops in exactly where the old `collapsedClusters` state did. Precedence (inside
+  // compose): user-closed > user-open > camera selection-open > bootstrap > default-open.
+  // Directory converts namespaced ids → bare paths; other modes convert via the cut
+  // snapshot's groupId→boxKey map.
+  const activeIntent = intentByMode.get(groupBy) ?? EMPTY_INTENT;
+  const activeBootstrap = bootstrapByMode.get(groupBy) ?? EMPTY_SET;
+  const activeSelection = selectionByMode.get(groupBy) ?? EMPTY_SET;
+  const collapsedClusters = useMemo(() => {
+    const composed = compose({
+      intent: activeIntent,
+      bootstrapClosed: activeBootstrap,
+      selection: activeSelection,
+    });
+    if (groupBy === "directory") return toDirectoryBoxKeys(composed);
+    // Non-directory: map each composed namespaced group id to its layout box key.
+    const snap = cutGrouping?.snapshot;
+    if (!snap) return new Set<string>();
+    const boxKeyOf = new Map<GroupId, string>();
+    for (let g = 0; g < snap.groupIds.length; g++)
+      boxKeyOf.set(snap.groupIds[g], snap.boxKeyByGroup[g]);
+    const out = new Set<string>();
+    for (const id of composed) {
+      const bk = boxKeyOf.get(id);
+      if (bk !== undefined) out.add(bk);
+    }
+    return out;
+  }, [groupBy, activeIntent, activeBootstrap, activeSelection, cutGrouping]);
+
   const fileIds = useMemo(
     () => (baseGraph?.nodes ?? []).filter((n) => n.kind === "file").map((n) => n.id),
     [baseGraph],
@@ -396,8 +458,8 @@ export function Explorer() {
         next.set(DIRECTORY_MODE, new Map(topDirs.map((p) => [directoryGroupId(p), "closed"])));
         return next;
       });
-      setBootstrapClosed(new Set());
-      setLodSelection(new Set());
+      setDirectoryBootstrap(new Set());
+      setDirectorySelection(new Set());
       setAdaptiveLod(false);
     } else {
       // "Reveal detail" (was "Expand all") → expand every file's symbols and CLEAR any
@@ -412,7 +474,16 @@ export function Explorer() {
       if (baseGraph) seedDirectoryLod(baseGraph, seed);
       setAdaptiveLod(seed !== null);
     }
-  }, [allExpanded, fileIds, baseGraph, symbolCount, topDirs, seedDirectoryLod]);
+  }, [
+    allExpanded,
+    fileIds,
+    baseGraph,
+    symbolCount,
+    topDirs,
+    seedDirectoryLod,
+    setDirectoryBootstrap,
+    setDirectorySelection,
+  ]);
 
   const handleResult = useCallback(
     (res: AnalyzeResult, s: Stats, m: PackageManifest[], scannedPath = "") => {
@@ -474,8 +545,8 @@ export function Explorer() {
       next.delete(DIRECTORY_MODE);
       return next;
     });
-    setBootstrapClosed(toDirectoryGroupIds(s.collapsedClusters));
-    setLodSelection(new Set());
+    setDirectoryBootstrap(toDirectoryGroupIds(s.collapsedClusters));
+    setDirectorySelection(new Set());
     setFocusedIds(s.focusedIds);
     setShowExternal(s.showExternal);
     setSearch(s.search);
@@ -489,7 +560,7 @@ export function Explorer() {
     setDensity(s.density);
     setEdgeRouting(s.edgeRouting);
     setCommunityCollapse(s.communityCollapse);
-  }, []);
+  }, [setDirectoryBootstrap, setDirectorySelection]);
 
   const handleSelect = useCallback(
     (id: string) => {
@@ -546,10 +617,14 @@ export function Explorer() {
     [collapsedClusters, dirNodes, editDirectoryIntent],
   );
 
-  // The camera's adaptive cut hands up a transitional DirectoryLodSelection — the set of
-  // OPEN directory group ids. It updates ONLY the selection layer; it never touches intent
-  // or bootstrap, so a zoom can refine detail but can't clobber what the user chose.
-  const handleCut = useCallback((selection: Set<GroupId>) => setLodSelection(selection), []);
+  // The camera's adaptive cut hands up a GroupLodSelection (the set of OPEN namespaced
+  // group ids) FOR A SPECIFIC grouping mode. It updates ONLY that mode's selection layer;
+  // it never touches intent or bootstrap, so a zoom can refine detail but can't clobber
+  // what the user chose — and switching modes keeps each mode's camera state. (C0 was
+  // Directory-only; this is the mode-keyed generalization, spec "Phase plan → C1a".)
+  const handleCut = useCallback((modeKey: string, selection: Set<GroupId>) => {
+    setSelectionByMode((prev) => new Map(prev).set(modeKey, selection));
+  }, []);
 
   const handleToggleEdgeKind = useCallback((kind: ViewEdgeKind) => {
     setEnabledEdgeKinds((prev) => {
@@ -771,6 +846,7 @@ export function Explorer() {
             minimap={minimap}
             adaptiveLod={adaptiveLod}
             onCut={handleCut}
+            groupingSnapshot={cutGrouping?.snapshot ?? null}
             fitSignature={fitSignature}
           />
         </Box>

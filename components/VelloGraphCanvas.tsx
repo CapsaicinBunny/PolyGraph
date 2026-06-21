@@ -28,8 +28,10 @@ import {
 import { frameBoxes } from "@/lib/graph/frame";
 import { buildDirTree, type DirNode } from "@/lib/graph/hierarchy";
 import type { GroupId } from "@/lib/graph/collapse-model";
+import type { CompactGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
 import { directoryLodSelection } from "@/lib/graph/lod-selection";
 import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
+import { computeGroupCut, groupCutEquals, groupLodSelection } from "@/lib/graph/group-cut";
 import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
 import {
   centerCameraOn,
@@ -95,12 +97,19 @@ export interface GraphViewProps {
   /** Adaptive level-of-detail: recompute the collapsed cut as the camera zooms. */
   adaptiveLod?: boolean;
   /**
-   * Called when the adaptive cut changes with the transitional DirectoryLodSelection —
-   * the set of OPEN directory group ids (namespaced). It updates only the selection layer
-   * of the three-layer collapse model (spec "Three-layer collapse"); the camera owns this
-   * layer alone and never writes user intent or the bootstrap.
+   * Called when the adaptive cut changes with the GroupLodSelection — the set of OPEN
+   * namespaced group ids — FOR the active grouping mode (the modeKey is the first arg, so
+   * the camera state stays per-mode). It updates only the selection layer of the
+   * three-layer collapse model (spec "Three-layer collapse"); the camera owns this layer
+   * alone and never writes user intent or the bootstrap.
    */
-  onCut?: (selection: Set<GroupId>) => void;
+  onCut?: (modeKey: string, selection: Set<GroupId>) => void;
+  /**
+   * The active grouping mode's CUT snapshot (full, over the rendered graph). Directory
+   * keeps its dedicated DirNode cut (null here); every OTHER mode supplies a snapshot so
+   * the camera runs the mode-agnostic computeGroupCut. Null disables the generic cut.
+   */
+  groupingSnapshot?: CompactGroupingSnapshot | null;
   /**
    * Signature of everything that warrants re-framing the camera (graph, level,
    * filters) but NOT the cut. When it's unchanged across a scene update, the
@@ -235,6 +244,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     minimap = true,
     adaptiveLod,
     onCut,
+    groupingSnapshot,
     fitSignature,
   } = props;
 
@@ -399,7 +409,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const dirTree = useMemo(() => buildDirTree(graph), [graph]);
   const lod = useRef<{
     adaptiveLod?: boolean;
-    onCut?: (selection: Set<GroupId>) => void;
+    onCut?: (modeKey: string, selection: Set<GroupId>) => void;
     dirTree: DirNode;
     scene: Scene;
     // The RAW collapsed cut this canvas last handed up (computeCut's bare-path frontier) —
@@ -412,6 +422,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     expanded: Set<string>;
     symbolCount: Map<string, number>;
     groupBy: GroupBy;
+    // The active mode's CUT snapshot (non-directory modes), for the mode-agnostic cut.
+    groupingSnapshot: CompactGroupingSnapshot | null;
   }>({
     adaptiveLod,
     onCut,
@@ -421,6 +433,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     expanded,
     symbolCount,
     groupBy,
+    groupingSnapshot: groupingSnapshot ?? null,
   });
   lod.current.adaptiveLod = adaptiveLod;
   lod.current.onCut = onCut;
@@ -429,6 +442,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.expanded = expanded;
   lod.current.symbolCount = symbolCount;
   lod.current.groupBy = groupBy;
+  lod.current.groupingSnapshot = groupingSnapshot ?? null;
   const lodBand = useRef(cameraBand(1));
 
   // The JSON payload Vello consumes. Built from the positioned scene.
@@ -648,18 +662,16 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     const recomputeCut = () => {
       const l = lod.current;
       if (!l.adaptiveLod || !l.onCut) return;
-      // The cut walks the DIRECTORY tree and measures boxes keyed by dir path. Under
-      // Community grouping the scene's boxes are keyed by community id (no dir match) so
-      // every dir would read as off-screen and the cut would wrongly collapse the whole
-      // view; under "none" there are no cluster boxes at all. The adaptive cut only makes
-      // sense for Directory grouping — leave the other modes' layouts alone.
-      if (l.groupBy !== "directory") return;
-      // The cut measures each directory's on-screen size from the layout's cluster
-      // boxes. The grid fallback (forced on large/dense graphs) and groupBy:"none"
-      // produce NO clusters, so every dir reads as "off-screen, height 0" and the cut
-      // would wrongly collapse the whole graph to a few aggregates (the disappearing
-      // view). With no clusters to measure, leave the cut alone.
-      if (l.scene.clusters.length === 0) return;
+      // The cut measures each group's on-screen size from the live scene's boxes (open
+      // ClusterBoxes + collapsed aggregate cards). When there are NO boxes at all — the
+      // grid fallback (forced on large/dense graphs) and groupBy:"none" emit none — every
+      // group reads as "off-screen, height 0" and the cut would wrongly collapse the whole
+      // graph (the disappearing view). With no hierarchy boxes to measure, leave the cut
+      // alone. (Generalized from the old groupBy!=="directory" + zero-cluster guards: the
+      // cut now runs in EVERY mode via boxKey, fixing the bug where changing the group mode
+      // disabled LOD.)
+      const boxes = sceneBoxes(l.scene);
+      if (boxes.size === 0) return;
       const c = cam.current;
       const band = cameraBand(c.scale);
       // Monotonic LOD: only ever REFINE (open more detail) as the user zooms IN —
@@ -670,7 +682,6 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       if (band <= lodBand.current) return;
       const prevBand = lodBand.current;
       lodBand.current = band;
-      const boxes = sceneBoxes(l.scene);
       const vp = { w: canvas.width, h: canvas.height };
       // An expanded file pulls its symbols into the layout too, so cost it as
       // 1 + symbols; collapsed/unexpanded files are a single node. Bounding the cut on
@@ -678,6 +689,29 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       const exp = l.expanded;
       const sc = l.symbolCount;
       const nodeCost = (id: string) => 1 + (exp.has(id) ? (sc.get(id) ?? 0) : 0);
+
+      // Non-directory modes: run the mode-agnostic cut over the active grouping snapshot,
+      // matching boxes by boxKey, and hand up the GroupLodSelection FOR that mode. (No
+      // telemetry trace path — that detailed per-dir trace is Directory-specific.) Skip
+      // when the raw cut is unchanged (cut-domain vs cut-domain), as the Directory path does.
+      if (l.groupBy !== "directory") {
+        const snap = l.groupingSnapshot;
+        if (!snap) return; // no snapshot (e.g. "none") → the cut is inert this mode
+        const next = computeGroupCut(
+          snap,
+          boxes,
+          c,
+          vp,
+          { openPx: LOD_OPEN_PX, maxCards: LOD_MAX_CARDS, prevCut: l.rawCut, nodeBudget: LOD_NODE_BUDGET, nodeCost },
+          graph.nodes.map((n) => n.id),
+        );
+        if (!groupCutEquals(next, l.rawCut)) {
+          l.rawCut = next;
+          l.onCut(l.groupBy, groupLodSelection(next, snap));
+        }
+        return;
+      }
+
       const cutOpts = {
         openPx: LOD_OPEN_PX,
         maxCards: LOD_MAX_CARDS,
@@ -737,7 +771,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       // rather than rebuilding it from the raw node list on every cut.
       if (!cutEquals(next, l.rawCut)) {
         l.rawCut = next;
-        l.onCut(directoryLodSelection(next, l.dirTree));
+        l.onCut("directory", directoryLodSelection(next, l.dirTree));
       }
     };
 
