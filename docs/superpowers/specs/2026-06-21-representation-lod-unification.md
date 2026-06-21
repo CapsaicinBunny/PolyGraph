@@ -1,158 +1,183 @@
-# Representation-LOD Unification — Design Spec
+# Representation-LOD Unification — Design Spec (Rev 2)
 
 > Status: **design, awaiting review** · 2026-06-21 · branch `feat/dimension-spine` (PR #77)
-> Supersedes the dual-path (C1a collapse cut + C1b representation cut) LOD with a single
-> **representation cut** as the sole level-of-detail system.
+> Rev 2 incorporates an expert implementation review. Direction (one LOD = the representation
+> cut, retire C1a) is **strongly approved**; the cut is **not yet safe to make sole / delete the
+> old path** until the correctness + scalability gates below are met. Rev 1 underestimated the
+> work; the corrected order proves coverage *before* deletion.
 
 ## Goal
 
-Make the **representation cut** the one and only LOD. It must cover **every base** the old
-camera-driven directory-collapse (`adaptiveLod` + the C1a `computeCut`/`computeGroupCut`
-algorithm) covered, **fix the residual gaps** (ungrouped "None" is unbounded; the layout
-re-runs globally on every recut → the expand-all hang/thrashing), and **retire** the old
-algorithm — without bending the new system to be backwards-compatible. The old retires; the
-new replaces; all edge cases keep working.
+Make the **representation cut** the one and only LOD — covering every base the old
+camera/directory-collapse (`adaptiveLod` + C1a `computeCut`/`computeGroupCut`) covered, fixing
+its gaps (ungrouped None unbounded; layout re-runs globally each recut; not actually
+layout-independent), and **retiring** C1a. The old retires; the new replaces; no backwards-compat
+compromises — but **only after** the gates prove the replacement is real in every mode.
 
 ### Non-goals
-- The Problems panel rewrite (separate, later) — here we only guarantee we don't break it.
-- New grouping modes or filter semantics — those are the dimension-spine work, already shipped.
-- Changing the scan/analyzer pipeline.
+Problems-panel rewrite (separate; only don't break it), new grouping/filter semantics, the scan
+pipeline.
 
-## Naming
+## Architecture (target)
 
-UI: the single top-bar **"LOD"** toggle (already renamed). Internally: the **representation
-cut** (`lib/graph/lod-representation-cut.ts`) and its **local-layout** assembly. `adaptiveLod`
-remains the master on/off boolean; the separate `representationLod` selector flag is removed
-(it is always-on now).
-
-## Architecture
-
-One budgeted **valid-antichain cut** over a per-mode **proxy hierarchy** chooses which
-groups/nodes are *committed* (rendered + laid out) vs folded into aggregate cards. Its output
-`openSelection: Set<GroupId>` flows through the **existing, unchanged** pipeline:
+One budgeted **valid-antichain cut** over a **persistent, post-filter representation hierarchy**
+selects which proxies are committed (rendered + locally laid out) vs folded. Target flow:
 
 ```
-representation cut → openSelection → compose(intent, bootstrap, selection)
-  → collapsedClusters → collapseClusters() → scene structure → layout
+persistent RepresentationRuntime (cached by material signature, post-filter)
+  → solveLodCut (finite budgets, marginal-cost priority)
+  → openSelection / committed reps
+  → GENERIC proxy materialization (active-representative per node → proxy cards + aggregated edges)
+  → scene
+  → LOCAL layouts (per-group cached, stitched; cut-diff drives incremental refine)
 ```
 
-`compose()` (`lib/graph/collapse-model.ts`, mode-agnostic three-layer ownership) and
-`collapseClusters()` (`lib/graph/collapse.ts`, absorbs files under closed groups into
-aggregate cards) are the **shared glue and stay**. The cut is computed from graph structure +
-the grouping snapshot + camera + budget — **never from the layout engine**, so it is identical
-across Smart / Stress / Force / Backbone / Grid. That is the fix for "changing layout turns LOD
-off": LOD is layout-independent.
+The cut is computed from structure + snapshot + **stable proxy geometry independent of the visual
+layout engine** + camera + budget — never from the engine name *or* from live cluster boxes that
+only some engines produce. That is what makes it genuinely layout-independent.
 
-### Current state (from the LOD core + surface maps)
-- **Already wired (keep):** `buildSceneRepresentationCut` (VelloGraphCanvas ~845–862), the
-  eviction LRU + deadband (`lib/graph/lod-eviction.ts`), intent→`forceClosed`/`forceOpen`
-  constraints, Directory snapshot (canvas-built) + Community/Package/facet snapshots
-  (`cutGrouping` prop). With `representationLod` const-true, the C1a branches are already dead.
-- **Dead code to delete:** `computeGroupCut` (`lib/graph/group-cut.ts`), `computeCut`/
-  `computeCutTraced` (`lib/graph/lod-cut.ts`), the C1a branches in `recomputeCut`
-  (VelloGraphCanvas ~875–959), and the C1a `lod/cut` telemetry.
-- **Built + unit-tested but UNWIRED (the upgrade):** `local-layout.ts` (`ProxyCacheKey`,
-  `LocalLayoutCache`), `local-refine.ts` (`HierarchicalLayout`, `refineGroup`, `worldScene`),
-  `overflow-ladder.ts` (`resolveOverflow`, the §C rungs, `global:false` invariant),
-  `global-relayout.ts` (`globalLayoutSignature` material-change gate), `representation-bounds.ts`
-  (Space-Paradox envelope caps). Confirmed: **zero production call sites.**
+What stays: `compose()` (mode-agnostic three-layer ownership). What must be **replaced, not
+reused as-is**: `collapseClusters()` (directory/community-only; see Gap 1).
 
-## Work item 1 — Wire the local layouts (the core upgrade)
+## Reality check — what the current rep-cut impl gets wrong (verified)
 
-Today every recut re-runs the **global** layout over the whole post-cut set (≤budget nodes).
-On a borderline input or during min-zoom camera churn that exceeds the 8 s worker timeout (seen
-3× in the logs) → the hang. Wire the staged C1c machinery so a recut **refines only the changed
-group**:
+These are confirmed in code and must be fixed; several **block C1a deletion**.
 
-- The scene's layout becomes a `HierarchicalLayout`: each committed group has a stable reserved
-  **box origin** + a **cached local layout** keyed by `ProxyCacheKey` (material inputs only —
-  never camera/LOD). `worldScene()` projects each group's local layout through its origin.
-- A cut change that opens/closes one group calls `refineGroup` for **only that group**; every
-  other group's world coordinates are **byte-identical** (the proven invariant). `worldScene`
-  re-stitches. No global relayout.
-- Overflow (a refined group outgrowing its reservation) escalates through `OVERFLOW_RUNGS`
-  (scale → clip-pan → borrow-slack → grow-envelope → scoped-relayout), **never** to a global
-  relayout (`global:false`, asserted). `representation-bounds` caps envelope growth (≤8×).
-- A **global** relayout fires only on a true material change — `globalLayoutSignature` diff
-  (graph / filters / grouping mode / direction / engine / density) — i.e. the things that today
-  live in `scene.signature` + `fitSignature`. A camera recut touches none of these.
+1. **`collapseClusters()` is not generic (correctness, blocker).** `lib/graph/collapse.ts:58–68`
+   absorbs nodes only by **directory prefix** or `communityOf` — there is no membership path for
+   **package / facet / synthetic-None / arbitrary representation proxies**, and community is only
+   passed when the (now-removed) `communityCollapse` toggle was on. So the "mode-agnostic" cut can
+   update LOD state for Package/facet without actually folding those nodes into cards. **Replace
+   with generic proxy materialization:** `LodCut → active-representative-per-node → proxy nodes +
+   aggregated edges → scene` (a proxy scene materializer), removing the pretence that every proxy
+   is a collapsed directory. **Do not delete C1a until this is live.**
+2. **None is already modeled — geometry/rendering is the gap.** `syntheticNoneGrouping()`
+   (`lib/graph/grouping.ts:331`, connected-components→communities, every node gets a path) already
+   exists. The blockers: Explorer returns no cut snapshot for None; the canvas early-returns when
+   `boxes.size === 0`; `canRefine()` needs a live box matching the group's `boxKey`; None draws no
+   group boxes. So the None task is: feed the **existing** synthetic hierarchy into the rep
+   builder; generate **invisible but stable proxy bounds**; materialize proxy cards **without**
+   drawing container boxes; drop the `boxes.size === 0` early-return only after those bounds exist.
+   **Keep components→communities** unless a bench proves directory→kind better (the latter makes
+   None filesystem-driven and risks huge disconnected kind buckets).
+3. **Not actually layout-independent.** The cut derives geometry from live `scene.clusters` /
+   aggregate cards; when the engine emits no cluster boxes (Grid, classic engines, None) the canvas
+   exits before computing the cut. Need an explicit **proxy layout → stable representation boxes**
+   source, with the **selected visual layout placing node geometry inside** those boxes. "Layout-
+   independent" must mean *operates with every engine*, not merely *doesn't read the engine name*.
+4. **Hierarchy rebuilt on every recut (scalability).** `buildSceneRepresentationCut()` rebuilds the
+   whole hierarchy (arrays, subtree-cost rollups, DFS intervals, group-id map) + the canvas
+   rebuilds the node-id array, **every commit** — O(N) over millions of nodes. Local-layout caching
+   does not fix this. **Cache a persistent `RepresentationRuntime`** (hierarchy, nodeIds,
+   `repOfGroupId`, eviction, lodRuntime) keyed by a **material signature** (filtered-graph identity,
+   grouping mode/version, node-cost inputs, builder version). Camera movement updates bounds /
+   priorities / cut — never reconstructs. **Prerequisite before local-layout wiring.**
+5. **Solver uses the wrong marginal cost.** `refinePriority()` (`lib/graph/lod-cut-solver.ts:417`)
+   ranks by the parent's *own* cost, not the child-expansion delta (`Σ child − parent`), so a
+   2-child and a 2000-child proxy look similarly cheap. And `refineUnderBudget()` **breaks** the
+   loop when the top candidate doesn't fit (`:321,:324`), leaving budget unused. **Fix:** rank by
+   real marginal delta normalized by remaining budget; on non-fit `blocked.add(best); continue;`
+   instead of stopping. (Fix before any parity claim vs C1a.)
+6. **Hard budget ≈ the whole graph.** `lib/graph/lod-representation-cut.ts:186–190` sets
+   `hardNodes = max(nodeBudget, totalNodes)`, `maxLayoutWork = max(nodeBudget, totalNodes)`,
+   `hardEdges/hardLabels/maxGpuBytes = Infinity`. Forced opens can expand to the full graph (≈1M on
+   Linux). **Define one finite production budget model** (see below) — not merely consolidate
+   constants.
+7. **Cut is not clearly post-filter.** Snapshots + `nodeIds` are built from the full `graph.nodes`;
+   filtering happens later in `buildSceneStructure`. Hidden nodes then contribute to proxy subtree
+   cost / card-budget pressure, and proxies can exist only because of filtered-out nodes. Build the
+   cached runtime from a **post-filter projection / visible-node ordinal mask**.
+8. **Eviction LRU ignores panning.** `recomputeCut()` is scheduled from the **wheel** handler only;
+   pan (pointer-move / pointer-up) schedules nothing, and the camera-band guard rejects recompute
+   unless the zoom band increases. Panning an open region off-screen never updates retention /
+   eviction. **Add a debounced pan-end visibility recut** (updates visibility + LRU **without**
+   forcing deeper refinement). Unify the camera policy: *zoom → band/deadband refine*; *pan →
+   visibility/LRU only*.
 
-Result: the layout engine processes only the cut's nodes, incrementally; the expand-all hang and
-min-zoom thrashing are gone at the root, positions stay stable, and the 8 s timeout is never
-approached.
+## Finite budget model (replaces Gap 6)
 
-## Work item 2 — None gets a synthetic hierarchy
+One production budget; exact numbers pinned by the P4 bench, but finite — `Infinity`/`totalNodes`
+are not limits:
 
-"None" grouping has no containers, so the cut is currently inert (unbounded). Build a lightweight
-**synthetic proxy hierarchy** for None — `directory → kind` — emitted as a normal
-`CompactGroupingSnapshot` via the existing `buildGroupingSnapshot` contract, but **rendered
-flat** (the synthetic groups are cut proxies, not visible cards). Over budget, low-importance /
-off-screen nodes fold into `+N` overflow proxies through the same machinery. None is now bounded
-identically to grouped modes.
+```ts
+const LOD_BUDGET = {
+  targetNodes: 800,  targetEdges: 8_000,  targetLabels: 500,
+  hardNodes: 2_000,  hardEdges: 25_000,   hardLabels: 2_000,
+  maxLayoutWork: 2_500, maxGpuBytes: 128 * 1024 * 1024,
+};
+```
+Soft targets steer; finite hard ceilings cap forced opens; when intent can't be honored within the
+hard ceiling, surface **"Detail limited"** rather than silently expanding.
 
-## Work item 3 — Retire C1a + unify tuning
+## Local-layout orchestration (P3 — more than `refineGroup()`)
 
-- Delete the dead C1a functions/branches/telemetry listed above.
-- Remove the `representationLod` selector; `adaptiveLod` is the sole master flag.
-- Unify the duplicated budgets into the rep-cut options (single source in
-  `lod-representation-cut.ts`): `LOD_NODE_BUDGET` (Explorer + VelloGraphCanvas — currently two
-  copies at 1500), `LOD_MAX_CARDS` (800), `AUTO_COLLAPSE_MAX_CARDS` (2000). Document which is the
-  initial-frame budget vs the steady-state hard ceiling.
-- Keep `compose()` and `collapseClusters()` (still the glue between cut and render).
+A committed cut may open AND close several proxies. Integration needs a **cut diff**:
+
+```ts
+interface CutDiff { refined: number[]; coarsened: number[]; unchanged: number[]; }
+```
+Then: compute local-layout cache keys → reuse hits → start cache-miss **worker** jobs → **reject
+results from stale cut generations** → commit the scene atomically *or* support progressive
+proxy→detail replacement → preserve all unaffected group origins (byte-identical). Plus: cache
+memory limit / LRU, cancellation of obsolete requests, **generation tokens** in worker responses,
+and a clear cut-commit-vs-layout-ready rule. The overflow ladder stays scoped (`global:false`); a
+cut change **never** launches a full-repository layout.
+
+**Perf objective** (not "every recut within a frame"):
+`cut solve < 8–16 ms` · `cut diff + scene stitch < 16 ms` · `cached refinement < 16 ms` ·
+`uncached layout = async, cancellable, proxy stays visible meanwhile`.
 
 ## Integration contracts (must honor)
 
-| System | Contract |
-|---|---|
-| **Filters** | Cut operates on the **post-filter** scene. **Reuse the filtered community detection** (`communityOf` reported by the canvas) — re-running over the full graph relabels communities and breaks Community-mode LOD. |
-| **Card animation + tracing** | Already robust: connection paths run on **code** edges (containment pre-filtered) and `pruneAnchors()` cleans endpoints when a region folds. Keep the **hidden-node→proxy** map (`activeProxyBoxKeyOfNode`) so selecting/tracing a folded node lands on its aggregate card. |
-| **Layout** | The cut **must emit a box per committed group** or Smart degrades to Grid. Local layouts seed from the prior layout to preserve the mental map. |
-| **Camera / fit** | `fitSignature` excludes the cut → recuts never re-frame. **Focus mode bypasses the cut** (focused nodes + their parent files always shown). |
-| **Problems panel** | No change. It sets `focusedIds`; focus already bypasses the cut. (Its own rewrite comes later.) |
+Filters: cut on the **post-filter** scene; **reuse filtered community detection** (re-running
+relabels communities → breaks Community LOD). Animation/tracing: already robust (paths on code
+edges, `pruneAnchors` on fold); keep the **hidden-node→proxy** map (`activeProxyBoxKeyOfNode`).
+Layout: **box per committed group** or Smart→Grid; seed from prior layout. Camera/fit: excludes
+the cut (recuts never re-frame); **focus mode bypasses the cut**. Problems panel: **no change**
+(sets `focusedIds`; focus already bypasses).
 
-## Edge cases (preserved, verified in the map)
+## Edge cases (preserved)
 
-Huge-repo scan seeding (bootstrap = coarsest antichain), Reveal-detail (clears intent, re-seeds),
-the `nodeCost = 1 + symbols` budget, camera-band recut + debounce + monotonic zoom-in, offscreen
-auto-open eviction, the Grid/Backbone fallback (should not fire on a budgeted cut; keep the
-guard), the 8 s worker timeout, mode-switch state isolation (`intent/bootstrap/selectionByMode`),
-stale-group-id resilience after filter/mode change.
+Huge-repo scan seeding, Reveal-detail, `nodeCost = 1 + symbols`, camera-band recut/debounce/
+monotonic zoom-in, offscreen eviction, Grid/Backbone fallback (keep guard), 8 s worker timeout,
+per-mode state isolation, stale-group-id resilience.
 
-## Test strategy
+## Revised implementation order (P0 → P5)
 
-- **Green bar:** the full suite (currently 1056) stays green at every task boundary;
-  `bun test` + `bun run typecheck` + `bun run lint`.
-- **New unit tests:** None synthetic-hierarchy bounding; local-refine wiring (open one group →
-  every sibling byte-identical in `worldScene`); the box-per-committed-group invariant; the
-  global-relayout gate (camera recut → no global relayout).
-- **Parity/▸-better bench:** representation cut vs the (about-to-be-deleted) C1a on real repos —
-  the new cut must produce an equal-or-strictly-better LOD scene; capture in `bench/`.
-- **Integration:** filter change, zoom churn, expand-all, mode switch, workspace restore — no cut
-  corruption, no layout timeout, stable camera.
+- **P0 — Correctness + persistent runtime** *(before None or local layouts).* Cache
+  `RepresentationRuntime` by material signature; cache node ordinals + group-id maps; make the
+  hierarchy **post-filter**; fix the solver's marginal **delta-cost** + **continue-after-oversized**;
+  define **finite hard budgets**; add **pan-end visibility recuts**.
+- **P1 — Generic proxy materialization.** Replace directory/community-specific absorption with
+  active-representative-per-node → proxy nodes + aggregated edges → scene. *This is what makes
+  Package, facet, Community, and None genuinely work.*
+- **P2 — Synthetic None + layout-independent proxy bounds.** Wire the existing
+  components→communities hierarchy; invisible container geometry; stable proxy bounds independent of
+  the visual engine; remove the `boxes.size === 0` escape; bench vs directory→kind before changing.
+- **P3 — Local-layout orchestration.** Cached per-group layouts; cut diffing; batch refine/coarsen;
+  async generation cancellation; overflow ladder (scoped only); cache eviction.
+- **P4 — Budget consolidation + parity bench.** Old vs new on: visible info at equal node budget;
+  edge count/aggregation; cut-solve / scene-build / layout time; # camera-induced global moves;
+  intent correctness; **all grouping modes**; **filtered graphs**; **panning as well as zooming**.
+- **P5 — Delete C1a.** Remove `lod-cut.ts`, `group-cut.ts`, `lod-selection.ts`, the C1a telemetry +
+  canvas branches, the duplicated budget constants, and the `representationLod` prop entirely.
 
-## Risks / open questions
+P1 plus P2 test scaffolding can parallelize; P3 depends on P0–P2; P4 then P5 are sequential.
 
-- **Local-layout perf at scale.** The per-group layouts must stitch fast enough that a recut is
-  < a frame. Mitigation: cache by `ProxyCacheKey`; only the changed group re-lays-out. Validate
-  on the 1.39M-node Linux scan.
-- **Budget reconciliation.** Two `LOD_NODE_BUDGET=1500` copies + `AUTO_COLLAPSE_MAX_CARDS=2000` +
-  `LOD_MAX_CARDS=800` must collapse into one coherent budget model without regressing the
-  expand-all fix. Pin exact numbers during build, behind the bench.
-- **`collapseClusters` longevity.** Once local-refine is wired, file-absorption could be replaced
-  by proxy selection. Out of scope here; keep `collapseClusters` as the glue for now.
+## Merge gate (do not delete C1a / merge until ALL hold)
 
-## Phasing (for the implementation plan / build swarm)
+1. Representation hierarchy **persistent** across camera recuts. 2. Proxy materialization works for
+**Directory, Community, Package, facet, None**. 3. None + non-Smart layouts have usable proxy
+bounds. 4. Cut costs use the **post-filter** graph. 5. Solver uses **actual marginal** refinement
+cost. 6. A too-large candidate **does not block** smaller ones. 7. **Finite** hard budgets. 8.
+**Pan-end** updates retention/eviction. 9. Local-layout cache misses are **async + generation-safe**.
+10. A cut change **never** launches a full repository layout. 11. **Parity benchmarks pass** on real
+repos. 12. **Real CI runs green** — the PR currently shows a completed workflow with **no jobs**
+(test totals live only in commit/PR text); a 75-commit architectural PR needs an actual CI job
+(GitHub Actions running `bun test` + `typecheck` + `lint`) before merge.
 
-Dependency-staged, each phase independently green-gated, built by the 3-role pipeline
-(builder → inspector/fixer → regression-guard), max parallel where files don't collide:
+## Risks
 
-1. **P1 — None synthetic hierarchy** (pure; `lib/graph`, isolated). Bounds None.
-2. **P2 — Local-layout wiring** (the big one): `HierarchicalLayout`/`worldScene`/`refineGroup`
-   into `useScene`/scene path; overflow ladder + `representation-bounds` live; `global-relayout`
-   gate replaces the ad-hoc re-layout trigger. Sequential-ish (touches the scene path).
-3. **P3 — Retire C1a + unify tuning** (deletes dead code, single budget source). After P1/P2 prove
-   the new cut covers their bases.
-4. **P4 — Parity bench + integration tests + desktop calibration** (`canRefine` openPx, eviction
-   budget on real repos).
-
-P1 and the test scaffolding for P2 can run in parallel; P3 depends on P1+P2; P4 last.
+Local-layout perf at 1.39M-node scale (validate on Linux); budget reconciliation regressing the
+expand-all fix (pin behind the bench); `collapseClusters` removal sequencing (only after generic
+materialization is live).
