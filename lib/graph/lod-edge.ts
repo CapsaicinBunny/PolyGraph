@@ -87,9 +87,20 @@ const SRC_SHIFT = KIND_BITS + DST_BITS; // 36
 const KIND_MASK = (1n << KIND_BITS) - 1n; // 0xff
 const DST_MASK = (1n << DST_BITS) - 1n; // 0x0fffffff
 
-/** Pack (sourceRep, targetRep, kind) into the canonical bigint aggregation key. */
+/**
+ * Pack (sourceRep, targetRep, kind) into the canonical bigint aggregation key. Each field
+ * is MASKED to its bit width so an out-of-contract input (kind > 255, a rep ≥ 2^28) cannot
+ * overflow into a neighbouring field and silently coalesce two distinct edges under one
+ * key. In-contract inputs (kind 0..255, reps < repCount) are unaffected — the mask is a
+ * no-op for them; it only hardens the key against a future caller that breaks the
+ * precondition. (source occupies the top 28 bits and is bounded by Number itself.)
+ */
 export function packEdgeKey(source: number, target: number, kind: number): bigint {
-  return (BigInt(source) << SRC_SHIFT) | (BigInt(target) << DST_SHIFT) | BigInt(kind);
+  return (
+    ((BigInt(source) & DST_MASK) << SRC_SHIFT) |
+    ((BigInt(target) & DST_MASK) << DST_SHIFT) |
+    (BigInt(kind) & KIND_MASK)
+  );
 }
 
 /** Alias spelled exactly as the spec's formula, for call sites quoting it. */
@@ -213,10 +224,14 @@ function degradeEdges(edges: LodEdge[], budget: EdgeBudget): { edges: LodEdge[];
   if (bundled.length <= budget.targetEdges) return { edges: bundled, stage: 1 };
 
   // Stage 2: keep the heaviest bundled edges up to the hard ceiling (density summary —
-  // the rest are folded into the surviving edges' counts so totals are conserved).
+  // the rest are folded into the surviving edges' counts so totals are conserved). Keep at
+  // least ONE sink edge even at a degenerate hardEdges < 1: the cross-edge total is still
+  // representable as a single density edge, so conservation (Σ count) holds for ALL budgets
+  // rather than silently dropping every count at hardEdges = 0.
   const sorted = [...bundled].sort((a, b) => b.count - a.count);
-  const keep = sorted.slice(0, Math.max(0, budget.hardEdges));
-  const drop = sorted.slice(Math.max(0, budget.hardEdges));
+  const keepCount = Math.max(1, Math.floor(budget.hardEdges));
+  const keep = sorted.slice(0, keepCount);
+  const drop = sorted.slice(keepCount);
   if (drop.length > 0 && keep.length > 0) {
     // Fold dropped counts into the lightest surviving edge so Σ count is conserved.
     const sink = keep[keep.length - 1];
