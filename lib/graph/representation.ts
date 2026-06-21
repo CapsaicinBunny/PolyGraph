@@ -20,6 +20,14 @@
 
 import type { CompactGroupingSnapshot } from "./grouping-snapshot";
 import { NO_GROUP } from "./grouping-snapshot";
+import {
+  balancedChunks,
+  type Clock,
+  type SubdivisionEdge,
+  type SubdivisionItem,
+  SUBDIVISION_VERSION,
+  subdivideOnce,
+} from "./representation-subdivision";
 
 /**
  * The explanatory object model of a single representation level (Appendix A: "The object
@@ -173,8 +181,31 @@ export interface RepresentationCosts {
    * are appended alongside the bootstrap buckets at `[groupCount + nodeCount, …)`, so group-rep
    * and leaf-rep ids stay byte-identical to a build without this option. Omitted/false → the
    * prior behavior (every leaf parents DIRECTLY under its group rep, unbounded fan-out).
+   *
+   * The subdivision of an oversized group's children follows the STRATEGY SEQUENCE (design B1
+   * sources 1-4 + impl note (c)): community partition → heavy-edge coarsening → directory split →
+   * balanced chunks, the smarter strategies driven by {@link inGroupEdges} / {@link pathPrefixOf}
+   * when supplied (omit them and every parent falls through to the deterministic balanced-chunk
+   * fallback — byte-identical to the prior tiering). Has no effect unless `intermediateTiers` is on.
    */
   intermediateTiers?: boolean;
+  /**
+   * POST-FILTER edges among the underlying nodes, by node ORDINAL (design B1 sources 1-2). When
+   * supplied with {@link intermediateTiers}, the builder lifts each edge to the two DIRECT CHILDREN
+   * of the lowest common oversized parent it crosses, so the community / heavy-edge strategies can
+   * subdivide a well-clustered group along its real dependency structure. An edge whose endpoints
+   * are hidden (per {@link visibleNode}) or share a direct child is ignored. Omitted → no edges,
+   * so community/heavy-edge are skipped and tiering uses directory / balanced chunks.
+   */
+  inGroupEdges?: readonly { source: number; target: number; weight?: number }[];
+  /**
+   * Directory path prefix of a node ordinal (design B1 source 3). When supplied with
+   * {@link intermediateTiers}, a leaf child carries this path so the directory strategy can split
+   * an oversized group by subdirectory where community/heavy-edge were skipped or rejected. A
+   * child-group rep's path is left "" (its members already share a semantic group). Omitted → no
+   * paths, so the directory strategy is skipped.
+   */
+  pathPrefixOf?: (ordinal: number) => string;
 }
 
 /**
@@ -206,8 +237,13 @@ export const MAX_PARTITION_WORK_MS = 50; // soft wall-clock budget for one parti
  * re-exported below), so a builder change invalidates every cached `RepresentationRuntime` and
  * the downstream proxy/local-layout caches keyed off the same version. Bump on ANY change to
  * the hierarchy shape — including the tiering constants above.
+ *
+ * The intermediate-tier SUBDIVISION strategy + thresholds ({@link SUBDIVISION_VERSION}) are
+ * concatenated in (impl note (c): "Include the partition algorithm + thresholds in
+ * `representationBuilderVersion` so proxy caches invalidate correctly"), so a change to the
+ * strategy sequence or any balance threshold likewise invalidates the cached runtime.
  */
-export const representationBuilderVersion = "rb3";
+export const representationBuilderVersion = `rb4|mf=${MAX_FANOUT}|${SUBDIVISION_VERSION}`;
 
 /**
  * The full hierarchy: the columnar runtime plus the convenience handles a consumer
@@ -362,7 +398,29 @@ export function buildRepresentationHierarchy(
       if (list.length <= MAX_FANOUT) groupDirectChildren.delete(g);
     }
   }
-  const inter = planIntermediateTiers(groupDirectChildren, baseRepCount);
+
+  // SUBDIVISION INPUTS (design B1 sources 1-3). When in-group edges or path prefixes are supplied
+  // the better strategies (community / heavy-edge / directory) can subdivide an oversized group
+  // along its real structure instead of arbitrary chunks. We lift node-ordinal edges to the two
+  // DIRECT CHILDREN of their lowest common oversized parent, count visible leaves per group for the
+  // balance check, and resolve a child's path. Built ONLY when tiering is on and there is at least
+  // one oversized parent — otherwise the planner sees no inputs and every parent chunk-tiers (the
+  // prior byte-identical behavior).
+  const subdivisionInputs =
+    tiered && groupDirectChildren.size > 0
+      ? buildSubdivisionInputs(
+          snapshot,
+          groupDirectChildren,
+          groupCount,
+          nodeCount,
+          leafRepOf,
+          isVisible,
+          costs.inGroupEdges,
+          costs.pathPrefixOf,
+        )
+      : undefined;
+
+  const inter = planIntermediateTiers(groupDirectChildren, baseRepCount, subdivisionInputs);
 
   // Plan the synthetic super-root / root-bucket tier over the natural roots (deterministic,
   // fan-out-bounded). `plan.count === 0` → no normalization needed (off, or ≤0 natural roots).
@@ -659,34 +717,198 @@ function planRootBuckets(
 }
 
 /**
+ * Build the per-oversized-parent {@link SubdivisionInputs} (design B1 sources 1-3) from the
+ * snapshot + the supplied in-group edges and path prefixes. The hard part is lifting a
+ * node-ordinal edge to the two DIRECT CHILDREN of the parent it should subdivide:
+ *
+ *  - For an edge (u, v), the relevant parent is the LOWEST COMMON ANCESTOR group of u's and v's
+ *    direct groups — the group whose induced subgraph the edge lives inside. If that LCA group is
+ *    OVERSIZED (a key in `oversized`), the edge connects u's and v's direct children UNDER that
+ *    LCA. (If the LCA isn't oversized, no oversized parent is being subdivided along this edge.)
+ *  - A node's DIRECT CHILD under a group `P` is: its leaf rep when its direct group IS `P`, else
+ *    the ancestor group of its direct group whose parent is `P` (a child-group rep of `P`).
+ *
+ * `leafWeightOfChild` returns a child's visible-leaf count (1 for a leaf rep; the rolled-up visible
+ * count for a child-group rep) and `pathPrefixOfChild` resolves a leaf child's path (child-group
+ * reps get "" — their members already share a semantic group). Group depths come from the snapshot.
+ */
+function buildSubdivisionInputs(
+  snapshot: CompactGroupingSnapshot,
+  oversized: ReadonlyMap<number, readonly number[]>,
+  groupCount: number,
+  nodeCount: number,
+  leafRepOf: (ordinal: number) => number,
+  isVisible: (ordinal: number) => boolean,
+  inGroupEdges: readonly { source: number; target: number; weight?: number }[] | undefined,
+  pathPrefixOf: ((ordinal: number) => string) | undefined,
+): SubdivisionInputs {
+  const { parentByGroup, depthByGroup, directGroupByNode } = snapshot;
+
+  // Visible-leaf count per group, rolled up the group parent chain (used for the balance check so
+  // a child-group rep weighs as much as its membership, not as one item). Leaf reps weigh 1.
+  const visibleLeavesByGroup = new Uint32Array(groupCount);
+  for (let i = 0; i < nodeCount; i++) {
+    if (!isVisible(i)) continue;
+    let g = directGroupByNode[i];
+    if (g === NO_GROUP || g >= groupCount) continue;
+    let guard = groupCount + 1;
+    while (g !== -1 && guard-- > 0) {
+      visibleLeavesByGroup[g]++;
+      g = parentByGroup[g];
+    }
+  }
+
+  // node ordinal → its DIRECT CHILD rep under an oversized parent group `P`. Walk up from the
+  // node's direct group: the leaf rep if the direct group is P; else the ancestor group whose
+  // parent is P; else -1 (P is not an ancestor of this node). O(depth), bounded by the group tree.
+  const directChildUnder = (ordinal: number, parentGroup: number): number => {
+    const g = directGroupByNode[ordinal];
+    if (g === NO_GROUP || g >= groupCount) return -1;
+    if (g === parentGroup) return leafRepOf(ordinal); // direct leaf child of P
+    let cur = g;
+    let guard = groupCount + 1;
+    while (cur !== -1 && guard-- > 0) {
+      if (parentByGroup[cur] === parentGroup) return cur; // child-group rep of P
+      cur = parentByGroup[cur];
+    }
+    return -1; // P is not an ancestor
+  };
+
+  // LCA of two groups via depth alignment then lock-step ascent. Returns -1 if they share no
+  // ancestor (different roots). O(depth).
+  const lcaGroup = (a: number, b: number): number => {
+    let x = a;
+    let y = b;
+    let gx = groupCount + 1;
+    while (x !== -1 && y !== -1 && x !== y && gx-- > 0) {
+      if (depthByGroup[x] > depthByGroup[y]) x = parentByGroup[x];
+      else if (depthByGroup[y] > depthByGroup[x]) y = parentByGroup[y];
+      else {
+        x = parentByGroup[x];
+        y = parentByGroup[y];
+      }
+    }
+    return x === y ? x : -1;
+  };
+
+  // Aggregate edges per oversized parent, keyed by an unordered child-rep pair so parallel edges
+  // and reciprocal directions fold into one weighted entry. Item indices are assigned by
+  // planIntermediateTiers from the children order; we hand it child REP ids and let it translate.
+  const edgesByParent = new Map<number, SubdivisionEdge[]>();
+  if (inGroupEdges) {
+    // child rep id → its item index within a parent's children list (rebuilt per parent below).
+    const indexInParent = new Map<number, Map<number, number>>();
+    for (const [parent, children] of oversized) {
+      const m = new Map<number, number>();
+      for (let i = 0; i < children.length; i++) m.set(children[i], i);
+      indexInParent.set(parent, m);
+    }
+    // Aggregated weight per (parent, minChild, maxChild).
+    const weightKey = new Map<number, Map<string, number>>();
+    for (const e of inGroupEdges) {
+      const u = e.source;
+      const v = e.target;
+      if (u === v) continue;
+      if (u < 0 || u >= nodeCount || v < 0 || v >= nodeCount) continue;
+      if (!isVisible(u) || !isVisible(v)) continue;
+      const gu = directGroupByNode[u];
+      const gv = directGroupByNode[v];
+      if (gu === NO_GROUP || gu >= groupCount || gv === NO_GROUP || gv >= groupCount) continue;
+      const lca = lcaGroup(gu, gv);
+      if (lca === -1 || !oversized.has(lca)) continue; // not subdividing an oversized parent
+      const cu = directChildUnder(u, lca);
+      const cv = directChildUnder(v, lca);
+      if (cu === -1 || cv === -1 || cu === cv) continue; // same direct child — internal, not a cut
+      const idxMap = indexInParent.get(lca)!;
+      const iu = idxMap.get(cu);
+      const iv = idxMap.get(cv);
+      if (iu === undefined || iv === undefined) continue;
+      const a = Math.min(iu, iv);
+      const b = Math.max(iu, iv);
+      let pm = weightKey.get(lca);
+      if (pm === undefined) weightKey.set(lca, (pm = new Map()));
+      const k = `${a}|${b}`;
+      pm.set(k, (pm.get(k) ?? 0) + (e.weight ?? 1));
+    }
+    for (const [parent, pm] of weightKey) {
+      const list: SubdivisionEdge[] = [];
+      for (const [k, w] of pm) {
+        const [a, b] = k.split("|");
+        list.push({ a: Number(a), b: Number(b), weight: w });
+      }
+      edgesByParent.set(parent, list);
+    }
+  }
+
+  // leaf weight: a leaf rep weighs 1; a child-group rep weighs its visible-leaf rollup.
+  const leafWeightOfChild = (childRep: number): number => {
+    if (childRep >= groupCount) return 1; // leaf rep (id ≥ groupCount)
+    return visibleLeavesByGroup[childRep] || 1; // child-group rep
+  };
+  // path: a leaf rep's node path (when a provider exists); a child-group rep has no path.
+  const leafOrdinalOf = (childRep: number) => childRep - groupCount; // valid only when ≥ groupCount
+  const pathPrefixOfChild = (childRep: number): string => {
+    if (childRep < groupCount) return ""; // child-group rep — share a semantic group already
+    if (!pathPrefixOf) return "";
+    return pathPrefixOf(leafOrdinalOf(childRep)) ?? "";
+  };
+
+  return { edgesByParent, leafWeightOfChild, pathPrefixOfChild };
+}
+
+/**
+ * Per-oversized-parent subdivision inputs (design B1 sources 1-3). Optional — when omitted the
+ * builder feeds {@link planIntermediateTiers} nothing, and every parent falls through to the
+ * deterministic balanced-chunk fallback (source 4), exactly the prior behavior.
+ *
+ * `edgesByParent` maps an oversized parent rep id to the aggregated edges BETWEEN its direct
+ * children (endpoints are ITEM INDICES into that parent's child list — the builder has already
+ * lifted each underlying node edge to the two children it crosses). `leafWeightOfChild` is a child
+ * rep id's underlying visible-leaf count (1 for a leaf rep; its subtree rollup for a child-group
+ * rep), used for the balance check. `pathPrefixOfChild` is a child's directory path (or "").
+ */
+interface SubdivisionInputs {
+  edgesByParent: ReadonlyMap<number, readonly SubdivisionEdge[]>;
+  leafWeightOfChild: (childRep: number) => number;
+  pathPrefixOfChild: (childRep: number) => string;
+}
+
+/**
  * Plan a bounded tree of render-only INTERMEDIATE proxy reps for every oversized parent
  * (design B1 "Nanite-style render-only intermediate proxies" + invariants (a)-(d) + impl
  * note (c)). A parent is OVERSIZED when it would directly parent more than {@link MAX_FANOUT}
- * children, or stand in for more than {@link MAX_LEAVES_PER_PROXY} leaves. Each oversized
- * parent's direct children are partitioned by the DETERMINISTIC BALANCED-CHUNK strategy
- * (design B1 source 4): contiguous chunks of ≤{@link MAX_FANOUT} over the children IN THE
- * GIVEN ORDER (the canonical node order for a group's leaves), each chunk adopted by one new
- * synthetic intermediate proxy, repeated bottom-up until the top level is ≤{@link MAX_FANOUT}
- * — which the original parent then adopts directly. The balanced-chunk fallback is always
- * available and GUARANTEES the invariants: every rep ends with ≤{@link MAX_FANOUT} children
- * (b) and a one-level refine of the parent yields its bounded intermediate children, never its
- * whole leaf set (d). With chunk size {@link MAX_FANOUT} ≤ {@link MAX_LEAVES_PER_PROXY}, a
- * bottom-tier proxy stands in for ≤{@link MAX_FANOUT} leaves, so the leaf-per-proxy bound holds.
+ * children. Each oversized parent's direct children are partitioned by the STRATEGY SEQUENCE —
+ * recursive community partition (source 1) → heavy-edge coarsening (source 2) → directory
+ * subdivision (source 3) → deterministic balanced chunks (source 4) — via
+ * {@link subdivideOnce}, which validates balance + fan-out after each strategy and REJECTS a
+ * "one huge + several tiny" split, falling through to the next. The balanced-chunk fallback is
+ * always available and GUARANTEES the invariants. WITHOUT {@link SubdivisionInputs} (no edges /
+ * paths) every parent reaches the chunk fallback, so the partition is byte-identical to the prior
+ * pure balanced-chunk tiering.
+ *
+ * Each chosen partition becomes ONE tier of proxies (one proxy per bucket); a bucket that is
+ * itself > {@link MAX_FANOUT} children is recursively subdivided, and a partition wider than
+ * {@link MAX_FANOUT} buckets is coarsened by a further (chunk) tier so the original parent ends
+ * with ≤{@link MAX_FANOUT} children too — invariant (b) applies to the semantic group, not only
+ * the intermediate reps. {@link MAX_PARTITION_DEPTH} caps recursion (a safety bound; on hit the
+ * parent adopts a wider-than-MAX_FANOUT level — a bounded-depth/over-fan trade). A per-parent
+ * wall-clock {@link MAX_PARTITION_WORK_MS} budget bails the smart strategies to chunks so
+ * subdivision can never itself become an unbounded per-recut cost (design Risks).
  *
  * The intermediate reps are appended at `[base, base + count)`; like the bootstrap buckets they
  * carry NO group and a single-card render cost (stamped by the caller). `parentByChild` maps a
- * direct child rep id (a leaf, in the P0.5 group case) to the bottom intermediate proxy that now
- * adopts it; `parentOf[k]` maps intermediate index k to its parent — another intermediate rep,
- * or the ORIGINAL parent rep id (`< base`) for the top tier. `count === 0` when no parent is
- * oversized (every parent already ≤{@link MAX_FANOUT} children — the small-graph common case).
- *
- * {@link MAX_PARTITION_DEPTH} caps the tiering (a safety bound; fan-out 32 × depth 12 spans
- * ~1.15e18 leaves). If hit, the original parent adopts the remaining (wider-than-MAX_FANOUT)
- * level directly — a bounded-depth/over-fan trade, mirroring {@link planRootBuckets}.
+ * direct child rep id to the bottom intermediate proxy that now adopts it; `parentOf[k]` maps
+ * intermediate index k to its parent — another intermediate rep, or the ORIGINAL parent rep id
+ * (`< base`) for the top tier. `count === 0` when no parent is oversized.
  */
 function planIntermediateTiers(
   childrenByParent: ReadonlyMap<number, readonly number[]>,
   base: number,
+  inputs?: SubdivisionInputs,
+  clock: Clock = () =>
+    typeof performance !== "undefined" && typeof performance.now === "function"
+      ? performance.now()
+      : Date.now(),
 ): {
   count: number;
   /** synthetic index k → parent rep id (another intermediate rep, or the original parent < base). */
@@ -694,50 +916,90 @@ function planIntermediateTiers(
   /** original direct child rep id → the intermediate rep id that now adopts it. */
   parentByChild: Map<number, number>;
 } {
-  // Accumulate synthetic reps. `parentOf` is filled directly as ids are assigned (each new
-  // proxy's parent is known by the time the level above it is built); the top tier's parent is
-  // the original oversized parent rep, stamped when that parent adopts the final level.
+  // Accumulate synthetic reps. `parentOf` is filled as ids are assigned (a proxy's parent is
+  // known by the time the level above it is built); the top tier's parent is the original
+  // oversized parent rep, stamped when the parent adopts the final level.
   let count = 0;
   const parentOfList: number[] = [];
   const newSynthetic = (parent: number): number => {
     const id = base + count++;
-    parentOfList.push(parent); // re-stamped by the tier above; the top tier keeps `parent`
+    parentOfList.push(parent);
     return id;
+  };
+  const setParent = (proxy: number, parent: number) => {
+    parentOfList[proxy - base] = parent;
   };
 
   const parentByChild = new Map<number, number>();
-  for (const [parent, directChildren] of childrenByParent) {
-    if (directChildren.length <= MAX_FANOUT) continue; // already bounded — no tier needed
+  const leafWeightOf = inputs?.leafWeightOfChild ?? (() => 1);
+  const pathPrefixOf = inputs?.pathPrefixOfChild ?? (() => "");
 
-    // Bottom tier: chunk the direct children into ≤MAX_FANOUT contiguous buckets (canonical
-    // order preserved). Each child is re-parented onto its chunk's new intermediate proxy. The
-    // proxy's own parent is provisionally `parent` (corrected below if more tiers are added).
-    let level: number[] = [];
-    for (let i = 0; i < directChildren.length; i += MAX_FANOUT) {
+  /**
+   * Subdivide one set of children under `parent`, recursing on oversized buckets. Returns the
+   * proxies created for this tier (one per bucket) so the caller can wire them as `parent`'s new
+   * children — re-tiering them if there are more than {@link MAX_FANOUT}. `edges` are the
+   * aggregated edges between THESE children (item indices are assigned below); `withEdges` is
+   * false on recursion into a single bucket where the edge restriction is not recomputed (the
+   * deeper tier falls to a path/chunk split, which never needs cross-bucket edges).
+   */
+  const tier = (
+    parent: number,
+    children: readonly number[],
+    edges: readonly SubdivisionEdge[],
+    depth: number,
+    deadline: number,
+  ): number[] => {
+    // Item view of these children (index → child rep id) for the pure partitioner.
+    const items: SubdivisionItem[] = children.map((rep) => ({
+      repId: rep,
+      leafWeight: leafWeightOf(rep),
+      pathPrefix: pathPrefixOf(rep),
+    }));
+    // Depth cap → stop subdividing; chunk this level so the parent's fan-out is at least bounded
+    // by ceil(n/F) per chunk rather than recursing without limit (mirrors planRootBuckets).
+    const useDeadline = depth < MAX_PARTITION_DEPTH ? deadline : 0;
+    const { buckets } = subdivideOnce(items, edges, MAX_FANOUT, useDeadline, clock);
+
+    // One proxy per bucket; a bucket still wider than MAX_FANOUT is recursively subdivided (no
+    // cross-child edges are recomputed for the sub-bucket — it falls to path/chunk, which the
+    // empty edge list selects deterministically).
+    const proxies: number[] = [];
+    for (const bucket of buckets) {
       const proxy = newSynthetic(parent);
-      for (let j = i; j < Math.min(i + MAX_FANOUT, directChildren.length); j++) {
-        parentByChild.set(directChildren[j], proxy);
+      const bucketChildren = bucket.map((idx) => children[idx]);
+      if (bucketChildren.length <= MAX_FANOUT || depth + 1 >= MAX_PARTITION_DEPTH) {
+        for (const child of bucketChildren) parentByChild.set(child, proxy);
+      } else {
+        const inner = tier(proxy, bucketChildren, [], depth + 1, deadline);
+        for (const ip of inner) setParent(ip, proxy);
       }
-      level.push(proxy);
+      proxies.push(proxy);
     }
-    // Coarsen further while the tier itself exceeds MAX_FANOUT (the original parent must end
-    // with ≤MAX_FANOUT children too — invariant b applies to the semantic group, not just the
-    // intermediate reps). Bounded by MAX_PARTITION_DEPTH.
-    let depth = 1;
-    while (level.length > MAX_FANOUT && depth < MAX_PARTITION_DEPTH) {
+
+    // If this tier itself exceeds MAX_FANOUT proxies, coarsen it with a further (chunk) tier so
+    // `parent` ends with ≤MAX_FANOUT children. The proxy level carries no edges/paths → chunk.
+    let level = proxies;
+    let d = depth + 1;
+    while (level.length > MAX_FANOUT && d < MAX_PARTITION_DEPTH) {
       const next: number[] = [];
-      for (let i = 0; i < level.length; i += MAX_FANOUT) {
+      for (const bucket of balancedChunks(level.length, MAX_FANOUT)) {
         const proxy = newSynthetic(parent);
-        for (let j = i; j < Math.min(i + MAX_FANOUT, level.length); j++) {
-          parentOfList[level[j] - base] = proxy; // the lower tier now parents onto this proxy
-        }
+        for (const idx of bucket) setParent(level[idx], proxy);
         next.push(proxy);
       }
       level = next;
-      depth++;
+      d++;
     }
-    // The remaining `level` is the top tier; its proxies keep `parent` (the original oversized
-    // rep) as their parentOf — already stamped by newSynthetic, so nothing more to do.
+    return level;
+  };
+
+  for (const [parent, directChildren] of childrenByParent) {
+    if (directChildren.length <= MAX_FANOUT) continue; // already bounded — no tier needed
+    const edges = inputs?.edgesByParent.get(parent) ?? [];
+    const deadline = clock() + MAX_PARTITION_WORK_MS;
+    // The top tier's proxies keep `parent` as their parentOf (stamped by newSynthetic / the
+    // coarsening loop), so nothing more to do after this call.
+    tier(parent, directChildren, edges, 0, deadline);
   }
 
   return { count, parentOf: Int32Array.from(parentOfList), parentByChild };
