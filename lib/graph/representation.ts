@@ -55,9 +55,17 @@ export interface Rect {
 /**
  * The columnar runtime form (Appendix A §F). All arrays are indexed by rep id; the
  * group reps come first (rep id == group ordinal), then the node leaf reps. Tree links
- * use -1 as the null sentinel. The cost/error columns are aggregated bottom-up: a
- * proxy's `nodeCost` is the sum over its subtree's leaf reps, so it is the layout cost
- * of coarsening that whole subtree to this one proxy.
+ * use -1 as the null sentinel.
+ *
+ * TWO cost notions, kept distinct (the source of correctness for the budget):
+ *  - `nodeCost`/`edgeCost`/`labelCost`/`gpuByteCost` are the RENDERED cost of THIS proxy
+ *    LEVEL — a selected proxy draws ONE aggregate card (nodeCost 1, labelCost 1), a
+ *    selected leaf draws its own node. A cut's budget cost is Σ over selected reps of
+ *    these. Refining a proxy (Appendix A §D: Σ children − parent) pays the children's
+ *    rendered cost minus the parent's one card.
+ *  - `subtreeNodeCost`/`subtreeEdgeCost`/… are the AGGREGATE over the subtree's leaves —
+ *    the cost of FULLY opening the subtree, used for error scoring and the hard-budget
+ *    feasibility of a forced open.
  */
 export interface RepresentationColumns {
   // ── tree ────────────────────────────────────────────────────────────────────
@@ -75,11 +83,16 @@ export interface RepresentationColumns {
   reservedW: Float32Array;
   reservedH: Float32Array;
   minScale: Float32Array;
-  // ── costs (Appendix A §D delta-cost dims) ────────────────────────────────────
+  // ── rendered per-level cost (Appendix A §D delta-cost dims) ──────────────────
   nodeCost: Uint32Array;
   edgeCost: Uint32Array;
   labelCost: Uint32Array;
   gpuByteCost: Uint32Array;
+  // ── aggregate subtree cost (full-open size; error scoring; hard feasibility) ──
+  subtreeNodeCost: Uint32Array;
+  subtreeEdgeCost: Uint32Array;
+  subtreeLabelCost: Uint32Array;
+  subtreeGpuByteCost: Uint32Array;
   // ── error (info hidden when the proxy stands in for its subtree) ──────────────
   geometricError: Float32Array;
   structuralError: Float32Array;
@@ -151,19 +164,28 @@ export function buildRepresentationHierarchy(
   const edgeCost = new Uint32Array(repCount);
   const labelCost = new Uint32Array(repCount);
   const gpuByteCost = new Uint32Array(repCount);
+  const subtreeNodeCost = new Uint32Array(repCount);
+  const subtreeEdgeCost = new Uint32Array(repCount);
+  const subtreeLabelCost = new Uint32Array(repCount);
+  const subtreeGpuByteCost = new Uint32Array(repCount);
   const geometricError = new Float32Array(repCount);
   const structuralError = new Float32Array(repCount);
   const proxyKeys: string[] = new Array(repCount);
   const leafRepresentationByNode = new Uint32Array(nodeCount);
 
-  // Group reps: parent from the snapshot's parentByGroup; proxyKey from the group id.
+  // Group reps: parent from the snapshot's parentByGroup; proxyKey from the group id. A
+  // selected proxy renders as ONE aggregate card → rendered nodeCost/labelCost = 1, no
+  // edges/gpu of its own. The subtree* aggregate is rolled up below.
   for (let g = 0; g < groupCount; g++) {
     parentByRep[g] = snapshot.parentByGroup[g]; // already a group ordinal or -1
     groupByRep[g] = g;
+    nodeCost[g] = 1; // one aggregate card
+    labelCost[g] = 1; // one proxy label
     proxyKeys[g] = `${snapshot.modeKey}|${snapshot.groupIds[g]}`;
   }
 
   // Leaf reps: one per node, parented to its direct group rep (or a root for NO_GROUP).
+  // A leaf's rendered cost IS the node's own cost.
   for (let i = 0; i < nodeCount; i++) {
     const rep = leafRepOf(i);
     leafRepresentationByNode[i] = rep;
@@ -194,20 +216,26 @@ export function buildRepresentationHierarchy(
   }
   for (let r = 0; r < repCount; r++) if (parentByRep[r] === -1) roots.push(r);
 
-  // Roll costs up bottom-up so every proxy carries the aggregate cost of the subtree it
-  // replaces. A post-order over the child links (iterative, deep-safe) adds each rep's
-  // own cost into its parent — children visited before parents, with no assumption about
-  // the snapshot's id ordering. Leaf reps keep their seeded per-node cost; a proxy's cost
-  // is the sum over its subtree's leaves (the single aggregate card the proxy itself
-  // draws is modeled by the solver, not double-counted into the node cost here).
+  // Aggregate subtree cost = the cost of FULLY opening the subtree (Σ over its leaves).
+  // Seed every rep's subtree* with its OWN leaf cost (proxies contribute 0 of their own —
+  // they aren't leaves), then roll leaf costs up via a post-order over the child links
+  // (iterative, deep-safe; no assumption about snapshot id ordering). A proxy's subtree
+  // node cost is thus the count/weight of underlying nodes it would expand to.
   const order = postOrder(repCount, roots, firstChildByRep, nextSiblingByRep);
+  for (let r = 0; r < repCount; r++) {
+    const isLeaf = firstChildByRep[r] === -1;
+    subtreeNodeCost[r] = isLeaf ? nodeCost[r] : 0;
+    subtreeEdgeCost[r] = isLeaf ? edgeCost[r] : 0;
+    subtreeLabelCost[r] = isLeaf ? labelCost[r] : 0;
+    subtreeGpuByteCost[r] = isLeaf ? gpuByteCost[r] : 0;
+  }
   for (const r of order) {
     const p = parentByRep[r];
     if (p === -1) continue;
-    nodeCost[p] += nodeCost[r];
-    edgeCost[p] += edgeCost[r];
-    labelCost[p] += labelCost[r];
-    gpuByteCost[p] += gpuByteCost[r];
+    subtreeNodeCost[p] += subtreeNodeCost[r];
+    subtreeEdgeCost[p] += subtreeEdgeCost[r];
+    subtreeLabelCost[p] += subtreeLabelCost[r];
+    subtreeGpuByteCost[p] += subtreeGpuByteCost[r];
   }
 
   // Geometric/structural error: how much information a proxy hides. A starting heuristic
@@ -227,7 +255,7 @@ export function buildRepresentationHierarchy(
         structuralError[r] = 0;
       } else {
         geometricError[r] = Math.log2(1 + subtreeLeaves[r]);
-        structuralError[r] = edgeCost[r];
+        structuralError[r] = subtreeEdgeCost[r];
       }
     }
   }
@@ -262,6 +290,10 @@ export function buildRepresentationHierarchy(
     edgeCost,
     labelCost,
     gpuByteCost,
+    subtreeNodeCost,
+    subtreeEdgeCost,
+    subtreeLabelCost,
+    subtreeGpuByteCost,
     geometricError,
     structuralError,
     entryByRep,

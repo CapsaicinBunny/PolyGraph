@@ -95,19 +95,27 @@ describe("buildRepresentationHierarchy — structure", () => {
     );
   });
 
-  test("aggregated subtree node cost rolls up to the proxy (a covers 3 files)", () => {
-    // Each file costs 1 by default; a/x=2, a/y=1, a=3.
-    expect(h.columns.nodeCost[groupRep(h, "directory:a")]).toBe(3);
-    expect(h.columns.nodeCost[groupRep(h, "directory:a/x")]).toBe(2);
-    expect(h.columns.nodeCost[groupRep(h, "directory:b")]).toBe(3);
+  test("a selected proxy renders as ONE aggregate card (rendered nodeCost = 1)", () => {
+    // The per-LEVEL rendered cost of a proxy is one card, regardless of subtree size.
+    expect(h.columns.nodeCost[groupRep(h, "directory:a")]).toBe(1);
+    expect(h.columns.nodeCost[groupRep(h, "directory:b")]).toBe(1);
+    // A leaf rep's rendered cost is its own node cost (1 by default).
+    expect(h.columns.nodeCost[leafRep(h, "a/x/f1.c")]).toBe(1);
   });
 
-  test("custom per-node cost is summed into proxies", () => {
+  test("aggregated SUBTREE node cost rolls up to the proxy (a covers 3 files)", () => {
+    // Each file costs 1 by default; a/x=2, a/y=1, a=3 — the FULL-OPEN size.
+    expect(h.columns.subtreeNodeCost[groupRep(h, "directory:a")]).toBe(3);
+    expect(h.columns.subtreeNodeCost[groupRep(h, "directory:a/x")]).toBe(2);
+    expect(h.columns.subtreeNodeCost[groupRep(h, "directory:b")]).toBe(3);
+  });
+
+  test("custom per-node cost is summed into proxies' subtree cost", () => {
     const h2 = buildRepresentationHierarchy(snap, nodeIds, {
       nodeCost: (id) => (id === "a/x/f1.c" ? 10 : 1),
     });
-    expect(h2.columns.nodeCost[groupRep(h2, "directory:a/x")]).toBe(11); // 10 + 1
-    expect(h2.columns.nodeCost[groupRep(h2, "directory:a")]).toBe(12); // 11 + 1 (a/y)
+    expect(h2.columns.subtreeNodeCost[groupRep(h2, "directory:a/x")]).toBe(11); // 10 + 1
+    expect(h2.columns.subtreeNodeCost[groupRep(h2, "directory:a")]).toBe(12); // 11 + 1 (a/y)
   });
 });
 
