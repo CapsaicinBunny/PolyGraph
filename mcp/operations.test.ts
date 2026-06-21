@@ -2,13 +2,16 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { telemetry } from "../lib/telemetry";
 import { clearScanCache } from "./cache";
 import {
   checkRules,
   diffRevisions,
   listInsights,
+  logs,
   nodeDetail,
   queryNodes,
+  readSource,
   scanSummary,
 } from "./operations";
 
@@ -83,4 +86,34 @@ test("checkRules without a config gives an actionable error", async () => {
 
 test("diffRevisions outside a git repo gives an actionable error", async () => {
   expect(await rejectMessage(diffRevisions(dir, "main"))).toMatch(/Could not diff/);
+});
+
+test("readSource reads a scanned file and honors a line range", async () => {
+  const whole = await readSource(dir, "a.ts");
+  expect(whole.content).toContain("import { b }");
+  expect(whole.totalLines).toBeGreaterThan(1);
+
+  const firstLine = await readSource(dir, "a.ts", 1, 1);
+  expect(firstLine.startLine).toBe(1);
+  expect(firstLine.endLine).toBe(1);
+  expect(firstLine.content).toBe('import { b } from "./b";');
+});
+
+test("readSource refuses a path that isn't a scanned source file (no escaping the root)", async () => {
+  expect(await rejectMessage(readSource(dir, "../cache.ts"))).toMatch(/not a scanned source file/);
+});
+
+test("logs reads and controls the telemetry bus", () => {
+  telemetry.setEnabled(true);
+  telemetry.clearAll();
+  expect(logs("status").eventCount).toBe(0);
+
+  telemetry.event("analysis", "mcp.test", { ok: 1 });
+  const tail = logs("tail");
+  expect(tail.eventCount).toBe(1);
+  expect(tail.events?.[0]?.event).toBe("mcp.test");
+
+  expect(logs("disable").enabled).toBe(false);
+  expect(logs("enable").enabled).toBe(true);
+  expect(logs("clear").eventCount).toBe(0);
 });

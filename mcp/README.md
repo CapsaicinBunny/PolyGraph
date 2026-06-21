@@ -19,9 +19,22 @@ first `polygraph_scan` does the work and follow-up tools are fast.
 | `polygraph_insights` | Architectural findings: cycles, fan-in/out outliers, bottlenecks, orphans, client→server imports, undeclared deps, deep chains, instability, ambiguous/unresolved refs.     |
 | `polygraph_check`    | Evaluate `.polygraph.yml` architecture rules → violations.                                                                                                                  |
 | `polygraph_diff`     | Structural diff of the graph between two git revisions (or a revision vs. the working tree).                                                                                |
+| `polygraph_read`     | Read the source of a scanned file (optional line range). Restricted to files under the scanned root — see Safety below.                                                     |
+| `polygraph_logs`     | Read & control the live telemetry bus: `tail` events, `metrics` (per-tool timing), `status`, and `enable` / `disable` / `clear`.                                            |
 
-All tools are annotated `readOnlyHint` and return both a text summary and
-`structuredContent`.
+All tools return a text summary plus `structuredContent`. All are `readOnlyHint`
+except `polygraph_logs`, whose `enable` / `disable` / `clear` actions mutate the
+telemetry buffer.
+
+## Safety: the read tool
+
+`polygraph_read` can only read files PolyGraph **already analyzed under the scanned
+root** — two independent gates enforce it: the file must be a file node in the
+scanned graph (so only real source files that passed the scanner's filters — never
+`node_modules`, `.env`, or secrets), and its canonicalized (`realpath`) path must
+stay inside the canonical root (defeating `../` and symlink escapes). Since the
+server is LLM-driven, this scoping is deliberate: a repository it analyzes cannot
+steer it into reading arbitrary files on the machine.
 
 ## Run it
 

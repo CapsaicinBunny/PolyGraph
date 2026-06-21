@@ -7,6 +7,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { telemetry } from "../lib/telemetry";
 import { histText } from "./format";
 import * as ops from "./operations";
 
@@ -39,6 +40,33 @@ const fullNode = z.object({
   dependencyType: z.string().optional(),
 });
 
+/**
+ * Run an operation, recording it (and its timing) on the telemetry bus so the
+ * polygraph_logs tool can tail live activity. Errors are logged, then rethrown.
+ */
+async function instrument<T>(
+  tool: string,
+  fn: () => Promise<T>,
+  summary: (res: T) => Record<string, unknown>,
+): Promise<T> {
+  const t0 = performance.now();
+  try {
+    const res = await fn();
+    const ms = Math.round(performance.now() - t0);
+    telemetry.metric(`mcp.${tool}.ms`, ms);
+    telemetry.event("analysis", `mcp.${tool}`, { ...summary(res), ms });
+    return res;
+  } catch (err) {
+    telemetry.event(
+      "analysis",
+      `mcp.${tool}.error`,
+      { message: err instanceof Error ? err.message : String(err) },
+      "error",
+    );
+    throw err;
+  }
+}
+
 /** Build the PolyGraph MCP server with all tools registered (no transport yet). */
 export function createServer(): McpServer {
   const server = new McpServer({ name: "polygraph", version: "0.1.0" });
@@ -68,7 +96,15 @@ export function createServer(): McpServer {
       annotations: READ_ONLY,
     },
     async ({ path }) => {
-      const r = await ops.scanSummary(path);
+      const r = await instrument(
+        "scan",
+        () => ops.scanSummary(path),
+        (res) => ({
+          root: res.root,
+          nodes: res.nodeCount,
+          edges: res.edgeCount,
+        }),
+      );
       const text =
         `Scanned ${r.root}: ${r.fileCount} files → ${r.nodeCount} nodes, ${r.edgeCount} edges ` +
         `(${r.parseWarnings} parse warnings, ${r.unresolved} unresolved refs). ` +
@@ -108,7 +144,14 @@ export function createServer(): McpServer {
       annotations: READ_ONLY,
     },
     async ({ path, query, limit }) => {
-      const r = await ops.queryNodes(path, query, limit);
+      const r = await instrument(
+        "query",
+        () => ops.queryNodes(path, query, limit),
+        (res) => ({
+          query: res.query,
+          matches: res.matchCount,
+        }),
+      );
       const text = r.error
         ? `Query error: ${r.error}`
         : `${r.matchCount} node(s) match "${r.query}"${r.empty ? " (empty query — no constraints)" : ""}; showing ${r.returned}.`;
@@ -154,7 +197,15 @@ export function createServer(): McpServer {
       annotations: READ_ONLY,
     },
     async ({ path, id }) => {
-      const r = await ops.nodeDetail(path, id);
+      const r = await instrument(
+        "node",
+        () => ops.nodeDetail(path, id),
+        (res) => ({
+          id: res.node.id,
+          dependencies: res.dependencyCount,
+          dependents: res.dependentCount,
+        }),
+      );
       const text =
         `${r.node.kind} ${r.node.label} (${r.node.filePath}:${r.node.line}) — ` +
         `${r.dependencyCount} dependencies, ${r.dependentCount} dependents.`;
@@ -188,7 +239,13 @@ export function createServer(): McpServer {
       annotations: READ_ONLY,
     },
     async ({ path, severity }) => {
-      const r = await ops.listInsights(path, severity);
+      const r = await instrument(
+        "insights",
+        () => ops.listInsights(path, severity),
+        (res) => ({
+          total: res.total,
+        }),
+      );
       const text = `${r.total} insight(s): ${histText(r.byKind)}.`;
       return { content: [{ type: "text", text }], structuredContent: r };
     },
@@ -226,7 +283,14 @@ export function createServer(): McpServer {
       annotations: READ_ONLY,
     },
     async ({ path, config }) => {
-      const r = await ops.checkRules(path, config);
+      const r = await instrument(
+        "check",
+        () => ops.checkRules(path, config),
+        (res) => ({
+          violations: res.total,
+          errors: res.errors,
+        }),
+      );
       const text = `${r.total} violation(s) (${r.errors} error, ${r.warnings} warning) against ${r.config}.`;
       return { content: [{ type: "text", text }], structuredContent: r };
     },
@@ -263,11 +327,124 @@ export function createServer(): McpServer {
       annotations: READ_ONLY,
     },
     async ({ path, base, head }) => {
-      const r = await ops.diffRevisions(path, base, head);
+      const r = await instrument(
+        "diff",
+        () => ops.diffRevisions(path, base, head),
+        (res) => ({
+          base: res.base,
+          head: res.head,
+          nodesAdded: res.summary.nodesAdded,
+          nodesRemoved: res.summary.nodesRemoved,
+        }),
+      );
       const s = r.summary;
       const text =
         `${r.base} → ${r.head}: +${s.nodesAdded}/-${s.nodesRemoved} nodes (${s.nodesChanged} changed), ` +
         `+${s.edgesAdded}/-${s.edgesRemoved} edges, ${s.newCycles} new cycle(s).`;
+      return { content: [{ type: "text", text }], structuredContent: r };
+    },
+  );
+
+  server.registerTool(
+    "polygraph_read",
+    {
+      title: "Read source",
+      description:
+        'Read the source of a file in a scanned project (optionally a line range). Restricted to files PolyGraph analyzed under `path` — list them with polygraph_query {"query":"kind:file"}, or take a filePath from polygraph_query / polygraph_node results.',
+      inputSchema: {
+        path: pathArg,
+        file: z.string().describe('Relative path of a scanned source file, e.g. "src/app.ts".'),
+        startLine: z.number().int().min(1).optional().describe("First line, 1-based (default 1)."),
+        endLine: z.number().int().min(1).optional().describe("Last line, 1-based (default end)."),
+      },
+      outputSchema: {
+        file: z.string(),
+        startLine: z.number(),
+        endLine: z.number(),
+        totalLines: z.number(),
+        truncated: z.boolean(),
+        content: z.string(),
+      },
+      annotations: READ_ONLY,
+    },
+    async ({ path, file, startLine, endLine }) => {
+      const r = await instrument(
+        "read",
+        () => ops.readSource(path, file, startLine, endLine),
+        (res) => ({ file: res.file, lines: `${res.startLine}-${res.endLine}/${res.totalLines}` }),
+      );
+      const text = `${r.file} (lines ${r.startLine}-${r.endLine} of ${r.totalLines}${r.truncated ? ", truncated" : ""}):\n\n${r.content}`;
+      return { content: [{ type: "text", text }], structuredContent: r };
+    },
+  );
+
+  server.registerTool(
+    "polygraph_logs",
+    {
+      title: "Live logs & telemetry",
+      description:
+        "Read and control this server's live telemetry bus. action: 'tail' (recent events — the tools log their own activity here), 'metrics' (rolling histograms + counters, e.g. per-tool timing), 'status', or the controls 'enable' / 'disable' / 'clear'.",
+      inputSchema: {
+        action: z
+          .enum(["tail", "metrics", "status", "enable", "disable", "clear"])
+          .optional()
+          .describe("Default: tail."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe("Max events for tail (default 50)."),
+      },
+      outputSchema: {
+        action: z.string(),
+        enabled: z.boolean(),
+        eventCount: z.number(),
+        events: z
+          .array(
+            z.object({
+              t: z.number(),
+              category: z.string(),
+              level: z.string(),
+              event: z.string(),
+              data: z.record(z.string(), z.unknown()).optional(),
+            }),
+          )
+          .optional(),
+        metrics: z
+          .object({
+            histograms: z.record(
+              z.string(),
+              z.object({
+                count: z.number(),
+                total: z.number(),
+                mean: z.number(),
+                min: z.number(),
+                max: z.number(),
+                p50: z.number(),
+                p95: z.number(),
+                p99: z.number(),
+              }),
+            ),
+            counters: z.record(z.string(), z.number()),
+          })
+          .optional(),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ action, limit }) => {
+      const r = ops.logs(action ?? "tail", limit);
+      const text = r.events
+        ? `telemetry ${r.enabled ? "on" : "off"}, ${r.eventCount} event(s); showing ${r.events.length}.`
+        : r.metrics
+          ? `telemetry ${r.enabled ? "on" : "off"}; ${Object.keys(r.metrics.histograms).length} metric series, ${Object.keys(r.metrics.counters).length} counter(s).`
+          : `telemetry ${r.enabled ? "on" : "off"}, ${r.eventCount} event(s) (action: ${r.action}).`;
       return { content: [{ type: "text", text }], structuredContent: r };
     },
   );

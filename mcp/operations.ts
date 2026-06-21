@@ -2,7 +2,8 @@
 // functions returning structured data. Deliberately free of any MCP/SDK types so
 // they're unit-testable directly against a fixture; mcp/server.ts wraps each one.
 
-import { join } from "node:path";
+import { readFile, realpath } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 import { scanRevision, scanTarget, WORKING_TREE } from "../lib/cli/scan";
 import { loadConfigFile } from "../lib/config/load";
 import { diffGraphs } from "../lib/diff/diff";
@@ -10,6 +11,7 @@ import { analyzeInsights, unresolvedToInsights } from "../lib/graph/insights";
 import { runQuery } from "../lib/graph/query-language";
 import type { GraphNode } from "../lib/graph/types";
 import { evaluate } from "../lib/rules/engine";
+import { telemetry } from "../lib/telemetry";
 import { getScan, rootKey } from "./cache";
 import { type BriefNode, briefNode, edgeConfidence, errMsg, histogram } from "./format";
 
@@ -251,4 +253,115 @@ export async function diffRevisions(
       `Could not diff "${root}": ${errMsg(err)}. Diff needs a git repo and valid revisions (a base, and optionally a head — omit head to compare against the working tree).`,
     );
   }
+}
+
+// --- read (source within scanned roots) -------------------------------------
+
+const MAX_LINES = 800;
+
+export type FileSlice = {
+  file: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  truncated: boolean;
+  content: string;
+};
+
+/**
+ * Read a slice of a source file — but ONLY a file PolyGraph already analyzed under
+ * `path`, and ONLY if it resolves (canonicalized) inside that scanned root. Two
+ * independent gates: graph membership (so it's a real source file that passed the
+ * scanner's filters — never node_modules/.env/secrets) and a realpath containment
+ * check (defeats `../` and symlink escapes). This is the deliberate guard against
+ * an LLM being steered into reading arbitrary files.
+ */
+export async function readSource(
+  path: string,
+  file: string,
+  startLine?: number,
+  endLine?: number,
+): Promise<FileSlice> {
+  const d = await getScan(path);
+  const isScanned = d.graph.nodes.some((n) => n.kind === "file" && n.id === file);
+  if (!isScanned) {
+    throw new Error(
+      `"${file}" is not a scanned source file under ${d.root}. List readable files with polygraph_query {"query":"kind:file"}.`,
+    );
+  }
+  const root = rootKey(path);
+  const [realFile, realRoot] = await Promise.all([realpath(resolve(root, file)), realpath(root)]);
+  if (realFile !== realRoot && !realFile.startsWith(realRoot + sep)) {
+    throw new Error(`Refusing to read "${file}": it resolves outside the scanned root.`);
+  }
+
+  const lines = (await readFile(realFile, "utf8")).split("\n");
+  const total = lines.length;
+  const from = Math.min(Math.max(1, startLine ?? 1), total);
+  const to = Math.min(endLine ?? total, total);
+  const slice = lines.slice(from - 1, Math.max(from, to));
+  const truncated = slice.length > MAX_LINES;
+  return {
+    file,
+    startLine: from,
+    endLine: truncated ? from + MAX_LINES - 1 : Math.max(from, to),
+    totalLines: total,
+    truncated,
+    content: (truncated ? slice.slice(0, MAX_LINES) : slice).join("\n"),
+  };
+}
+
+// --- logs (live telemetry: read + control) ----------------------------------
+
+export type LogEvent = {
+  t: number;
+  category: string;
+  level: string;
+  event: string;
+  data?: Record<string, unknown>;
+};
+export type MetricSummary = {
+  count: number;
+  total: number;
+  mean: number;
+  min: number;
+  max: number;
+  p50: number;
+  p95: number;
+  p99: number;
+};
+export type LogsAction = "tail" | "metrics" | "status" | "enable" | "disable" | "clear";
+export type LogsResult = {
+  action: LogsAction;
+  enabled: boolean;
+  eventCount: number;
+  events?: LogEvent[];
+  metrics?: { histograms: Record<string, MetricSummary>; counters: Record<string, number> };
+};
+
+/**
+ * Read and control the live telemetry bus (lib/telemetry) of THIS server process:
+ * `tail` recent events, `metrics` rolling histograms + counters, `status`, or the
+ * control actions `enable`/`disable`/`clear`. The MCP tools emit their own activity
+ * here, so `tail` is a live log of what the agent has been doing.
+ */
+export function logs(action: LogsAction = "tail", limit = 50): LogsResult {
+  if (action === "enable") telemetry.setEnabled(true);
+  else if (action === "disable") telemetry.setEnabled(false);
+  else if (action === "clear") telemetry.clearAll();
+
+  const snap = telemetry.snapshot();
+  const base = { action, enabled: snap.enabled, eventCount: telemetry.eventCount() };
+  if (action === "metrics") return { ...base, metrics: snap.metrics };
+  if (action === "tail") {
+    const events = snap.events.slice(-limit).map((e) => ({
+      t: e.t,
+      category: e.category,
+      level: e.level,
+      event: e.event,
+      ...(e.data ? { data: e.data } : {}),
+    }));
+    return { ...base, events };
+  }
+  return base; // status / enable / disable / clear
 }
