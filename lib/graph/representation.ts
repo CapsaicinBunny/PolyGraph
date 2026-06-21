@@ -82,6 +82,12 @@ export interface RepresentationColumns {
   reservedY: Float32Array;
   reservedW: Float32Array;
   reservedH: Float32Array;
+  // growth envelope — the capped maximum a box may grow to without an ancestor relayout
+  // (C1c §C tiered reservation; bounds the Space Paradox). Filled by computeRepresentationBounds.
+  envelopeX: Float32Array;
+  envelopeY: Float32Array;
+  envelopeW: Float32Array;
+  envelopeH: Float32Array;
   minScale: Float32Array;
   // ── rendered per-level cost (Appendix A §D delta-cost dims) ──────────────────
   nodeCost: Uint32Array;
@@ -285,6 +291,10 @@ export function buildRepresentationHierarchy(
     reservedY: z(),
     reservedW: z(),
     reservedH: z(),
+    envelopeX: z(),
+    envelopeY: z(),
+    envelopeW: z(),
+    envelopeH: z(),
     minScale: new Float32Array(repCount).fill(1),
     nodeCost,
     edgeCost,
