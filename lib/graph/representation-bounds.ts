@@ -7,6 +7,9 @@
 // proxy card, not 5000×. Reservation is recomputed lazily (a single `only` rep) so refining
 // one group never perturbs a sibling's or ancestor's reservation. Pure; fills the columnar
 // geometry C1b stubbed (`reserved*` / `envelope*` / `minScale`).
+//
+// INTEGRATION STATUS (Phase C1c): staged, unit-tested primitive — NOT yet wired into the
+// scene pipeline (consumed only by overflow-ladder/local-refine reasoning and tests).
 
 import type { RepresentationColumns, RepresentationHierarchy, Rect } from "./representation";
 

@@ -48,6 +48,7 @@ import {
   type LodRuntimeState,
   setPending,
 } from "./lod-runtime";
+import type { EvictionController } from "./lod-eviction";
 import type { CollapseIntent, GroupId } from "./collapse-model";
 
 /** Tuning for the representation cut, mirroring the C1a GroupCutOptions surface. */
@@ -88,6 +89,15 @@ export interface RepLodInput {
   filterSignature?: string;
   /** Collect the solver's why-not-refined diagnostics (Appendix A §I observability). */
   collectDiagnostics?: boolean;
+  /**
+   * The persistent eviction + runtime-cut controller (Phase C1c bug b). When provided, the
+   * cut's auto-opened (non-forced) group proxies are tracked across recuts; offscreen ones
+   * over the controller's budget are EVICTED — re-collapsed via an extra forceClosed pass —
+   * so a long exploration of many regions can't grow auto-opens without bound. The
+   * controller also rolls the runtime cut in place (no fresh array per recut). Omitted →
+   * the legacy behavior (a fresh runtime cut each call, no eviction).
+   */
+  eviction?: EvictionController;
 }
 
 export interface RepLodResult {
@@ -108,6 +118,10 @@ export interface RepLodResult {
   cutSolveMs: number;
   /** The solver's diagnostics when requested (why-not-refined + refinements), else null. */
   diagnostics: SolveDiagnostics | null;
+  /** Auto-opens evicted THIS solve (offscreen-over-budget); 0 without an eviction controller. */
+  evictions: number;
+  /** Cumulative evictions since the controller was created; 0 without one. */
+  totalEvictions: number;
 }
 
 /**
@@ -181,10 +195,60 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
     ? { whyNotRefined: new Map(), refinements: 0 }
     : null;
   const t0 = nowMs();
-  const cut = solveLodCut(hierarchy, bootstrapCut(hierarchy), constraints, camState, budget, {
+  let cut = solveLodCut(hierarchy, bootstrapCut(hierarchy), constraints, camState, budget, {
     canRefine,
     diagnostics: diagnostics ?? undefined,
   });
+
+  // 4b. Deadband retention + bounded offscreen-auto-open eviction (Phase C1c bug b). The
+  //     first solve above only opens proxies whose box is on-screen (the canRefine gate), so
+  //     a group re-collapses the instant it leaves the viewport — there's no deadband, and
+  //     nothing to evict. With an eviction controller, we RETAIN previously-auto-opened
+  //     groups across recuts (they stay open through a small pan/zoom-out — the spec's
+  //     deadband), and the IntrusiveLru BOUNDS how many such retained opens persist: when the
+  //     tracked set exceeds the offscreen-open budget, the oldest are evicted (re-collapsed).
+  //     A second solve folds the retention into forceOpen and the evictions into forceClosed.
+  //     Forced (user-intent) opens/closes are untouched — eviction never fights user intent.
+  let evictions = 0;
+  let totalEvictions = 0;
+  if (input.eviction) {
+    const onScreen = (rep: number): boolean => {
+      const g = cols.groupByRep[rep];
+      if (g === NO_GROUP) return false;
+      const box = boxes.get(snapshot.boxKeyByGroup[g]);
+      if (!box) return false;
+      return intersectsViewport(worldToScreen(box, cam), vp, options.margin);
+    };
+    // Candidate open set = groups freshly auto-opened on-screen this frame ∪ those retained
+    // from prior frames (the deadband). User-forced opens are excluded (tracked separately).
+    const freshOpens = autoOpenGroupReps(hierarchy, cut, forceOpen);
+    const candidates = new Set<number>(input.eviction.retained());
+    for (const rep of freshOpens) candidates.add(rep);
+    for (const rep of forceOpen) candidates.delete(rep);
+
+    const outcome = input.eviction.recordOpen(candidates, onScreen);
+    evictions = outcome.count;
+    totalEvictions = input.eviction.totalEvictions;
+
+    // Retained-open after eviction → forceOpen (stay open even offscreen); evicted → closed.
+    const retainOpen = new Set<number>(candidates);
+    for (const rep of outcome.evicted) retainOpen.delete(rep);
+
+    if (retainOpen.size > 0 || outcome.evicted.size > 0) {
+      const nextOpen = new Set<number>(forceOpen);
+      for (const rep of retainOpen) nextOpen.add(rep);
+      const nextClosed = new Set<number>(forceClosed);
+      for (const rep of outcome.evicted) nextClosed.add(rep);
+      cut = solveLodCut(
+        hierarchy,
+        bootstrapCut(hierarchy),
+        { forceClosed: nextClosed, forceOpen: nextOpen },
+        camState,
+        budget,
+        { canRefine, diagnostics: diagnostics ?? undefined },
+      );
+    }
+  }
   const cutSolveMs = nowMs() - t0;
 
   // 5. Commit through the runtime (only a material change bumps the generation).
@@ -205,7 +269,11 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   const effective = runtime.committedCut;
   const collapsedBoxKeys = collapsedBoxKeysOf(hierarchy, effective);
   const openSelection = openSelectionOf(hierarchy, effective);
-  const runtimeCut = makeRuntimeCut(effective, hierarchy.repCount);
+  // Roll the runtime cut IN PLACE via the controller (reuses the epoch array when the rep
+  // count is unchanged — no fresh Uint32Array per recut); else a one-off fresh cut.
+  const runtimeCut = input.eviction
+    ? input.eviction.advanceCut(effective, hierarchy.repCount)
+    : makeRuntimeCut(effective, hierarchy.repCount);
 
   return {
     hierarchy,
@@ -218,6 +286,8 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
     budget,
     cutSolveMs,
     diagnostics,
+    evictions,
+    totalEvictions,
   };
 }
 
@@ -245,6 +315,39 @@ export function activeProxyBoxKeyOfNode(result: RepLodResult, nodeOrdinal: numbe
 }
 
 // ── derivations ──────────────────────────────────────────────────────────────
+
+/**
+ * The AUTO-opened group reps in a cut (Phase C1c bug b eviction input): group reps that are
+ * OPEN (no selected ancestor-or-self group rep on their chain), have children (a real
+ * proxy), and are NOT user-forced-open (so eviction never fights a user expansion). These
+ * are the proxies the camera opened; the controller bounds how many offscreen ones persist.
+ */
+function autoOpenGroupReps(
+  h: RepresentationHierarchy,
+  cut: LodCut,
+  forceOpen: ReadonlySet<number>,
+): number[] {
+  const selected = new Set(cut.selectedRepresentations);
+  const groupCount = h.snapshot.groupIds.length;
+  const out: number[] = [];
+  for (let g = 0; g < groupCount; g++) {
+    if (h.columns.firstChildByRep[g] === -1) continue; // no children → nothing to re-collapse
+    if (forceOpen.has(g)) continue; // user-forced open — never evicted
+    // Open iff no selected group rep on the chain from g up to the root.
+    let cur = g;
+    let open = true;
+    let guard = h.repCount + 1;
+    while (cur !== -1 && guard-- > 0) {
+      if (selected.has(cur)) {
+        open = false;
+        break;
+      }
+      cur = h.columns.parentByRep[cur];
+    }
+    if (open) out.push(g);
+  }
+  return out;
+}
 
 /** The box keys of every SELECTED GROUP rep (proxies the scene collapses). */
 function collapsedBoxKeysOf(h: RepresentationHierarchy, cut: LodCut): Set<string> {

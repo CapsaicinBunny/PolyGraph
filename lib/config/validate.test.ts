@@ -281,4 +281,45 @@ describe("POST-analysis: validateConfigAgainstIndex", () => {
     });
     expect(validateConfigAgainstIndex(cfg, index)).toHaveLength(1);
   });
+
+  // Review bug d — a GENERIC `facets` map using a documented alias (environment→env,
+  // lang→language) must validate against the canonical dimension, not be flagged unknown.
+  test("a generic `facets: { environment }` map validates against the `env` dimension", () => {
+    const env: DimensionDescriptor = {
+      key: "env",
+      label: "Environment",
+      dimension: "facet",
+      cardinality: "single",
+      domain: "closed",
+      values: [
+        { value: "client", label: "Client" },
+        { value: "server", label: "Server" },
+      ],
+      providerIds: ["core"],
+      filterable: true,
+      groupable: true,
+      grouping: { mode: "single" },
+      missing: { filter: "include", group: "unclassified" },
+    };
+    const n = fileNode("a.ts", { kind: "function", environment: "client" });
+    writeFacet(n, "env", ["client"]);
+    const idx = buildDimensionIndex(
+      { nodes: [n], edges: [] },
+      { descriptors: [...STRUCTURAL_DESCRIPTORS, env] },
+    );
+    // The alias resolves to `env` → an in-domain value is clean (NOT "unknown dimension").
+    const ok = parseConfig({
+      rules: [{ name: "ok", from: { facets: { environment: ["client"] } }, disallow: "b/**" }],
+    });
+    expect(validateConfigAgainstIndex(ok, idx)).toEqual([]);
+    // An out-of-domain value under the alias is still flagged — against the `env` domain.
+    const bad = parseConfig({
+      rules: [{ name: "bad", from: { facets: { environment: ["staging"] } }, disallow: "b/**" }],
+    });
+    const problems = validateConfigAgainstIndex(bad, idx);
+    expect(problems).toHaveLength(1);
+    expect(problems[0].message).toMatch(/staging/);
+    expect(problems[0].message).toMatch(/"env"/); // names the canonical dimension
+    expect(problems[0].where).toMatch(/environment/); // keeps the author's spelling
+  });
 });

@@ -214,7 +214,21 @@ function buildGroupingSnapshotForMode(
       },
     );
   }
-  // Directory / Community / unknown → the byte-identical buildClusterTree path.
+  // A `facet:*` mode whose grouping can't be resolved — the facet was dropped from the
+  // catalog, or it is multi-valued with `grouping: disabled` (so facetGrouping returned
+  // null) — must NOT silently fall through to the DIRECTORY cluster tree (that would lay a
+  // graph out by folders while the UI says "grouped by env"). Emit a flat, boxless
+  // ('none'-like) snapshot instead: every node NO_GROUP, zero containers — the honest
+  // "this mode imposes no grouping here" result. The synthetic-None safety hierarchy still
+  // bounds the budget via the cut path; only the layout containers are dropped.
+  if (facetKey) {
+    return buildFlatGroupingSnapshot(
+      layoutInput.nodes.map((n) => n.id),
+      groupBy,
+      () => null,
+    );
+  }
+  // Directory / Community / unknown built-in → the byte-identical buildClusterTree path.
   return buildSmartGroupingSnapshot(layoutInput, groupBy, communityOf, groupBy);
 }
 

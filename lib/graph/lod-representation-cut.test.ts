@@ -8,6 +8,7 @@ import {
   buildSceneRepresentationCut,
   DEFAULT_REP_LOD_OPTIONS,
 } from "./lod-representation-cut";
+import { makeEvictionController } from "./lod-eviction";
 import type { CollapseIntent } from "./collapse-model";
 import { type GraphModel, makeEdge } from "./types";
 
@@ -173,6 +174,105 @@ describe("buildSceneRepresentationCut — committed-generation gating via runtim
     });
     expect(r2.committed).toBe(true);
     expect(r2.runtime.generation).toBe(gen0 + 1);
+  });
+});
+
+describe("buildSceneRepresentationCut — bounded offscreen eviction + in-place roll (bug b)", () => {
+  test("over-budget offscreen auto-opens are evicted (re-collapsed) and counted", () => {
+    // A graph with several independent top dirs, all huge ON-SCREEN so the cut auto-opens
+    // them, but with a tiny offscreen-open budget. We then pan them OFF-SCREEN: the now-
+    // offscreen opens exceed the budget and must be evicted (re-collapsed).
+    const dirs = ["a", "b", "c", "d"];
+    const g: GraphModel = {
+      nodes: dirs.flatMap((d) => [file(`${d}/x/f1.c`), file(`${d}/x/f2.c`)]),
+      edges: [],
+    };
+    const ids = g.nodes.map((n) => n.id);
+    const s = buildGroupingSnapshot(directoryGrouping(g), "directory", ids);
+    // All four top boxes on-screen and tall (so they auto-open at scale 1).
+    const onScreenBoxes = (): Map<string, Box> => {
+      const m = new Map<string, Box>();
+      dirs.forEach((d, i) => {
+        m.set(d, { x: i * 10, y: 0, w: 700, h: 700 });
+        m.set(`${d}/x`, { x: i * 10, y: 0, w: 600, h: 600 });
+      });
+      return m;
+    };
+    const budget = 1;
+    const ctrl = makeEvictionController(s.groupIds.length + ids.length, budget);
+    const baseOpts = { ...opts, openPx: 100, maxCards: 100000, nodeBudget: 100000 };
+    // Frame 1: zoomed in, all four dirs on-screen → all four auto-open. With an offscreen-
+    // open budget of 1, the LRU bounds the retained opens — the oldest are evicted.
+    const r1 = buildSceneRepresentationCut({
+      snapshot: s,
+      nodeIds: ids,
+      boxes: onScreenBoxes(),
+      cam: { x: 0, y: 0, scale: 1 },
+      vp,
+      intent: noIntent,
+      options: baseOpts,
+      eviction: ctrl,
+    });
+    // The eviction count is a REAL number now (no longer hardcoded 0): opening 4 groups
+    // under a budget of 1 evicts the surplus.
+    expect(r1.evictions).toBeGreaterThan(0);
+    expect(r1.totalEvictions).toBe(r1.evictions);
+    // The retained auto-opens are bounded by the budget.
+    expect(ctrl.trackedSize).toBeLessThanOrEqual(budget);
+
+    // Frame 2: pan far away. The survivor stays open (deadband via retention) but the bound
+    // still holds, and the cumulative eviction count never decreases.
+    const farBoxes = (): Map<string, Box> => {
+      const m = new Map<string, Box>();
+      dirs.forEach((d, i) => {
+        m.set(d, { x: 100000 + i * 10, y: 0, w: 700, h: 700 });
+        m.set(`${d}/x`, { x: 100000 + i * 10, y: 0, w: 600, h: 600 });
+      });
+      return m;
+    };
+    const r2 = buildSceneRepresentationCut({
+      snapshot: s,
+      nodeIds: ids,
+      boxes: farBoxes(),
+      cam: { x: 0, y: 0, scale: 1 },
+      vp,
+      intent: noIntent,
+      options: baseOpts,
+      previous: r1.runtime,
+      eviction: ctrl,
+    });
+    expect(ctrl.trackedSize).toBeLessThanOrEqual(budget); // still bounded
+    expect(r2.totalEvictions).toBeGreaterThanOrEqual(r1.totalEvictions); // monotonic
+  });
+
+  test("the runtime cut is rolled IN PLACE across recuts (same backing array)", () => {
+    const ctrl = makeEvictionController(snap.groupIds.length + nodeIds.length, 8);
+    const r1 = buildSceneRepresentationCut({
+      snapshot: snap,
+      nodeIds,
+      boxes: boxes(),
+      cam: { x: 0, y: 0, scale: 0.01 },
+      vp,
+      intent: noIntent,
+      options: opts,
+      eviction: ctrl,
+    });
+    const arr1 = r1.runtimeCut.selectedEpoch;
+    const r2 = buildSceneRepresentationCut({
+      snapshot: snap,
+      nodeIds,
+      boxes: boxes(),
+      cam: { x: 0, y: 0, scale: 1 }, // a different cut
+      vp,
+      intent: noIntent,
+      options: opts,
+      previous: r1.runtime,
+      eviction: ctrl,
+    });
+    // Same controller, unchanged rep count → the SAME Uint32Array is reused (epoch bumped),
+    // proving no fresh allocation per recut.
+    expect(r2.runtimeCut).toBe(r1.runtimeCut);
+    expect(r2.runtimeCut.selectedEpoch).toBe(arr1);
   });
 });
 

@@ -100,6 +100,27 @@ describe("matchNode — generic facets", () => {
     expect(matchNode(sel({ facets: { env: ["server"] } }), n)).toBe(false);
   });
 
+  // Review bug d — the documented facet-key aliases (environment→env, lang→language) must
+  // resolve in the selector exactly as in the query language, so a generic `facets` map
+  // using the query spelling matches.
+  test("the `environment` alias resolves to the `env` dimension", () => {
+    const n = node();
+    writeFacet(n, "env", ["client"]);
+    expect(matchNode(sel({ facets: { environment: ["client"] } }), n)).toBe(true);
+    expect(matchNode(sel({ facets: { environment: ["server"] } }), n)).toBe(false);
+    // Works on a legacy-only node too (env via the legacy field).
+    const legacy = node({ environment: "server" });
+    expect(matchNode(sel({ facets: { environment: ["server"] } }), legacy)).toBe(true);
+  });
+
+  test("the `lang` alias resolves to the `language` dimension (with human-name aliases)", () => {
+    const rs = node({ filePath: "crate/a.rs" });
+    // `lang` must take the language-comparison branch (human name → badge code), like the query.
+    expect(matchNode(sel({ facets: { lang: ["rust"] } }), rs)).toBe(true);
+    expect(matchNode(sel({ facets: { lang: ["RS"] } }), rs)).toBe(true);
+    expect(matchNode(sel({ facets: { lang: ["typescript"] } }), rs)).toBe(false);
+  });
+
   test("paths AND with facets", () => {
     const n = node({ filePath: "crate/a.rs" });
     writeFacet(n, "rust.visibility", ["pub"]);

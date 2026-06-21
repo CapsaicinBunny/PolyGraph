@@ -114,10 +114,12 @@ export function summarizeRepLod(
     hardNodes: budget?.hardNodes ?? 0,
     gpuMB: gpuBytes / (1024 * 1024),
     layoutWorkPct: Math.max(0, Math.min(1, layoutWorkPct)),
-    refinements: timings.refinements ?? 0,
-    evictions: timings.evictions ?? 0,
+    // Prefer explicit timings, else the real counters the cut now carries (Phase C1c bug b:
+    // the eviction count is a genuine number from the controller, no longer hardcoded 0).
+    refinements: timings.refinements ?? result.diagnostics?.refinements ?? 0,
+    evictions: timings.evictions ?? result.evictions,
     proxyCacheHitRate: hitRate,
-    cutSolveMs: timings.cutSolveMs ?? 0,
+    cutSolveMs: timings.cutSolveMs ?? result.cutSolveMs,
     sceneRebuildMs: timings.sceneRebuildMs ?? 0,
     whyNotRefined: aggregateWhyNot(timings.whyNotRefined),
   };

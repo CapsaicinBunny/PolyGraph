@@ -156,6 +156,42 @@ describe("solveLodCut — forceClosed / forceOpen constraints (Appendix A §A)",
     expect(selected.has(ax)).toBe(false);
     assertValidAntichain(h, cut);
   });
+
+  // Regression — the running cost vector `cur` must NOT go stale after the forceClosed
+  // phase. forceClosedRep mutates `selected` (drops opened descendants, adds the proxy)
+  // WITHOUT decrementing `cur`; if `cur` is left stale, refineUnderBudget sees the budget
+  // as more spent than it is and UNDER-refines after a close-over-an-open. Here forceOpen
+  // b/z first drives cost up (b → b/z → f4,f5,f6), then forceClose b collapses it back to a
+  // single `b` card — the real cost drops, so the remaining budget must let `a` refine to
+  // the target. (Pre-fix: the cut stayed coarse at {a, b, top} = 3, never refining a.)
+  test("cur is recomputed after forceClosed — refines to budget after a close-over-an-open", () => {
+    const a = groupRep(h, "directory:a");
+    const b = groupRep(h, "directory:b");
+    const bz = groupRep(h, "directory:b/z");
+    // target 4: root {a, b, top} = 3 leaves room for ONE more refine (a → a/x, a/y = 4).
+    const targetFour: LodBudget = { ...tinyBudget, targetNodes: 4, hardNodes: 100 };
+    const c: CutConstraints = { forceOpen: new Set([bz]), forceClosed: new Set([b]) };
+    const cut = solveLodCut(h, bootstrapCut(h), c, cam, targetFour);
+    assertValidAntichain(h, cut);
+    const selected = new Set(cut.selectedRepresentations);
+    // b is closed (its subtree collapsed to the proxy), freeing budget for a to refine.
+    expect(selected.has(b)).toBe(true);
+    expect(selected.has(bz)).toBe(false);
+    // The freed budget refines a to the target — NOT left coarse by a stale cost vector.
+    expect(cut.nodeCost).toBe(4);
+    expect(selected.has(a)).toBe(false); // a was refined into its children
+    expect(selected.has(groupRep(h, "directory:a/x"))).toBe(true);
+    // Identical outcome to closing b WITHOUT the prior open — proving the open left no
+    // residue in the cost vector.
+    const closeOnly = solveLodCut(
+      h,
+      bootstrapCut(h),
+      { forceOpen: new Set(), forceClosed: new Set([b]) },
+      cam,
+      targetFour,
+    );
+    expect([...cut.selectedRepresentations]).toEqual([...closeOnly.selectedRepresentations]);
+  });
 });
 
 describe("solveLodCut — user-open may exceed soft but never hard (Appendix A §B)", () => {
