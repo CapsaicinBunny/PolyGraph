@@ -321,10 +321,15 @@ export function Explorer() {
     }
   }, []);
 
-  // Evaluate the search box as a query against the active level. Empty → no constraint.
+  // Evaluate the search box as a query against the active level. Empty → no
+  // constraint. The dimension index (over the same active graph) lets `<key>:<value>`
+  // resolve any registered facet — provider dimensions included.
   const queryResult = useMemo(
-    () => (graph && search.trim() !== "" ? runQuery(graph, search, { packageOf }) : null),
-    [graph, search, packageOf],
+    () =>
+      graph && search.trim() !== ""
+        ? runQuery(graph, search, { packageOf, dimensions: dimensionIndex ?? undefined })
+        : null,
+    [graph, search, packageOf, dimensionIndex],
   );
   const queryError = queryResult?.error;
   const matchedIds =

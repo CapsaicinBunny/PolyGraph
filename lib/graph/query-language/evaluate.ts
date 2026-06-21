@@ -2,6 +2,7 @@
 // node yields a Set of matching node ids, so boolean ops are plain set algebra and
 // `depends-on` is a single multi-source reverse BFS rather than a per-node walk.
 
+import type { DimensionIndex } from "../dimension-index";
 import { fileLanguage } from "../filters";
 import type { GraphModel, GraphNode } from "../types";
 import { buildMetrics, type MetricsIndex } from "./metrics";
@@ -21,7 +22,47 @@ export interface QueryResult {
 export interface EvalOptions {
   /** Resolve a node's package name, when the package level is active. */
   packageOf?: (node: GraphNode) => string | undefined;
+  /**
+   * The runtime dimension index over the same graph. When present, `<key>:<value>`
+   * for any registered dimension (built-in facets keyed by their catalog key, plus
+   * provider facets like `rust.visibility`) resolves from the index. Absent, the
+   * built-in facet fields fall back to the legacy typed node fields.
+   */
+  dimensions?: DimensionIndex;
 }
+
+/**
+ * Query field names that alias onto a different catalog key. `environment` is the
+ * legacy spelling of the `env` dimension; `lang` of `language`. (`role`, `category`,
+ * `runtime`, `kind`, `env`, `language` already equal their catalog keys.)
+ */
+const FACET_KEY_ALIASES: Record<string, string> = {
+  environment: "env",
+  lang: "language",
+};
+
+/**
+ * Built-in query fields handled by their own (richer) logic — numeric/structural —
+ * and never delegated to the dimension index even when also a catalog dimension.
+ * `kind`/`language` are structural dimensions but keep their bespoke handling
+ * (kind is a direct compare; language applies human-name aliases + `fileLanguage`).
+ */
+const BUILTIN_FIELDS: ReadonlySet<string> = new Set([
+  "kind",
+  "language",
+  "lang",
+  "path",
+  "package",
+  "pkg",
+  "dependency-type",
+  "dep",
+  "calls",
+  "incoming",
+  "outgoing",
+  "cycle",
+  "depends-on",
+  "depends_on",
+]);
 
 // Human language names → the badge code returned by fileLanguage().key.
 const LANG_ALIASES: Record<string, string> = {
@@ -135,9 +176,31 @@ function isTruthy(value: string): boolean {
   return v === "true" || v === "1" || v === "yes";
 }
 
+/**
+ * Resolve a `<key>:<value>` predicate against the dimension index for a node by
+ * ordinal. Returns `true`/`false` when the (alias-resolved) key is a registered
+ * dimension, or `undefined` when it is not — so the caller can fall back to the
+ * legacy field read or a lenient text match.
+ */
+function matchFacetViaIndex(
+  index: DimensionIndex,
+  ordinal: number,
+  field: string,
+  value: string,
+): boolean | undefined {
+  const key = FACET_KEY_ALIASES[field] ?? field;
+  if (!index.descriptor(key)) return undefined; // not a registered dimension
+  const v = value.toLowerCase();
+  for (const id of index.valuesOfOrdinal(ordinal, key)) {
+    if (index.valueString(key, id).toLowerCase() === v) return true;
+  }
+  return false;
+}
+
 /** Per-node predicate (everything except `depends-on`, which is set-level). */
 function matchesPredicate(
   node: GraphNode,
+  ordinal: number,
   field: string,
   op: CompareOp,
   value: string,
@@ -145,6 +208,14 @@ function matchesPredicate(
   opts: EvalOptions,
 ): boolean {
   const v = value.toLowerCase();
+  // Built-in numeric/structural fields keep their bespoke handling. Every other
+  // field is a dimension lookup: prefer the registry (so provider facets like
+  // rust.visibility work and legacy aliases map to catalog keys), then fall back
+  // to the legacy typed fields, then a lenient text match.
+  if (!BUILTIN_FIELDS.has(field) && opts.dimensions) {
+    const hit = matchFacetViaIndex(opts.dimensions, ordinal, field, value);
+    if (hit !== undefined) return hit;
+  }
   switch (field) {
     case "kind":
       return node.kind.toLowerCase() === v;
@@ -213,8 +284,13 @@ function evalSet(
         return metrics.reverseReachable(targets);
       }
       const out = new Set<string>();
-      for (const n of graph.nodes) {
-        if (matchesPredicate(n, node.field, node.op, node.value, metrics, opts)) out.add(n.id);
+      // Indexed loop: the ordinal is the dimension index's node key, so a facet
+      // predicate can read the interned columnar values for this node.
+      for (let ordinal = 0; ordinal < graph.nodes.length; ordinal++) {
+        const n = graph.nodes[ordinal];
+        if (matchesPredicate(n, ordinal, node.field, node.op, node.value, metrics, opts)) {
+          out.add(n.id);
+        }
       }
       return out;
     }
