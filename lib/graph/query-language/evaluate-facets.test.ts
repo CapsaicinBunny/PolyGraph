@@ -8,7 +8,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { buildDimensionIndex } from "../dimension-index";
-import { type DimensionCatalog, type DimensionDescriptor, STRUCTURAL_DESCRIPTORS } from "../dimensions";
+import {
+  type DimensionCatalog,
+  type DimensionDescriptor,
+  STRUCTURAL_DESCRIPTORS,
+} from "../dimensions";
 import { writeFacet } from "../facets-write";
 import { type GraphModel, type GraphNode, makeEdge } from "../types";
 import { runQuery } from "./evaluate";

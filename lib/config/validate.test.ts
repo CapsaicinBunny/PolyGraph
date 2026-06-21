@@ -11,7 +11,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { buildDimensionIndex } from "../graph/dimension-index";
-import { type DimensionCatalog, type DimensionDescriptor, STRUCTURAL_DESCRIPTORS } from "../graph/dimensions";
+import {
+  type DimensionCatalog,
+  type DimensionDescriptor,
+  STRUCTURAL_DESCRIPTORS,
+} from "../graph/dimensions";
 import { writeFacet } from "../graph/facets-write";
 import type { GraphModel, GraphNode } from "../graph/types";
 import { parseConfig, validateConfigAgainstIndex } from "./load";
@@ -36,7 +40,15 @@ const RUST_VISIBILITY: DimensionDescriptor = {
 };
 
 function fileNode(filePath: string, extra: Partial<GraphNode> = {}): GraphNode {
-  return { id: filePath, kind: "file", label: filePath, filePath, line: 0, parentFile: filePath, ...extra };
+  return {
+    id: filePath,
+    kind: "file",
+    label: filePath,
+    filePath,
+    line: 0,
+    parentFile: filePath,
+    ...extra,
+  };
 }
 
 function indexWithRust(): ReturnType<typeof buildDimensionIndex> {
@@ -89,7 +101,12 @@ describe("PRE-analysis: generic facets in a selector", () => {
       rules: [
         {
           name: "client ui",
-          from: { environment: "client", category: "ui", kind: "component", role: "react-component" },
+          from: {
+            environment: "client",
+            category: "ui",
+            kind: "component",
+            role: "react-component",
+          },
           disallow: "b/**",
         },
       ],
@@ -159,7 +176,11 @@ describe("POST-analysis: validateConfigAgainstIndex", () => {
   test("an out-of-domain value on a closed dimension is flagged", () => {
     const cfg = parseConfig({
       rules: [
-        { name: "bad", from: { facets: { "rust.visibility": ["pub", "protected"] } }, disallow: "b/**" },
+        {
+          name: "bad",
+          from: { facets: { "rust.visibility": ["pub", "protected"] } },
+          disallow: "b/**",
+        },
       ],
     });
     const problems = validateConfigAgainstIndex(cfg, index);
@@ -187,7 +208,9 @@ describe("POST-analysis: validateConfigAgainstIndex", () => {
 
   test("open dimensions (folder/language) accept any value", () => {
     const cfg = parseConfig({
-      rules: [{ name: "x", from: { facets: { folder: "anything", language: "RS" } }, disallow: "b/**" }],
+      rules: [
+        { name: "x", from: { facets: { folder: "anything", language: "RS" } }, disallow: "b/**" },
+      ],
     });
     expect(validateConfigAgainstIndex(cfg, index)).toEqual([]);
   });
