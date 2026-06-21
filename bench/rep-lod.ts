@@ -23,12 +23,7 @@ import {
   solveLodCut,
 } from "../lib/graph/lod-cut-solver";
 import { aggregateLodEdges, type LodEdgeInput } from "../lib/graph/lod-edge";
-import {
-  makeDenseGraph,
-  makeDeepGraph,
-  makeSyntheticGraph,
-  makeWideGraph,
-} from "./synthetic";
+import { makeDenseGraph, makeDeepGraph, makeSyntheticGraph, makeWideGraph } from "./synthetic";
 import { round, timeIt } from "./metrics";
 import type { GraphModel } from "../lib/graph/types";
 
@@ -94,7 +89,11 @@ async function benchOne(id: string, graph: GraphModel): Promise<Row> {
   const nodeIds = graph.nodes.map((n) => n.id);
 
   const hierarchy = await timeIt(
-    () => buildRepresentationHierarchy(buildGroupingSnapshot(directoryGrouping(graph), id, nodeIds), nodeIds),
+    () =>
+      buildRepresentationHierarchy(
+        buildGroupingSnapshot(directoryGrouping(graph), id, nodeIds),
+        nodeIds,
+      ),
     iters,
   );
   const h = buildRepresentationHierarchy(
@@ -103,8 +102,24 @@ async function benchOne(id: string, graph: GraphModel): Promise<Row> {
   );
 
   const cam: CameraState = { x: 0, y: 0, scale: 0.5, viewport: { w: 1600, h: 900 } };
-  const solve = await timeIt(() => solveLodCut(h, bootstrapCut(h), { forceClosed: new Set(), forceOpen: new Set() }, cam, BUDGET), iters);
-  const cut = solveLodCut(h, bootstrapCut(h), { forceClosed: new Set(), forceOpen: new Set() }, cam, BUDGET);
+  const solve = await timeIt(
+    () =>
+      solveLodCut(
+        h,
+        bootstrapCut(h),
+        { forceClosed: new Set(), forceOpen: new Set() },
+        cam,
+        BUDGET,
+      ),
+    iters,
+  );
+  const cut = solveLodCut(
+    h,
+    bootstrapCut(h),
+    { forceClosed: new Set(), forceOpen: new Set() },
+    cam,
+    BUDGET,
+  );
 
   const { edges } = edgeInputs(graph);
   const edgeAgg = await timeIt(() => aggregateLodEdges(h, cut, edges, nodeIds.length), iters);

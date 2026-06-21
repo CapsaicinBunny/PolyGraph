@@ -3,12 +3,7 @@ import { directoryGrouping } from "./grouping";
 import { buildGroupingSnapshot } from "./grouping-snapshot";
 import { buildRepresentationHierarchy } from "./representation";
 import { bootstrapCut, cutFromSelection, cutSignature } from "./lod-cut-solver";
-import {
-  commitIfMaterial,
-  createLodRuntime,
-  IntrusiveLru,
-  setPending,
-} from "./lod-runtime";
+import { commitIfMaterial, createLodRuntime, IntrusiveLru, setPending } from "./lod-runtime";
 import { type GraphModel, makeEdge } from "./types";
 
 const file = (path: string) => ({
@@ -45,7 +40,11 @@ describe("commitIfMaterial — ONLY a committed generation triggers a rebuild", 
   test("a materially-different pending cut commits and bumps the generation", () => {
     const boot = bootstrapCut(h);
     const rt = createLodRuntime(boot, sigOf(boot));
-    const refined = cutFromSelection(h, [...nodeIds.map((_, i) => h.columns.leafRepresentationByNode[i])], 0);
+    const refined = cutFromSelection(
+      h,
+      [...nodeIds.map((_, i) => h.columns.leafRepresentationByNode[i])],
+      0,
+    );
     setPending(rt, refined, sigOf(refined));
     const committed = commitIfMaterial(rt);
     expect(committed).toBe(true);

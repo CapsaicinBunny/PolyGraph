@@ -63,7 +63,9 @@ describe("buildSceneRepresentationCut — valid antichain + collapse-shaped deri
     expect(r.collapsedBoxKeys.has("a")).toBe(true);
     expect(r.collapsedBoxKeys.has("b")).toBe(true);
     // The derived open selection equals groupLodSelection over the collapsed set.
-    expect([...r.openSelection].sort()).toEqual([...groupLodSelection(r.collapsedBoxKeys, snap)].sort());
+    expect([...r.openSelection].sort()).toEqual(
+      [...groupLodSelection(r.collapsedBoxKeys, snap)].sort(),
+    );
     assertValidAntichain(r);
   });
 
@@ -78,7 +80,9 @@ describe("buildSceneRepresentationCut — valid antichain + collapse-shaped deri
 
   test("the derived openSelection is exactly groupLodSelection(collapsed, snapshot)", () => {
     const r = solve({ x: 0, y: 0, scale: 1 });
-    expect([...r.openSelection].sort()).toEqual([...groupLodSelection(r.collapsedBoxKeys, snap)].sort());
+    expect([...r.openSelection].sort()).toEqual(
+      [...groupLodSelection(r.collapsedBoxKeys, snap)].sort(),
+    );
   });
 });
 

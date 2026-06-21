@@ -7,10 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { directoryGrouping } from "./grouping";
 import { buildGroupingSnapshot } from "./grouping-snapshot";
 import type { Box, Camera, Viewport } from "./lod-screen";
-import {
-  buildSceneRepresentationCut,
-  DEFAULT_REP_LOD_OPTIONS,
-} from "./lod-representation-cut";
+import { buildSceneRepresentationCut, DEFAULT_REP_LOD_OPTIONS } from "./lod-representation-cut";
 import { aggregateNodeId, collapseClusters, isAggregateId } from "./collapse";
 import { toDirectoryBoxKeys } from "./grouping";
 import type { CollapseIntent } from "./collapse-model";
@@ -26,13 +23,7 @@ const file = (path: string) => ({
 });
 
 const graph: GraphModel = {
-  nodes: [
-    file("a/x/f1.c"),
-    file("a/x/f2.c"),
-    file("a/y/f3.c"),
-    file("b/z/f4.c"),
-    file("b/z/f5.c"),
-  ],
+  nodes: [file("a/x/f1.c"), file("a/x/f2.c"), file("a/y/f3.c"), file("b/z/f4.c"), file("b/z/f5.c")],
   edges: [makeEdge("a/x/f1.c", "b/z/f4.c", "import")],
 };
 const nodeIds = graph.nodes.map((n) => n.id);
