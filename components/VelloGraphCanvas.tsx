@@ -1347,23 +1347,58 @@ export function VelloGraphCanvas(props: GraphViewProps) {
 
   // INITIAL / refresh rep cut (design impl point 5). The mount-effect's recomputeCut fires only on
   // camera gestures, so without this the authoritative materializer path would never run until the
-  // user zooms/pans — the bootstrap-seeded base scene would render indefinitely. When a fresh
-  // layout-ready scene lands (a new graph / filter / grouping / the rep scene itself), fire one cut
-  // so the committed cut is materialized into the production scene. The solver's committed-generation
-  // guard makes this idempotent: re-running the SAME committed cut returns committed=false, so
-  // folding the rep scene's own re-layout does NOT loop (no second setRepScene). Skipped until the
-  // scene is layout-ready and recomputeCut is installed.
-  const lastCutScene = useRef<Scene | null>(null);
+  // user zooms/pans — the bootstrap-seeded base scene would render indefinitely. When a genuinely
+  // NEW cut input lands (a new graph / filter / grouping / a user collapse-or-expand) we fire one cut
+  // so the committed cut is materialized into the production scene.
+  //
+  // CRITICAL re-entry guard (severe-loop fix): this effect must fire ONCE per real cut-input change,
+  // NOT on the cut's OWN relayout. Previously it keyed off `scene` object identity, but a committed
+  // cut bumps result.runtime.generation → the canvas writes a new cutSignature → useScene's structure
+  // useMemo changes → the layout worker produces a NEW `scene` object for the SAME committed cut →
+  // this effect re-fired recomputeCut("pan") → another committed cut → ~25 cuts/second forever (the
+  // committed scene was provably CONSTANT in telemetry). Each spurious recut also advanced the
+  // STATEFUL eviction/retention re-solve, which could keep the cut from reaching a fixed point.
+  //
+  // The gate is now a signature of the cut's INPUTS that is STABLE across a pure relayout but CHANGES
+  // on every legitimate trigger:
+  //   • `fitSignature` (Explorer) — graph/level/algorithm/direction/groupBy/density/edgeRouting/
+  //     externals/edgeKinds/facets/folders/languages/expanded/focus/query. Covers initial load, new
+  //     graph, filter change, layout-engine change, direction, density, reveal-all/expand. Material-
+  //     stable: a relayout of the same committed cut does NOT change it.
+  //   • a serialization of the ACTIVE grouping mode's collapse INTENT (`intent` prop = Explorer's
+  //     intentByMode.get(groupBy)). fitSignature EXCLUDES this, so without it collapsing/expanding a
+  //     single group or collapse-all (which write intentByMode) would not re-cut. This is the user
+  //     INTENT layer ONLY — it deliberately EXCLUDES the camera-selection layer (collapsedClusters is
+  //     intent ∪ bootstrap ∪ camera-selection); the camera-selection layer is exactly the cut's own
+  //     relayout output, so folding it into the gate would re-create the loop.
+  // It deliberately does NOT include the cut generation or repScene — those are the relayout, not a
+  // new trigger. User wheel-zoom and pan still recut via their OWN handlers (onWheel/onMove/onUp),
+  // unchanged.
+  const cutInputSignature = useMemo(() => {
+    // Order-independent, content-based serialization of the active mode's collapse intent. A pure
+    // relayout never mutates intentByMode, so this string is identical across the relayout; a user
+    // collapse/expand or collapse-all writes intentByMode → a new active `intent` → a new string.
+    let intentSig = "";
+    if (intent && intent.size > 0) {
+      intentSig = [...intent.entries()]
+        .map(([id, state]) => `${id}=${state}`)
+        .sort()
+        .join(",");
+    }
+    return `${fitSignature ?? ""}::${intentSig}`;
+  }, [fitSignature, intent]);
+
+  const lastCutInputSig = useRef<string | null>(null);
   useEffect(() => {
     if (!ready || !layoutReady) return;
-    if (scene === lastCutScene.current) return; // same scene (highlight/dim only) — nothing to recut
-    lastCutScene.current = scene;
+    if (cutInputSignature === lastCutInputSig.current) return; // pure relayout / dim — nothing to recut
+    lastCutInputSig.current = cutInputSignature;
     // "pan" (visibility) ALWAYS runs the cut (no band-advance requirement) without forcing deeper
     // refinement — exactly what an initial / post-change materialization needs. A real zoom still
     // refines via the wheel handler.
     recomputeCutRef.current?.("pan");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, layoutReady, scene]);
+  }, [ready, layoutReady, cutInputSignature]);
 
   // Selection / search are cheap — just update + redraw.
   useEffect(() => {

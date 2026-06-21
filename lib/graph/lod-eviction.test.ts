@@ -69,18 +69,42 @@ describe("makeEvictionController — bounds offscreen auto-opens via the LRU", (
   });
 
   test("on-screen auto-opens are kept FRESH and survive; offscreen ones evict first", () => {
-    const ctrl = makeEvictionController(h.repCount, 2);
+    // Budget bounds the OFFSCREEN deadband only; on-screen opens are exempt (they're bounded
+    // by the solver's card budget, and evicting a visible card would break the recut fixed
+    // point). Budget 1 + two offscreen opens (b, c) → the oldest offscreen (b) evicts; the
+    // on-screen rep (a) survives no matter how many on-screen opens there are.
+    const ctrl = makeEvictionController(h.repCount, 1);
     const a = groupRep("directory:a");
     const b = groupRep("directory:b");
     const c = groupRep("directory:c");
-    // a opened first (oldest), but it stays ON-SCREEN every frame → refreshed to MRU.
-    // b, c open later OFFSCREEN. Budget 2 → the oldest *offscreen* (b) evicts, not a.
+    // a opened first (oldest), but it stays ON-SCREEN every frame → refreshed to MRU + exempt.
+    // b, c open later OFFSCREEN. Offscreen count 2 > budget 1 → the oldest offscreen (b) evicts.
     ctrl.recordOpen([a], () => true);
     ctrl.recordOpen([a, b], (rep) => rep === a); // a on-screen, b offscreen
     const ev = ctrl.recordOpen([a, b, c], (rep) => rep === a); // a on-screen, b & c offscreen
-    expect(ev.evicted.has(a)).toBe(false); // a is fresh (on-screen)
+    expect(ev.evicted.has(a)).toBe(false); // a is on-screen → never a victim
     expect(ev.evicted.has(b)).toBe(true); // b is the oldest offscreen
     expect(ev.count).toBe(1);
+  });
+
+  test("on-screen opens never evict even when they ALONE exceed the budget (recut fixed point)", () => {
+    // The residual-loop regression: at a deep zoom MANY group proxies are auto-opened ON-SCREEN
+    // at once, exceeding the budget. The OLD controller evicted on-screen reps down to the
+    // budget; with the LRU recency tiebreak a DIFFERENT victim was chosen each frame, the
+    // re-solved cut oscillated, and `committed` never settled — the canvas recut cycle looped
+    // forever. On-screen opens must be wholly exempt so the open set is a deterministic function
+    // of the cut and repeated identical recuts converge.
+    const ctrl = makeEvictionController(h.repCount, 1); // tiny budget
+    const a = groupRep("directory:a");
+    const b = groupRep("directory:b");
+    const c = groupRep("directory:c");
+    // All three open and ALL on-screen, every frame. Even at budget 1, none may evict.
+    for (let i = 0; i < 5; i++) {
+      const ev = ctrl.recordOpen([a, b, c], () => true);
+      expect(ev.count).toBe(0); // no on-screen rep is ever evicted
+    }
+    expect(ctrl.trackedSize).toBe(3); // all three stay tracked + open
+    expect(ctrl.totalEvictions).toBe(0);
   });
 
   test("a group that CLOSES is dropped from tracking (no longer counts toward the budget)", () => {

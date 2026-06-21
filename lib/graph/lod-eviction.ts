@@ -6,11 +6,14 @@
 // advanceRuntimeCut. The controller persists ACROSS recuts (the canvas holds it on a ref):
 //
 //  - It tracks which group proxies are currently auto-OPENED. On-screen opens are kept
-//    fresh (moved to MRU each frame); offscreen opens AGE (never refreshed while offscreen)
-//    so they are the first to go. When the tracked set exceeds the offscreen-open BUDGET,
-//    the oldest tracked reps are evicted — the caller force-closes them, so a long
-//    exploration of many regions can't grow auto-opens without bound. The cumulative count
-//    drives the overlay's `evictions` stat (which was always 0).
+//    fresh (moved to MRU each frame) and are NEVER evicted; offscreen opens AGE (never
+//    refreshed while offscreen) so they are the first — and only — eviction victims. When
+//    the OFFSCREEN tracked set exceeds the offscreen-open BUDGET, the oldest offscreen reps
+//    are evicted — the caller force-closes them, so a long exploration of many regions can't
+//    grow auto-opens without bound. Exempting on-screen opens is load-bearing for the recut
+//    fixed point: evicting a visible card the gate immediately re-opens would make the
+//    committed cut oscillate (a different LRU victim each frame) and the canvas's recut cycle
+//    would never settle. The cumulative count drives the overlay's `evictions` stat.
 //
 //  - It owns a single RuntimeLodCut and rolls it forward IN PLACE (advanceRuntimeCut) when
 //    the rep count is unchanged — bumping the epoch, reusing the backing Uint32Array — so a
@@ -70,8 +73,9 @@ export interface EvictionController {
 
 /**
  * Build an eviction controller. `keySpace` is the exclusive upper bound on rep ids the LRU
- * must hold (the rep count); `offscreenOpenBudget` is the maximum number of auto-opened
- * group proxies retained before the oldest are evicted.
+ * must hold (the rep count); `offscreenOpenBudget` is the maximum number of OFFSCREEN
+ * auto-opened group proxies retained (the deadband) before the oldest are evicted. On-screen
+ * opens are exempt from the budget — they are bounded by the solver's card budget, not here.
  */
 export function makeEvictionController(
   keySpace: number,
@@ -104,11 +108,16 @@ export function makeEvictionController(
       //    Process on-screen first so a freshly-touched on-screen rep is always newer than
       //    an already-tracked offscreen rep; insert newly-seen offscreen reps last so they
       //    start at MRU (a just-opened offscreen region isn't evicted before older ones).
+      //    We also remember which tracked reps are ON-SCREEN this frame: those are NEVER
+      //    eviction victims (see step 3) — they're what the user is looking at, and the
+      //    solver's card budget already bounds the visible antichain width.
       const openList = [...open];
+      const onScreenNow = new Set<number>();
       for (const rep of openList) {
         if (isOnScreen(rep)) {
           lru.touch(rep); // insert or refresh to MRU
           tracked.add(rep);
+          onScreenNow.add(rep);
         }
       }
       for (const rep of openList) {
@@ -118,14 +127,40 @@ export function makeEvictionController(
         }
       }
 
-      // 3. Evict down to the budget — the oldest tracked reps (offscreen ones age to the
-      //    head, on-screen ones were just refreshed to the tail).
+      // 3. Evict down to the budget, but ONLY OFFSCREEN opens are eligible. The budget bounds
+      //    the offscreen DEADBAND (groups retained open after panning away), not the visible
+      //    antichain. Evicting an ON-SCREEN open would (a) fight the user — re-collapse a group
+      //    they're actively looking at — and (b) break convergence: with identical inputs the
+      //    gate re-opens that group next frame, the LRU recency tiebreak picks a DIFFERENT
+      //    on-screen victim, the re-solved cut differs, `committed` stays true, and the
+      //    canvas's recut cycle becomes a period-N limit cycle that never reaches a fixed
+      //    point (the residual "constantly cutting" loop). By making only offscreen reps
+      //    eligible, the on-screen open set is a pure deterministic function of the cut and
+      //    the offscreen retained set shrinks monotonically to the budget — so a recut with
+      //    unchanged material + camera + intent converges to committed=false.
       const evicted = new Set<number>();
-      while (lru.size > offscreenOpenBudget) {
-        const victim = lru.evictOldest();
-        if (victim === -1) break;
-        tracked.delete(victim);
-        evicted.add(victim);
+      // Count only offscreen tracked reps against the budget; on-screen opens are exempt.
+      let offscreenTracked = tracked.size - onScreenNow.size;
+      if (offscreenTracked > offscreenOpenBudget) {
+        // evictOldest walks from the LRU head (oldest). Offscreen reps age to the head while
+        // on-screen reps were just refreshed to the tail, so the oldest entries are offscreen
+        // first; we still SKIP any on-screen rep we encounter (re-touched, never evicted) and
+        // stop once the offscreen count is back within budget.
+        const skipped: number[] = [];
+        while (offscreenTracked > offscreenOpenBudget) {
+          const victim = lru.evictOldest();
+          if (victim === -1) break;
+          if (onScreenNow.has(victim)) {
+            // On-screen — exempt. Hold it aside and re-insert after the pass so it stays tracked.
+            skipped.push(victim);
+            continue;
+          }
+          tracked.delete(victim);
+          evicted.add(victim);
+          offscreenTracked--;
+        }
+        // Re-insert the exempted on-screen reps at MRU (they remain tracked + open).
+        for (const rep of skipped) lru.touch(rep);
       }
       totalEvictions += evicted.size;
       return { evicted, count: evicted.size };

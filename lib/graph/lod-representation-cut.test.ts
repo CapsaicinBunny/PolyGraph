@@ -348,8 +348,11 @@ describe("buildSceneRepresentationCut — bounded offscreen eviction + in-place 
     const budget = 1;
     const ctrl = makeEvictionController(s.groupIds.length + ids.length, budget);
     const baseOpts = { ...opts, openPx: 100, maxCards: 100000, nodeBudget: 100000 };
-    // Frame 1: zoomed in, all four dirs on-screen → all four auto-open. With an offscreen-
-    // open budget of 1, the LRU bounds the retained opens — the oldest are evicted.
+    // Frame 1: all four dirs ON-SCREEN → all four auto-open. The budget bounds the OFFSCREEN
+    // deadband only, so on-screen opens are EXEMPT — nothing evicts while they're visible.
+    // (Exempting on-screen opens is what keeps the canvas's recut cycle from oscillating; see
+    // lod-recut-convergence.test.ts.) Visibility is decided by the STABLE bounds, not the live
+    // boxes; the on-screen frame is centered so the auto-opened proxies are in-viewport.
     const r1 = buildSceneRepresentationCut({
       snapshot: s,
       nodeIds: ids,
@@ -360,15 +363,15 @@ describe("buildSceneRepresentationCut — bounded offscreen eviction + in-place 
       options: baseOpts,
       eviction: ctrl,
     });
-    // The eviction count is a REAL number now (no longer hardcoded 0): opening 4 groups
-    // under a budget of 1 evicts the surplus.
-    expect(r1.evictions).toBeGreaterThan(0);
-    expect(r1.totalEvictions).toBe(r1.evictions);
-    // The retained auto-opens are bounded by the budget.
-    expect(ctrl.trackedSize).toBeLessThanOrEqual(budget);
+    // No eviction while the opens are on-screen — they're bounded by the card budget, not here.
+    expect(r1.evictions).toBe(0);
+    const trackedOnScreen = ctrl.trackedSize;
+    expect(trackedOnScreen).toBeGreaterThan(budget); // more on-screen opens than the budget…
+    // …yet none evicted (on-screen exemption) — the property the recut fixed point relies on.
 
-    // Frame 2: pan far away. The survivor stays open (deadband via retention) but the bound
-    // still holds, and the cumulative eviction count never decreases.
+    // Frame 2: pan far away so the auto-opened proxies leave the viewport. NOW they are
+    // offscreen and exceed the budget → the surplus is evicted (re-collapsed), the cumulative
+    // count rises, and the retained offscreen set is bounded by the budget.
     const farBoxes = (): Map<string, Box> => {
       const m = new Map<string, Box>();
       dirs.forEach((d, i) => {
@@ -381,15 +384,17 @@ describe("buildSceneRepresentationCut — bounded offscreen eviction + in-place 
       snapshot: s,
       nodeIds: ids,
       boxes: farBoxes(),
-      cam: { x: 0, y: 0, scale: 1 },
+      cam: { x: -500_000, y: -500_000, scale: 1 }, // pans the stable-bound proxies off-screen
       vp,
       intent: noIntent,
       options: baseOpts,
       previous: r1.runtime,
       eviction: ctrl,
     });
-    expect(ctrl.trackedSize).toBeLessThanOrEqual(budget); // still bounded
-    expect(r2.totalEvictions).toBeGreaterThanOrEqual(r1.totalEvictions); // monotonic
+    // Now offscreen-over-budget → eviction fires (a REAL number, not the old hardcoded 0).
+    expect(r2.evictions).toBeGreaterThan(0);
+    expect(ctrl.trackedSize).toBeLessThanOrEqual(budget); // offscreen retention bounded
+    expect(r2.totalEvictions).toBeGreaterThanOrEqual(r2.evictions); // cumulative, monotonic
   });
 
   test("the runtime cut is rolled IN PLACE across recuts (same backing array)", () => {
