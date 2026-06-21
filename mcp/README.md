@@ -30,9 +30,12 @@ telemetry buffer.
 
 `polygraph_read` can only read files PolyGraph **already analyzed under the scanned
 root** — two independent gates enforce it: the file must be a file node in the
-scanned graph (so only real source files that passed the scanner's filters — never
-`node_modules`, `.env`, or secrets), and its canonicalized (`realpath`) path must
-stay inside the canonical root (defeating `../` and symlink escapes). Since the
+scanned graph (so only real source that passed the scanner's extension/ignore
+filters — excludes `node_modules`, build output, and non-source files like a bare
+`.env`; note source files such as `.json`/`.sql` are in scope, so this bounds reads
+to the analyzed source set rather than being a secrets firewall), and its
+canonicalized (`realpath`) path must stay inside the canonical root (defeating `../`
+and symlink escapes). Since the
 server is LLM-driven, this scoping is deliberate: a repository it analyzes cannot
 steer it into reading arbitrary files on the machine.
 
@@ -76,6 +79,7 @@ bun test mcp                                   # unit tests (operations)
 npx @modelcontextprotocol/inspector bun run mcp/server.ts   # interactive tool inspector
 ```
 
-Architecture: `operations.ts` holds the six analysis functions as plain async
-calls (unit-tested directly); `server.ts` is a thin layer that registers each as
-an MCP tool; `cache.ts` memoizes scans per project path.
+Architecture: `operations.ts` holds the eight analysis functions (unit-tested
+directly); `server.ts` is a thin layer that registers each as an MCP tool;
+`cache.ts` memoizes scans per project path; `telemetry.ts` is the stderr-pinned
+telemetry bus the `polygraph_logs` tool reads.

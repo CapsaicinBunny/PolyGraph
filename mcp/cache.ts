@@ -52,3 +52,8 @@ export async function getScan(path: string, opts: { refresh?: boolean } = {}): P
 export function clearScanCache(): void {
   cache.clear();
 }
+
+/** The cached root keys, least-recently-used first (a test seam for LRU assertions). */
+export function cacheKeys(): string[] {
+  return [...cache.keys()];
+}
