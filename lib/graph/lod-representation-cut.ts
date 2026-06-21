@@ -29,6 +29,7 @@ import {
   buildRepresentationHierarchy,
   DETACHED_REP,
   type RepresentationHierarchy,
+  representationBuilderVersion,
   representativeOf,
 } from "./representation";
 import {
@@ -55,13 +56,15 @@ import { type EvictionController, makeEvictionController } from "./lod-eviction"
 import type { CollapseIntent, GroupId } from "./collapse-model";
 
 /**
- * Version of the representation BUILDER (the hierarchy shape: proxy parenting, intermediate
- * tiers, fan-out bounds, cost rollup). Folded into the {@link RepresentationMaterialSignature}
- * so a builder change invalidates every cached {@link RepresentationRuntime} (and downstream
- * proxy/local-layout caches keyed off the same version). Bump on ANY change to the structure
- * `buildRepresentationHierarchy` emits.
+ * Version of the representation BUILDER (the hierarchy shape: proxy parenting, the bootstrap
+ * super-root / root-bucket tiering, intermediate tiers, fan-out bounds, cost rollup). Folded
+ * into the {@link RepresentationMaterialSignature} so a builder change invalidates every cached
+ * {@link RepresentationRuntime} (and downstream proxy/local-layout caches keyed off the same
+ * version). Re-exports {@link representationBuilderVersion} (the single source of truth defined
+ * alongside the builder) so the two can never drift; bump THAT constant on any change to the
+ * structure `buildRepresentationHierarchy` emits — including the intermediate-tier limits.
  */
-export const REPRESENTATION_BUILDER_VERSION = "rb1";
+export const REPRESENTATION_BUILDER_VERSION = representationBuilderVersion;
 
 /** Tuning for the representation cut, mirroring the C1a GroupCutOptions surface. */
 export interface RepLodOptions {

@@ -132,6 +132,22 @@ export interface RepresentationCosts {
    * NOT rebuilt — the already-filtered community detection is reused as-is.
    */
   visibleNode?: (ordinal: number) => boolean;
+  /**
+   * Bootstrap-feasibility normalization (design B1 "Bootstrap feasibility" + impl note (c)).
+   * When true, the natural roots (root group reps + NO_GROUP orphan leaf reps) are ADOPTED by
+   * a bounded tree of synthetic SUPER-ROOT / root-bucket proxy reps so the coarsest cut —
+   * {@link rootCut}, which selects EVERY root — is within the hard card budget no matter how
+   * many orphans exist. Without this, a high-orphan graph starts the bootstrap antichain OVER
+   * budget and (since refinement only adds cards) can never become feasible.
+   *
+   * The synthetic reps are appended AFTER the leaf reps (rep ids `[groupCount + nodeCount, …)`),
+   * so group-rep ids (`< groupCount`) and leaf-rep ids are byte-identical to the un-normalized
+   * build. Each synthetic rep obeys {@link MAX_FANOUT}; deep root sets tier into multiple
+   * levels (bounded by {@link MAX_PARTITION_DEPTH}). The buckets carry NO group and NO box key
+   * (render-only structural proxies). Omitted/false → the prior behavior (every natural root is
+   * an independent {@link RepresentationHierarchy.roots} entry).
+   */
+  bootstrapRoots?: boolean;
 }
 
 /**
@@ -144,6 +160,29 @@ export interface RepresentationCosts {
 export const DETACHED_REP = -2;
 
 /**
+ * Intermediate-tier limits (design impl note (c) — "Explicit intermediate-tier limits").
+ * Named here so proxy-tier construction (the bootstrap super-root buckets in P0.5; the
+ * recursive in-group intermediate tiers in P1) shares ONE set of bounds, and so they fold
+ * into {@link REPRESENTATION_BUILDER_VERSION} — a change to any of them invalidates the
+ * cached runtime + downstream proxy caches.
+ */
+export const MAX_FANOUT = 32; // max children of any rep (invariant b: no unbounded fan-out)
+export const MAX_LEAVES_PER_PROXY = 128; // max leaves a single proxy may directly stand in for
+export const MAX_PARTITION_DEPTH = 12; // max recursion depth of proxy-tier construction
+export const MAX_PARTITION_WORK_MS = 50; // soft wall-clock budget for one partition pass
+
+/**
+ * Version of the representation BUILDER — the structure {@link buildRepresentationHierarchy}
+ * emits (proxy parenting, the bootstrap super-root / root-bucket tiering, fan-out bounds, the
+ * intermediate-tier limits above, and the cost rollup). The P0 persistent-runtime material
+ * signature folds this in (see `lod-representation-cut.ts` → `REPRESENTATION_BUILDER_VERSION`,
+ * re-exported below), so a builder change invalidates every cached `RepresentationRuntime` and
+ * the downstream proxy/local-layout caches keyed off the same version. Bump on ANY change to
+ * the hierarchy shape — including the tiering constants above.
+ */
+export const representationBuilderVersion = "rb2";
+
+/**
  * The full hierarchy: the columnar runtime plus the convenience handles a consumer
  * needs (the source snapshot, the rep count, the roots, and the group-ordinal → rep
  * mapping). The columnar form is authoritative; the rest are derived views.
@@ -151,12 +190,26 @@ export const DETACHED_REP = -2;
 export interface RepresentationHierarchy {
   /** The grouping snapshot this hierarchy was built from. */
   snapshot: CompactGroupingSnapshot;
-  /** Total representations (group reps + node leaf reps). */
+  /** Total representations (group reps + node leaf reps + synthetic root-bucket proxies). */
   repCount: number;
-  /** Rep ids with no parent (root groups + orphan leaf reps). */
+  /**
+   * Rep ids with no parent. WITHOUT bootstrap normalization: the natural roots (root group
+   * reps + orphan leaf reps). WITH it ({@link RepresentationCosts.bootstrapRoots}): the single
+   * synthetic super-root (or the bounded top tier), so the coarsest cut — {@link rootCut},
+   * which selects every root — is budget-feasible regardless of orphan count (design B1
+   * "Bootstrap feasibility").
+   */
   roots: number[];
   /** group ordinal → its rep id (identity here, but explicit for callers). */
   repOfGroup: Int32Array;
+  /**
+   * The rep id of the synthetic super-root when bootstrap normalization is on and any natural
+   * root exists, else -1. The super-root carries NO group (groupByRep === NO_GROUP) and NO
+   * box key — it is a render-only structural proxy that adopts the natural roots so the
+   * bootstrap antichain fits the hard budget. -1 when normalization is off or there are no
+   * visible roots (an empty/fully-filtered graph).
+   */
+  superRoot: number;
   /** The columnar runtime arrays. */
   columns: RepresentationColumns;
 }
@@ -182,11 +235,16 @@ export function buildRepresentationHierarchy(
   const masked = typeof costs.visibleNode === "function";
   const isVisible = costs.visibleNode ?? (() => true);
 
+  const bootstrap = costs.bootstrapRoots === true;
+
   const groupCount = snapshot.groupIds.length;
   const nodeCount = snapshot.directGroupByNode.length;
-  const repCount = groupCount + nodeCount;
+  // Group reps occupy [0, groupCount); leaf reps occupy [groupCount, baseRepCount). Synthetic
+  // root-bucket proxies (bootstrap normalization) are appended at [baseRepCount, repCount) so
+  // group/leaf rep ids are byte-identical to the un-normalized build.
+  const baseRepCount = groupCount + nodeCount;
 
-  // Group reps occupy [0, groupCount); leaf reps occupy [groupCount, repCount).
+  // Group reps occupy [0, groupCount); leaf reps occupy [groupCount, baseRepCount).
   const leafRepOf = (nodeOrdinal: number) => groupCount + nodeOrdinal;
 
   // POST-FILTER detachment (Gap 7). A leaf rep is detached iff its node is hidden; a group
@@ -213,6 +271,29 @@ export function buildRepresentationHierarchy(
       }
     }
   }
+
+  // BOOTSTRAP FEASIBILITY (design B1). Collect the NATURAL roots — the reps that would each
+  // be an independent root WITHOUT normalization: every attached root group rep (parent -1,
+  // has visible members) and every attached NO_GROUP orphan leaf rep. A high-orphan graph has
+  // O(nodeCount) of these, so the un-normalized bootstrap antichain (rootCut selects them all)
+  // starts OVER budget. We plan a bounded tier of synthetic proxies that ADOPT them, computed
+  // BEFORE allocation so the typed arrays are sized once for the appended reps.
+  const naturalRoots: number[] = [];
+  if (bootstrap) {
+    for (let g = 0; g < groupCount; g++) {
+      if (groupHasVisible[g] === 0) continue; // detached — never a root
+      if (snapshot.parentByGroup[g] === -1) naturalRoots.push(g);
+    }
+    for (let i = 0; i < nodeCount; i++) {
+      if (!isVisible(i)) continue; // detached leaf — never a root
+      const g = snapshot.directGroupByNode[i];
+      if (g === NO_GROUP || g >= groupCount) naturalRoots.push(leafRepOf(i)); // orphan leaf
+    }
+  }
+  // Plan the synthetic super-root / root-bucket tier over the natural roots (deterministic,
+  // fan-out-bounded). `plan.count === 0` → no normalization needed (off, or ≤0 natural roots).
+  const plan = planRootBuckets(naturalRoots, baseRepCount);
+  const repCount = baseRepCount + plan.count;
 
   const parentByRep = new Int32Array(repCount).fill(-1);
   const groupByRep = new Uint32Array(repCount);
@@ -265,6 +346,28 @@ export function buildRepresentationHierarchy(
     edgeCost[rep] = edgeCostOf(id, i);
     labelCost[rep] = labelCostOf(id, i);
     gpuByteCost[rep] = gpuCostOf(id, i);
+  }
+
+  // BOOTSTRAP super-root / root-bucket wiring (design B1). Re-parent each natural root onto
+  // its planned synthetic bucket, then wire the synthetic reps themselves. A synthetic proxy
+  // is render-only: NO group (groupByRep === NO_GROUP), one aggregate card (nodeCost 1, one
+  // label), no edges/gpu of its own — exactly like a group proxy's per-level cost. Its subtree
+  // cost rolls up below. The super-root becomes the sole entry in `roots`, so the coarsest cut
+  // is one card regardless of orphan count (invariant a).
+  let superRoot = -1;
+  if (plan.count > 0) {
+    superRoot = plan.superRoot;
+    // Re-parent natural roots (they were wired to -1 above) onto their bucket.
+    for (const [nat, bucket] of plan.bucketByNaturalRoot) parentByRep[nat] = bucket;
+    // Wire each synthetic rep: parent from the plan, render-only single-card cost.
+    for (let k = 0; k < plan.count; k++) {
+      const rep = baseRepCount + k;
+      parentByRep[rep] = plan.parentOf[k]; // another synthetic rep, or -1 for the super-root
+      groupByRep[rep] = NO_GROUP; // render-only structural proxy — no semantic group
+      nodeCost[rep] = 1; // one aggregate card
+      labelCost[rep] = 1; // one proxy label
+      proxyKeys[rep] = `${snapshot.modeKey}|bucket|${k}`;
+    }
   }
 
   // Build child adjacency as firstChild/nextSibling. Children are kept in ASCENDING
@@ -374,7 +477,85 @@ export function buildRepresentationHierarchy(
     leafRepresentationByNode,
   };
 
-  return { snapshot, repCount, roots, repOfGroup, columns };
+  return { snapshot, repCount, roots, repOfGroup, superRoot, columns };
+}
+
+/**
+ * Plan the synthetic super-root / root-bucket tier over the natural roots (design B1 +
+ * impl note (c)). Deterministic and fan-out-bounded: the natural roots are partitioned into
+ * contiguous chunks of at most {@link MAX_FANOUT}, each chunk adopted by one new synthetic
+ * proxy; that level is partitioned again, repeating until one level remains, which a single
+ * SUPER-ROOT adopts. The result is one root (the super-root), so the bootstrap antichain is
+ * one card (invariant a) and no rep exceeds {@link MAX_FANOUT} children (invariant b).
+ *
+ * Synthetic rep ids are assigned bottom-up starting at `base` (== baseRepCount), so the
+ * deepest buckets get the lowest synthetic ids; this keeps the assignment deterministic and
+ * independent of the natural-root values. To keep ONE uniform feasibility guarantee we wrap
+ * even a single natural root in a super-root (so `rootCut` is always exactly one card).
+ * `count === 0` ONLY when there are NO natural roots at all (an empty / fully-filtered graph).
+ *
+ * {@link MAX_PARTITION_DEPTH} caps the tiering: with fan-out 32 and depth 12 the tree spans
+ * 32^12 (~1.15e18) roots, far beyond any real graph, so the cap is a safety bound, not a
+ * functional limit. If it is ever hit, the final super-root adopts the remaining level
+ * directly (a wider-than-MAX_FANOUT top level is preferred over an unbounded-depth tree).
+ */
+function planRootBuckets(
+  naturalRoots: readonly number[],
+  base: number,
+): {
+  count: number;
+  superRoot: number;
+  /** synthetic index k → parent rep id (another synthetic rep, or -1 for the super-root). */
+  parentOf: Int32Array;
+  /** natural root rep id → the synthetic rep id that adopts it. */
+  bucketByNaturalRoot: Map<number, number>;
+} {
+  const empty = {
+    count: 0,
+    superRoot: -1,
+    parentOf: new Int32Array(0),
+    bucketByNaturalRoot: new Map<number, number>(),
+  };
+  if (naturalRoots.length === 0) return empty;
+
+  // Two passes: (1) size the tiers to assign stable synthetic ids bottom-up; (2) emit the
+  // parent links. We accumulate synthetic reps in a temporary list; each entry records its
+  // children (rep ids — natural or already-created synthetic) so we can stamp parents after
+  // all ids are known.
+  const childrenOfSynthetic: number[][] = [];
+  const newSynthetic = (children: number[]): number => {
+    const id = base + childrenOfSynthetic.length;
+    childrenOfSynthetic.push(children);
+    return id;
+  };
+
+  // Bottom-up: partition the current level into ≤MAX_FANOUT chunks until one level remains.
+  let level: number[] = [...naturalRoots];
+  let depth = 0;
+  while (level.length > MAX_FANOUT && depth < MAX_PARTITION_DEPTH) {
+    const next: number[] = [];
+    for (let i = 0; i < level.length; i += MAX_FANOUT) {
+      next.push(newSynthetic(level.slice(i, i + MAX_FANOUT)));
+    }
+    level = next;
+    depth++;
+  }
+  // One super-root adopts the final level (≤MAX_FANOUT, unless MAX_PARTITION_DEPTH was hit —
+  // then it adopts the remainder directly, a bounded-depth/over-fan trade the doc-comment notes).
+  const superRoot = newSynthetic(level);
+
+  const count = childrenOfSynthetic.length;
+  const parentOf = new Int32Array(count).fill(-1); // default: the super-root's own parent is -1
+  const bucketByNaturalRoot = new Map<number, number>();
+  for (let k = 0; k < count; k++) {
+    const synthId = base + k;
+    for (const child of childrenOfSynthetic[k]) {
+      // A child < base is a natural root (group/leaf rep); ≥ base is a lower synthetic tier.
+      if (child < base) bucketByNaturalRoot.set(child, synthId);
+      else parentOf[child - base] = synthId;
+    }
+  }
+  return { count, superRoot, parentOf, bucketByNaturalRoot };
 }
 
 /**

@@ -17,6 +17,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildRepresentationHierarchy,
+  MAX_FANOUT,
   type RepresentationHierarchy,
   representativeOf,
 } from "./representation";
@@ -660,5 +661,64 @@ describe("solveLodCut — antichain edge-case guards (Phase C1b probe)", () => {
       bigBudget,
     );
     expect(antichainViolation(h, cut)).toBeNull();
+  });
+});
+
+// ── P0.5 super-root-bootstrap: the normalized hierarchy stays a valid antichain AND its
+//    coarsest cut is always budget-feasible (design B1 + invariants a/b). Reuses the same
+//    random hierarchy synthesis, rebuilt with bootstrapRoots: true.
+describe("solveLodCut — bootstrap-normalized antichain fuzz (P0.5 B1)", () => {
+  test("normalized hierarchy: valid antichain + coarsest cut ≤ MAX_FANOUT card under ANY budget", () => {
+    const ITERS = 3000;
+    for (let it = 0; it < ITERS; it++) {
+      const seed = 0x5500 + it;
+      const r = rng(seed);
+      const spec = randomSpec(r);
+      const { snap, nodeIds } = synthSnapshot(r, spec);
+      const nodeCost =
+        spec.costMode === "unit" ? () => 1 : (_id: string, ord: number) => 1 + (ord % 4);
+      const h = buildRepresentationHierarchy(snap, nodeIds, { nodeCost, bootstrapRoots: true });
+
+      // Coarsest cut (rootCut) feasibility: with normalization the roots are the bounded top
+      // tier, so the bootstrap antichain is at most MAX_FANOUT cards (one super-root in
+      // practice, but the top tier is the formal bound). This is the B1 invariant (a).
+      const coarsest = rootCut(h);
+      if (coarsest.cardCost > MAX_FANOUT) {
+        throw new Error(
+          `seed=${seed}: coarsest cut ${coarsest.cardCost} cards > MAX_FANOUT ${MAX_FANOUT} (roots=${h.roots.length})`,
+        );
+      }
+      assertCutValid(h, coarsest, `seed=${seed} (coarsest)`);
+
+      // No rep exceeds MAX_FANOUT children (invariant b).
+      const { firstChildByRep, nextSiblingByRep } = h.columns;
+      for (let rep = 0; rep < h.repCount; rep++) {
+        let n = 0;
+        for (let c = firstChildByRep[rep]; c !== -1; c = nextSiblingByRep[c]) n++;
+        if (n > MAX_FANOUT) {
+          throw new Error(`seed=${seed}: rep ${rep} has ${n} children > MAX_FANOUT ${MAX_FANOUT}`);
+        }
+      }
+
+      // A full solve under a random budget stays valid and within hard.
+      const constraints = randomConstraints(r, h);
+      const budget = randomBudget(r, h);
+      const cam = randomCamera(r);
+      let cut: LodCut;
+      try {
+        cut = solveLodCut(h, bootstrapCut(h), constraints, cam, budget, randomGate(r, h));
+      } catch (e) {
+        throw new Error(`seed=${seed} threw: ${(e as Error).message}`);
+      }
+      assertCutValid(h, cut, `seed=${seed} (solved)`);
+      // The solved cut never exceeds hard — EXCEPT the irreducible coarsest cut, which a
+      // degenerate 0-budget can't shrink below (it must still cover every node). So the bound
+      // is max(hardCards, coarsest): a production budget (≥ coarsest) is always honored.
+      const floor = Math.max(budget.hardCards, coarsest.cardCost);
+      if (cut.cardCost > floor) {
+        throw new Error(`seed=${seed}: solved cut ${cut.cardCost} cards > ${floor}`);
+      }
+    }
+    expect(true).toBe(true);
   });
 });

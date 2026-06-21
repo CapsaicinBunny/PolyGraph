@@ -141,6 +141,16 @@ interface CostVec {
  * The coarsest valid antichain: every root rep selected. Covers every node exactly once
  * (each node's path hits exactly one root). The natural bootstrap seed — "everything
  * starts as its top proxy", and the solver refines from here.
+ *
+ * BOOTSTRAP FEASIBILITY (design B1). `rootCut` selects EVERY `h.roots` entry, so its card
+ * cost is `h.roots.length`. WITHOUT the builder's bootstrap normalization, a high-orphan
+ * graph has O(nodeCount) roots (every NO_GROUP orphan leaf + every group root is its own
+ * root) — so the coarsest cut starts OVER the hard budget and, since refinement only ADDS
+ * cards, can never become feasible. WITH normalization (`bootstrapRoots: true` on the
+ * builder), the natural roots are adopted by a bounded synthetic super-root / root-bucket
+ * tier, so `h.roots` is the single super-root and this cut is exactly one card — always
+ * within `hardCards`. `rootCut` itself is unchanged; feasibility is a property of the
+ * normalized hierarchy it reads.
  */
 export function rootCut(h: RepresentationHierarchy): LodCut {
   return cutFromSelection(h, h.roots, 0);
