@@ -175,7 +175,10 @@ describe("authoritative rep-cut scene (materializer output, not collapseClusters
   });
 
   test("an explicit edge between two folded proxies is aggregated into ONE boundary edge", () => {
-    const { structure } = authoritative({ x: 0, y: 0, scale: 0.01 } as Camera);
+    // Scale 0.1: the P0.5 super-root has refined into the two top-group proxies {a, b}. (At 0.01
+    // both endpoints fold into the SINGLE super-root, making the edge internal → zero boundary
+    // edges; the a|b boundary only exists once a and b are distinct selected proxies.)
+    const { structure } = authoritative({ x: 0, y: 0, scale: 0.1 } as Camera);
     // The lone import a/x/f1.c → b/z/f4.c crosses the a|b boundary; both ends are folded, so it
     // surfaces as a single aggregated edge between the two proxy cards.
     const importEdges = structure.edges.filter((e) => e.kind === "import");

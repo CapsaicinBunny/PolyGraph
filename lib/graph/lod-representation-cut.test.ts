@@ -62,7 +62,11 @@ function solve(cam: Camera, intent: CollapseIntent = noIntent) {
 
 describe("buildSceneRepresentationCut — valid antichain + collapse-shaped derivation", () => {
   test("fully zoomed out: every group collapses to its proxy; the cut is a valid antichain", () => {
-    const r = solve({ x: 0, y: 0, scale: 0.01 }); // every box ~10px tall
+    // Scale 0.1: the synthetic super-root (P0.5 bootstrap normalization) has refined into the
+    // semantic top groups {a, b} but those groups have not opened further — the coarsest
+    // SEMANTIC level. (At 0.01 the cut would be the single render-only super-root card, which
+    // carries no box key; the super-root adds one extra coarsest LOD level above the groups.)
+    const r = solve({ x: 0, y: 0, scale: 0.1 }); // groups ~100px tall, super-root refined
     // Every TOP group is collapsed (its box key present in the collapsed set).
     expect(r.collapsedBoxKeys.has("a")).toBe(true);
     expect(r.collapsedBoxKeys.has("b")).toBe(true);
@@ -161,7 +165,9 @@ describe("buildSceneRepresentationCut — finite split budget (Gap 6 / 'Finite b
 
 describe("activeProxyBoxKeyOfNode — a selected hidden node highlights its active proxy", () => {
   test("a node inside a collapsed group maps to that group's proxy box key", () => {
-    const r = solve({ x: 0, y: 0, scale: 0.01 }); // everything collapsed
+    // Scale 0.1: collapsed to the semantic top groups {a, b} (the super-root has refined). At
+    // 0.01 the sole selected rep is the render-only super-root, whose proxy box key is null.
+    const r = solve({ x: 0, y: 0, scale: 0.1 }); // groups collapsed
     // f4 lives in b/z → its active proxy is the outermost selected ancestor, box key "b".
     const key = activeProxyBoxKeyOfNode(r, nodeIds.indexOf("b/z/f4.c"));
     expect(key).toBe("b");
@@ -370,7 +376,9 @@ describe("buildSceneRepresentationCut — POST-FILTER projection (Gap 7)", () =>
     });
 
   test("a filtered-out subtree produces NO proxy (no collapsed box key, no open selection)", () => {
-    const r = filtered({ x: 0, y: 0, scale: 0.01 }); // fully zoomed out → coarsest proxies
+    // Scale 0.1: the super-root has refined to the coarsest SEMANTIC level (only `a` is visible
+    // post-filter, so it is the single visible top group). At 0.01 the sole rep is the super-root.
+    const r = filtered({ x: 0, y: 0, scale: 0.1 }); // coarsest semantic proxies
     // `a` still proxies its visible members; `b`/`b/z` have no visible members → no proxy.
     expect(r.collapsedBoxKeys.has("a")).toBe(true);
     expect(r.collapsedBoxKeys.has("b")).toBe(false);
@@ -380,9 +388,10 @@ describe("buildSceneRepresentationCut — POST-FILTER projection (Gap 7)", () =>
   });
 
   test("the hidden subtree drops its contribution to the cut budget (cards + layout)", () => {
-    // Coarsest cut: unfiltered selects {a, b} (2 cards); filtered selects {a} only (1 card).
-    const f = filtered({ x: 0, y: 0, scale: 0.01 });
-    const u = unfiltered({ x: 0, y: 0, scale: 0.01 });
+    // Coarsest SEMANTIC cut (scale 0.1, super-root refined): unfiltered selects {a, b} (2 cards);
+    // filtered selects {a} only (1 card). At 0.01 both collapse to the single super-root (1 card).
+    const f = filtered({ x: 0, y: 0, scale: 0.1 });
+    const u = unfiltered({ x: 0, y: 0, scale: 0.1 });
     expect(f.cut.cardCost).toBeLessThan(u.cut.cardCost);
     expect(f.cut.layoutCost).toBeLessThanOrEqual(u.cut.layoutCost);
     // Concretely: the coarsest filtered cut is the single top group `a`.

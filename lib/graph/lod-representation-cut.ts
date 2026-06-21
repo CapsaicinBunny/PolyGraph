@@ -37,6 +37,11 @@ import {
   representativeOf,
 } from "./representation";
 import {
+  computeStableProxyBounds,
+  PROXY_LAYOUT_VERSION,
+  type StableProxyBounds,
+} from "./representation-proxy-layout";
+import {
   bootstrapCut,
   type CameraState,
   type CutConstraints,
@@ -193,6 +198,17 @@ export interface RepresentationRuntime {
   /** The proxy hierarchy (arrays, subtree-cost rollups, DFS intervals) — built ONCE. */
   hierarchy: RepresentationHierarchy;
   /**
+   * STABLE, layout-INDEPENDENT proxy box geometry (design Gap 3 / P2 "stable-proxy-geometry").
+   * A deterministic hierarchical layout over the hierarchy STRUCTURE — computed ONCE here,
+   * independent of the visual node-layout engine. The cut overwrites the hierarchy's live
+   * `bounds*` columns from the engine's scene boxes each recut; when an engine emits NO box for a
+   * rep (Grid, the classic engines, None), the cut falls back to THIS geometry so it still has
+   * bounds to measure. That fallback is what makes the cut OPERATE with every engine — not merely
+   * ignore the engine name. A function of the material signature, so it is cached on the runtime
+   * and reused across camera recuts; a material change rebuilds it with the hierarchy.
+   */
+  stableBounds: StableProxyBounds;
+  /**
    * The persistent CSR edge index (design B2 + impl note (a)), built ONCE alongside the
    * hierarchy from the post-filter edges, or `undefined` when the caller supplied no `edges`.
    * Reused across camera recuts (it is a function of the material signature, not the camera);
@@ -231,6 +247,7 @@ export function materialSignature(input: RepLodInput): RepresentationMaterialSig
     `nc=${nodeCostSig}`,
     `b=${REPRESENTATION_BUILDER_VERSION}`,
     `e=${REPRESENTATION_EDGE_INDEX_VERSION}`,
+    `pl=${PROXY_LAYOUT_VERSION}`,
   ].join("|");
 }
 
@@ -259,10 +276,26 @@ export function acquireRepresentationRuntime(
 
   // Material change (or first build) → reconstruct the O(N) structures ONCE.
   const nodeCost = input.options.nodeCost ?? (() => 1);
+  // P0.5 normalization (design B1): ALWAYS build with the synthetic super-root / root-bucket
+  // tier and the render-only intermediate tiers. This is what makes the bootstrap (coarsest)
+  // cut budget-feasible regardless of orphan count and gives every oversized group bounded
+  // intermediate antichains to refine through — the precondition for "every group can
+  // progressively refine" in EVERY mode, including synthetic-None (spec Gap 2): None's
+  // components→communities hierarchy can have huge flat communities + many orphan/isolated
+  // nodes, so without normalization its bootstrap antichain starts over budget and can never
+  // become feasible. The deterministic balanced-chunk fallback (no edges/paths supplied)
+  // guarantees the invariants for None; the smarter strategies are wired in P1.
   const hierarchy = buildRepresentationHierarchy(input.snapshot, input.nodeIds, {
     nodeCost,
     visibleNode: input.visibleNode,
+    bootstrapRoots: true,
+    intermediateTiers: true,
   });
+  // STABLE proxy geometry (design Gap 3 / P2). Computed ONCE here from the hierarchy structure —
+  // engine-independent — and kept as the cut's fallback bounds for every recut. This also seeds
+  // the hierarchy's `bounds*` columns; a recut overwrites them per-rep from the live scene boxes
+  // when the engine produces them, but reuses the stable box for any rep the engine left out.
+  const stableBounds = computeStableProxyBounds(hierarchy);
   const repOfGroupId = new Map<GroupId, number>();
   for (let g = 0; g < input.snapshot.groupIds.length; g++) {
     repOfGroupId.set(input.snapshot.groupIds[g], hierarchy.repOfGroup[g]);
@@ -278,6 +311,7 @@ export function acquireRepresentationRuntime(
   return {
     signature,
     hierarchy,
+    stableBounds,
     edgeIndex,
     nodeIds: input.nodeIds,
     repOfGroupId,
@@ -344,27 +378,34 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   const hierarchy = runtime.hierarchy;
   const cols = hierarchy.columns;
   const repOfGroupId = runtime.repOfGroupId;
+  const stableBounds = runtime.stableBounds;
 
   // A group rep detached by the post-filter mask (no visible members) is skipped throughout:
   // it gets no bounds, no intent constraint, and no place in the cut.
   const isDetachedGroup = (rep: number): boolean =>
     cols.parentByRep[rep] === DETACHED_REP && cols.firstChildByRep[rep] === -1;
 
-  // 2. UPDATE proxy bounds from live scene boxes (group reps only; leaf reps keep 0). This is
-  //    the per-recut camera update — it mutates the cached hierarchy's geometry columns IN
-  //    PLACE, never reconstructing them. A group whose box vanished this frame is reset to 0
-  //    (so a reused hierarchy carries no stale bounds from a prior camera position).
+  // 2. UPDATE proxy bounds for every rep — the per-recut camera update, mutating the cached
+  //    hierarchy's geometry columns IN PLACE (never reconstructing them). Each rep takes the
+  //    visual engine's LIVE box for its group when one exists; otherwise it falls back to the
+  //    STABLE, layout-independent box (design Gap 3 / P2). The stable fallback is the fix for
+  //    "not actually layout-independent": under Grid / the classic engines / None the engine
+  //    emits NO cluster boxes, so without this every rep would read as height-0 / off-screen and
+  //    the cut would be inert. Now every non-detached rep ALWAYS has bounds, so the cut OPERATES
+  //    with every engine, not merely ignores its name. Seed ALL reps from the stable bounds first
+  //    (group reps, leaf reps, and render-only intermediate / bootstrap proxies — none of which
+  //    the engine addresses by group box key), then override the group reps the engine DID place.
+  for (let rep = 0; rep < hierarchy.repCount; rep++) {
+    cols.boundsX[rep] = stableBounds.x[rep];
+    cols.boundsY[rep] = stableBounds.y[rep];
+    cols.boundsW[rep] = stableBounds.w[rep];
+    cols.boundsH[rep] = stableBounds.h[rep];
+  }
   for (let g = 0; g < snapshot.groupIds.length; g++) {
     const rep = hierarchy.repOfGroup[g];
     if (isDetachedGroup(rep)) continue; // fully filtered out — no proxy to place
     const box = boxes.get(snapshot.boxKeyByGroup[g]);
-    if (!box) {
-      cols.boundsX[rep] = 0;
-      cols.boundsY[rep] = 0;
-      cols.boundsW[rep] = 0;
-      cols.boundsH[rep] = 0;
-      continue;
-    }
+    if (!box) continue; // engine emitted no box for this group → keep the stable fallback box
     cols.boundsX[rep] = box.x;
     cols.boundsY[rep] = box.y;
     cols.boundsW[rep] = box.w;
@@ -384,13 +425,39 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   }
   const constraints: CutConstraints = { forceClosed, forceOpen };
 
+  // The EFFECTIVE box of a group rep: the visual engine's live box when it placed one, else the
+  // STABLE layout-independent box (design Gap 3 / P2). Under Grid / the classic engines / None the
+  // engine emits no cluster box, so the live lookup misses — but the rep still has stable geometry,
+  // so the gate below OPERATES under every engine instead of short-circuiting to "can't refine".
+  const effectiveGroupBox = (g: number): Box | undefined => {
+    const live = boxes.get(snapshot.boxKeyByGroup[g]);
+    if (live) return live;
+    const rep = hierarchy.repOfGroup[g];
+    const w = stableBounds.w[rep];
+    const h = stableBounds.h[rep];
+    if (w <= 0 || h <= 0) return undefined; // detached / empty — genuinely no geometry
+    return { x: stableBounds.x[rep], y: stableBounds.y[rep], w, h };
+  };
+
   // 3b. Refine gate: a proxy auto-refines only when its box is on-screen AND at least
-  //     openPx tall (legible). A proxy with NO live box stays coarse (the safe default,
-  //     matching computeGroupCut). Forced opens ignore this gate (handled in the solver).
+  //     openPx tall (legible). The box is the engine's live box OR the stable fallback, so a
+  //     proxy can refine under EVERY engine (not only the cluster-box-emitting ones — that
+  //     short-circuit was Gap 3's inertness). Forced opens ignore this gate (handled in the solver).
   const canRefine = (rep: number): boolean => {
     const g = cols.groupByRep[rep];
-    if (g === NO_GROUP) return false; // orphan leaf — nothing to refine anyway
-    const box = boxes.get(snapshot.boxKeyByGroup[g]);
+    if (g === NO_GROUP) {
+      // A render-only intermediate / bootstrap proxy (no group) still refines when it has stable
+      // geometry on-screen and legible — otherwise an oversized group could never open under a
+      // box-less engine. Leaf reps (no children) never reach the solver's refine path.
+      if (cols.firstChildByRep[rep] === -1) return false;
+      const w = stableBounds.w[rep];
+      const h = stableBounds.h[rep];
+      if (w <= 0 || h <= 0) return false;
+      const box: Box = { x: stableBounds.x[rep], y: stableBounds.y[rep], w, h };
+      if (!intersectsViewport(worldToScreen(box, cam), vp, options.margin)) return false;
+      return screenHeight(box, cam.scale) >= options.openPx;
+    }
+    const box = effectiveGroupBox(g);
     if (!box) return false;
     if (!intersectsViewport(worldToScreen(box, cam), vp, options.margin)) return false;
     return screenHeight(box, cam.scale) >= options.openPx;
@@ -464,7 +531,9 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
     const onScreen = (rep: number): boolean => {
       const g = cols.groupByRep[rep];
       if (g === NO_GROUP) return false;
-      const box = boxes.get(snapshot.boxKeyByGroup[g]);
+      // Live box when the engine placed one, else the stable fallback (design Gap 3 / P2) — so a
+      // box-less engine (Grid / classic / None) still tracks visibility for the eviction LRU.
+      const box = effectiveGroupBox(g);
       if (!box) return false;
       return intersectsViewport(worldToScreen(box, cam), vp, options.margin);
     };

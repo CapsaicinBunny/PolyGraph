@@ -47,7 +47,10 @@ describe("representation cut → collapseClusters (the rendered scene is the cut
       snapshot: snap,
       nodeIds,
       boxes: boxes(),
-      cam: { x: 0, y: 0, scale: 0.01 } as Camera,
+      // Scale 0.1: the P0.5 super-root (always applied now) has refined into the semantic top
+      // groups {a, b}. At 0.01 the sole rep is the render-only super-root, which has no box key,
+      // so collapseClusters would absorb everything into one unnamed aggregate instead of a/b.
+      cam: { x: 0, y: 0, scale: 0.1 } as Camera,
       vp,
       intent: new Map() as CollapseIntent,
       options: opts,

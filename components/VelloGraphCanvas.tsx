@@ -36,7 +36,7 @@ import { buildDirTree, type DirNode } from "@/lib/graph/hierarchy";
 import type { CollapseIntent, GroupId } from "@/lib/graph/collapse-model";
 import type { CompactGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
 import { buildGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
-import { directoryGrouping } from "@/lib/graph/grouping";
+import { directoryGrouping, syntheticNoneGrouping } from "@/lib/graph/grouping";
 import { directoryLodSelection } from "@/lib/graph/lod-selection";
 import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
 import { computeGroupCut, groupCutEquals, groupLodSelection } from "@/lib/graph/group-cut";
@@ -556,20 +556,36 @@ export function VelloGraphCanvas(props: GraphViewProps) {
 
   // Adaptive level-of-detail state the (mount-time) wheel handler reads via refs.
   const dirTree = useMemo(() => buildDirTree(graph), [graph]);
-  // Phase C1b: Directory mode has no `groupingSnapshot` prop (it uses the DirNode cut), so
-  // build one here for the representation cut. Only when representationLod is on AND the mode
-  // is Directory — otherwise this is null and never built (the snapshot prop covers the rest).
-  const directoryRepSnapshot = useMemo(
-    () =>
-      representationLod && groupBy === "directory"
-        ? buildGroupingSnapshot(
-            directoryGrouping(graph),
-            "directory",
-            graph.nodes.map((n) => n.id),
-          )
-        : null,
-    [representationLod, groupBy, graph],
-  );
+  // Phase C1b: Directory and None modes have no `groupingSnapshot` prop (Directory uses the
+  // DirNode cut; None renders no visible containers), so build one here for the representation
+  // cut. Only when representationLod is on AND the mode is one of those — otherwise this is null
+  // and never built (the snapshot prop covers the rest).
+  //
+  //   - Directory → directoryGrouping (the canvas's own DirNode path has no snapshot).
+  //   - None → syntheticNoneGrouping (components → communities, design Gap 2 / P2). Explorer
+  //     deliberately returns NO `cutGrouping` snapshot for None (it has no visible containers,
+  //     so the C1a seed/intent/cluster machinery must not run for it). The representation cut,
+  //     however, needs a hierarchy to bound None's budget — fed ONLY here so it drives the rep
+  //     path (stable, layout-independent proxy bounds) WITHOUT drawing group boxes. None emits
+  //     no live cluster boxes, so the cut runs purely on stable bounds and renders FLAT.
+  const directoryRepSnapshot = useMemo(() => {
+    if (!representationLod) return null;
+    if (groupBy === "directory") {
+      return buildGroupingSnapshot(
+        directoryGrouping(graph),
+        "directory",
+        graph.nodes.map((n) => n.id),
+      );
+    }
+    if (groupBy === "none") {
+      return buildGroupingSnapshot(
+        syntheticNoneGrouping(graph),
+        "none",
+        graph.nodes.map((n) => n.id),
+      );
+    }
+    return null;
+  }, [representationLod, groupBy, graph]);
   const lod = useRef<{
     adaptiveLod?: boolean;
     onCut?: (modeKey: string, selection: Set<GroupId>) => void;
@@ -902,7 +918,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       const prevHier = lastRep.current?.hierarchy;
       const boxes =
         l.representationLod && prevHier ? proxyBoxes(l.scene, prevHier) : sceneBoxes(l.scene);
-      if (boxes.size === 0) return;
+      // The C1a fallback cuts measure ONLY from live boxes, so with none they would wrongly collapse
+      // the whole view — keep the early-return for them. The representation path no longer depends
+      // on live boxes: it carries STABLE, layout-independent proxy bounds (design Gap 3 / P2), so it
+      // OPERATES under box-less engines (Grid / classic / None) where `boxes.size === 0`. So only
+      // bail here when the representation path will NOT run (representationLod off or no snapshot).
+      const repSnap = l.groupingSnapshot ?? l.directoryRepSnapshot;
+      const willRunRepCut = l.representationLod && !!repSnap;
+      if (boxes.size === 0 && !willRunRepCut) return;
       const c = cam.current;
       const band = cameraBand(c.scale);
       // Apply the camera policy. Zoom only ever REFINEs as the user zooms IN (band increases),
@@ -937,8 +960,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       // when representationLod is off. Only a materially-different COMMITTED cut fires onCut
       // (the runtime gates the generation), and the runtime persists across recuts on the ref.
       // Directory has no snapshot prop, so it uses the canvas-built directoryRepSnapshot.
-      const repSnap = l.groupingSnapshot ?? l.directoryRepSnapshot;
-      if (l.representationLod && repSnap) {
+      // (`repSnap` / `willRunRepCut` were computed above to gate the box-less early-return.)
+      if (willRunRepCut) {
         // MATERIAL-signature inputs (Gap 4): reference-identity tokens for the filtered graph
         // (graph ref + visible-set ref), the grouping (snapshot ref), and the per-node cost
         // inputs (expanded set + symbol-count map refs). React hands a NEW reference on a real

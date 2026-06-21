@@ -41,6 +41,7 @@ import {
   facetGrouping,
   type GroupingHierarchy,
   packageGrouping,
+  syntheticNoneGrouping,
   toDirectoryBoxKeys,
   toDirectoryGroupIds,
 } from "@/lib/graph/grouping";
@@ -456,13 +457,16 @@ export function Explorer() {
   // The active grouping mode's CUT hierarchy + snapshot, for the mode-agnostic adaptive
   // cut (Phase C1a). Directory keeps its dedicated DirNode path (byte-identical) so it
   // builds no snapshot here; Community (and later Package/facet) build one over the
-  // active graph so the camera can run computeGroupCut. None has no visible containers,
-  // so it builds none — the cut is inert for it (its budget is bounded elsewhere).
+  // active graph so the camera can run computeGroupCut. None has NO visible containers but
+  // is NOT inert: it builds the SYNTHETIC safety hierarchy (connected-components →
+  // communities; spec Gap 2) so the rep cut gives it a budgeted cut — every node gets a
+  // representation path and nothing bypasses the render budget. The synthetic ids are
+  // internal ("component:<i>" / "community:<i>:<c>") and render no boxes.
   const cutGrouping = useMemo<{
     hierarchy: GroupingHierarchy;
     snapshot: CompactGroupingSnapshot;
   } | null>(() => {
-    if (!graph || groupBy === "directory" || groupBy === "none") return null;
+    if (!graph || groupBy === "directory") return null;
     let hierarchy: GroupingHierarchy | null = null;
     // Community: reuse the SCENE's community map (detected over the filtered graph) so
     // the cut's box keys match the rendered boxes. Until the canvas reports it (first
@@ -471,7 +475,12 @@ export function Explorer() {
       if (!communityCutOf) return null;
       hierarchy = communityGrouping(graph, communityCutOf);
     } else if (groupBy === "package") hierarchy = packageGrouping(graph, manifests);
-    else {
+    else if (groupBy === "none") {
+      // The synthetic None hierarchy (components → communities). Keeps components→communities
+      // (spec Gap 2: do NOT switch to directory→kind). Bounded by the rep builder's P0.5
+      // super-root + intermediate tiers, so even a huge disconnected graph stays feasible.
+      hierarchy = syntheticNoneGrouping(graph);
+    } else {
       const facetKey = facetKeyOfGroupBy(groupBy);
       if (facetKey) {
         const descriptor = catalog.descriptors.find((d) => d.key === facetKey);
@@ -500,7 +509,10 @@ export function Explorer() {
     if (groupBy === "directory") return; // Directory is seeded by seedDirectoryLod
     const snap = cutGrouping?.snapshot;
     if (!adaptiveLod || !snap) {
-      // No snapshot (e.g. None, or pre-scene) or LOD off → clear this mode's auto layers.
+      // No snapshot (pre-scene, or a mode that builds none) or LOD off → clear this mode's
+      // auto layers. None now BUILDS a snapshot (the synthetic components→communities
+      // hierarchy), so it no longer hits this branch — it seeds a budgeted bootstrap like the
+      // other non-directory modes; the rep cut keeps it bounded and renders it flat.
       setBootstrapByMode((prev) => {
         if (!prev.has(groupBy)) return prev;
         return new Map(prev).set(groupBy, new Set());
