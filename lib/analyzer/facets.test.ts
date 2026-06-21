@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { facetParityMismatches } from "../graph/facets-write";
 import type { GraphModel } from "../graph/types";
 import { analyzeSources } from "./index";
 
@@ -52,5 +53,37 @@ describe("file facets", () => {
     });
     expect(node(graph, "App.tsx#App")?.category).toBe("ui");
     expect(node(graph, "util.ts#add")?.category).toBe("feature");
+  });
+});
+
+describe("dual-write parity invariant (graph-wide)", () => {
+  // The spec's non-negotiable: legacy typed fields ≡ facets-or-default for EVERY
+  // node the real analyzer produces, throughout Phases A–C. A future regression in
+  // node production (a code path that sets node.role/category/env/runtimes directly
+  // instead of via writeFacet) would desync exactly one of the two and fail here.
+  test("every analyzer-produced node has legacy fields in lock-step with its facets", () => {
+    const { graph } = analyzeSources({
+      // client component: env=client, role=react-component, category=ui
+      "App.tsx": `"use client";\nimport { useState } from "react";\nexport function App() { const [n] = useState(0); return <div>{n}</div>; }`,
+      // server action: env=server
+      "action.ts": `"use server";\nexport async function save() { return 1; }`,
+      // node runtime (builtin import + process global)
+      "fs.ts": `import { readFileSync } from "node:fs";\nexport function read() { return readFileSync(process.cwd()); }`,
+      // bun + deno runtimes via globals
+      "bun.ts": `export function serve() { return Bun.serve({}); }`,
+      "deno.ts": `export function read() { return Deno.readTextFileSync("x"); }`,
+      // ECS role
+      "ecs.ts": `export class MovementSystem { update() {} }`,
+      // Vue component role
+      "Widget.vue.ts": `export default { name: "Widget", template: "<div/>" };`,
+      // plain feature (category default — never materialized as a facet)
+      "util.ts": `export function add(a: number, b: number) { return a + b; }`,
+    });
+
+    expect(graph.nodes.length).toBeGreaterThan(0);
+    const offenders = graph.nodes
+      .map((n) => ({ id: n.id, mismatches: facetParityMismatches(n) }))
+      .filter((x) => x.mismatches.length > 0);
+    expect(offenders).toEqual([]);
   });
 });

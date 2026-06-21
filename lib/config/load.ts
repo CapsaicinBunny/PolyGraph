@@ -5,9 +5,11 @@
 
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
+import type { DimensionIndex } from "../graph/dimension-index";
 import type { Environment, NodeCategory, NodeKind, NodeRole } from "../graph/types";
 import {
   ConfigError,
+  type ConfigValidationProblem,
   type CycleRule,
   type DependencyRule,
   type NodeSelector,
@@ -15,6 +17,7 @@ import {
   type Rule,
   type Severity,
   type Thresholds,
+  type Validation,
 } from "./schema";
 
 export const DEFAULT_CONFIG_FILENAME = ".polygraph.yml";
@@ -88,21 +91,36 @@ function validateEnum<T>(values: string[], allowed: Set<T>, where: string): T[] 
   });
 }
 
-const EMPTY_SELECTOR: NodeSelector = {
-  paths: [],
-  kinds: [],
-  roles: [],
-  environments: [],
-  categories: [],
-};
+function emptySelector(): NodeSelector {
+  return { paths: [], kinds: [], roles: [], environments: [], categories: [], facets: {} };
+}
+
+/** Mirror a legacy typed field's values into the generic `facets` store. */
+function mirrorFacet(sel: NodeSelector, canonicalKey: string, values: string[]): void {
+  if (values.length > 0) sel.facets[canonicalKey] = [...values];
+}
+
+/** Parse a generic `facets: { key: string|string[] }` object (no registry check). */
+function parseFacetsObject(value: unknown, where: string): Record<string, string[]> {
+  if (!isPlainObject(value)) {
+    throw new ConfigError(`${where}: expected a mapping of dimension key to value(s)`);
+  }
+  const out: Record<string, string[]> = {};
+  for (const key of Object.keys(value)) {
+    out[key] = toStringArray(value[key], `${where}.${key}`);
+  }
+  return out;
+}
 
 /**
  * Parse a selector. A bare string / string[] is shorthand for `{ path: … }`.
- * An object may carry any of path/kind/role/environment/category, each scalar
- * or list. The result must select at least one facet.
+ * An object may carry any of path/kind/role/environment/category (legacy typed
+ * fields, validated against their enums) or a generic `facets` map (registry-keyed,
+ * checked only POST-analysis). Legacy fields are mirrored into `facets` under their
+ * canonical key. The result must select at least one constraint.
  */
 function parseSelector(value: unknown, where: string): NodeSelector {
-  const sel: NodeSelector = { ...EMPTY_SELECTOR };
+  const sel = emptySelector();
 
   if (typeof value === "string" || Array.isArray(value)) {
     sel.paths = toStringArray(value, where);
@@ -117,18 +135,26 @@ function parseSelector(value: unknown, where: string): NodeSelector {
         case "kind":
         case "kinds":
           sel.kinds = validateEnum(toStringArray(value[key], at), NODE_KINDS, at);
+          mirrorFacet(sel, "kind", sel.kinds);
           break;
         case "role":
         case "roles":
           sel.roles = validateEnum(toStringArray(value[key], at), NODE_ROLES, at);
+          mirrorFacet(sel, "role", sel.roles);
           break;
         case "environment":
         case "environments":
           sel.environments = validateEnum(toStringArray(value[key], at), ENVIRONMENTS, at);
+          mirrorFacet(sel, "env", sel.environments);
           break;
         case "category":
         case "categories":
           sel.categories = validateEnum(toStringArray(value[key], at), CATEGORIES, at);
+          mirrorFacet(sel, "category", sel.categories);
+          break;
+        case "facets":
+          // Generic facets merge onto any legacy-mirrored keys (last write wins per key).
+          Object.assign(sel.facets, parseFacetsObject(value[key], at));
           break;
         default:
           throw new ConfigError(`${at}: unknown selector field "${key}"`);
@@ -138,13 +164,11 @@ function parseSelector(value: unknown, where: string): NodeSelector {
     throw new ConfigError(`${where}: expected a glob string, list, or selector object`);
   }
 
-  const facets =
-    sel.paths.length +
-    sel.kinds.length +
-    sel.roles.length +
-    sel.environments.length +
-    sel.categories.length;
-  if (facets === 0) throw new ConfigError(`${where}: selector matches nothing (no facets given)`);
+  // A selector must constrain something: a path glob or at least one facet value.
+  const facetValueCount = Object.values(sel.facets).reduce((n, vs) => n + vs.length, 0);
+  if (sel.paths.length + facetValueCount === 0) {
+    throw new ConfigError(`${where}: selector matches nothing (no facets given)`);
+  }
   return sel;
 }
 
@@ -217,14 +241,36 @@ function parseThresholds(raw: unknown): Thresholds {
   return thresholds;
 }
 
+const DEFAULT_VALIDATION: Validation = { unknownFacet: "warning" };
+
+function parseValidation(raw: unknown): Validation {
+  if (raw === undefined) return { ...DEFAULT_VALIDATION };
+  if (!isPlainObject(raw)) throw new ConfigError(`validation: expected a mapping`);
+  const validation: Validation = { ...DEFAULT_VALIDATION };
+  for (const key of Object.keys(raw)) {
+    switch (key) {
+      case "unknownFacet":
+        validation.unknownFacet = parseSeverity(raw[key], "validation.unknownFacet", "warning");
+        break;
+      default:
+        throw new ConfigError(`validation: unknown field "${key}"`);
+    }
+  }
+  return validation;
+}
+
 /** Parse a config document (already-decoded YAML/JSON value) into a PolygraphConfig. */
 export function parseConfig(doc: unknown): PolygraphConfig {
-  if (doc === null || doc === undefined) return { rules: [], thresholds: { severity: "error" } };
+  if (doc === null || doc === undefined) {
+    return { rules: [], thresholds: { severity: "error" }, validation: { ...DEFAULT_VALIDATION } };
+  }
   if (!isPlainObject(doc)) throw new ConfigError("Top level of config must be a mapping");
 
   for (const key of Object.keys(doc)) {
-    if (key !== "rules" && key !== "thresholds") {
-      throw new ConfigError(`Unknown top-level field "${key}" (expected "rules" or "thresholds")`);
+    if (key !== "rules" && key !== "thresholds" && key !== "validation") {
+      throw new ConfigError(
+        `Unknown top-level field "${key}" (expected "rules", "thresholds", or "validation")`,
+      );
     }
   }
 
@@ -233,7 +279,75 @@ export function parseConfig(doc: unknown): PolygraphConfig {
     if (!Array.isArray(doc.rules)) throw new ConfigError(`"rules" must be a list`);
     rules = doc.rules.map((r, i) => parseRule(r, i));
   }
-  return { rules, thresholds: parseThresholds(doc.thresholds) };
+  return {
+    rules,
+    thresholds: parseThresholds(doc.thresholds),
+    validation: parseValidation(doc.validation),
+  };
+}
+
+/** Every NodeSelector a config references, paired with its location label. */
+function selectorsOf(config: PolygraphConfig): { selector: NodeSelector; where: string }[] {
+  const out: { selector: NodeSelector; where: string }[] = [];
+  config.rules.forEach((rule, i) => {
+    const at = `rules[${i}]`;
+    if (rule.type === "dependency") {
+      out.push({ selector: rule.from, where: `${at}.from` });
+      out.push({ selector: rule.disallow, where: `${at}.disallow` });
+    } else if (rule.scope) {
+      out.push({ selector: rule.scope, where: `${at}.scope` });
+    }
+  });
+  return out;
+}
+
+/**
+ * POST-analysis validation: check every selector facet against the built dimension
+ * registry. An unknown facet key, or a value outside a closed dimension's domain,
+ * is reported at `config.validation.unknownFacet` severity (default "warning").
+ * Open dimensions (folder/language) accept any value. Returns an empty array when
+ * the config is consistent with the registry. Pure — never throws.
+ */
+export function validateConfigAgainstIndex(
+  config: PolygraphConfig,
+  index: DimensionIndex,
+): ConfigValidationProblem[] {
+  const severity = config.validation.unknownFacet;
+  const problems: ConfigValidationProblem[] = [];
+
+  for (const { selector, where } of selectorsOf(config)) {
+    for (const [key, values] of Object.entries(selector.facets)) {
+      const descriptor = index.descriptor(key);
+      if (!descriptor) {
+        problems.push({
+          severity,
+          where: `${where}.facets.${key}`,
+          message: `Unknown dimension "${key}" — not contributed by any provider in this graph`,
+        });
+        continue;
+      }
+      if (descriptor.domain !== "closed") continue; // open domains admit any value
+      // The admissible set is the declared domain UNION the values actually present
+      // in the graph. A closed dimension keeps its domain closed but still ADMITS an
+      // undeclared value a node carries (surfaced via present() as declared:false —
+      // spec §6), and the matcher (matchNode / the index) would match such a value.
+      // Validating against the declared domain alone would flag a real, matchable
+      // value as out-of-domain — disagreeing with what the rule would actually do.
+      const admissible = new Set(descriptor.values.map((v) => v.value));
+      for (const p of index.present(key)) admissible.add(p.value);
+      for (const value of values) {
+        if (!admissible.has(value)) {
+          problems.push({
+            severity,
+            where: `${where}.facets.${key}`,
+            message: `Value "${value}" is outside the closed domain of dimension "${key}" (allowed: ${[...admissible].sort().join(", ")})`,
+          });
+        }
+      }
+    }
+  }
+
+  return problems;
 }
 
 /** Read and parse a `.polygraph.yml` file from disk. */

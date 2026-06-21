@@ -9,19 +9,19 @@ import {
   nodeSize,
   type XYPosition,
 } from "../layout";
-import type {
-  EdgeEvidence,
-  Environment,
-  ExternalKind,
-  GraphModel,
-  NodeCategory,
-  NodeKind,
-  NodeRole,
-  Runtime,
-} from "./types";
+import { buildSmartGroupingSnapshot } from "../layout/smart";
+import { facetGrouping, type GroupingHierarchy, packageGrouping } from "./grouping";
+import { buildFlatGroupingSnapshot, type CompactGroupingSnapshot } from "./grouping-snapshot";
+import { facetKeyOfGroupBy } from "./group-by-options";
+import type { PackageManifest } from "./levels/types";
+import type { EdgeEvidence, ExternalKind, GraphModel, NodeKind, NodeRole } from "./types";
 import { detectCommunities } from "../layout/community";
 import { edgeWeight } from "../layout/weight";
+import { clientCatalog } from "./client-catalog";
 import { collapseClusters } from "./collapse";
+import type { DimensionCatalog, FacetKey } from "./dimensions";
+import { buildDimensionIndex, type DimensionIndex } from "./dimension-index";
+import { type FacetSelection, facetAllows, serializeFacetSelections } from "./facet-selection";
 import { fileLanguage, topFolderOf } from "./filters";
 import {
   EDGE_STYLES,
@@ -35,13 +35,58 @@ import {
 
 export interface SceneFilters {
   showExternal: boolean;
-  enabledNodeKinds: Set<NodeKind>;
-  enabledCategories: Set<NodeCategory>;
-  enabledEnvironments: Set<Environment>;
-  enabledRuntimes: Set<Runtime>;
+  /**
+   * Sparse, registry-driven facet selections — the generic replacement for the
+   * old enabledNodeKinds/Categories/Environments/Runtimes sets. Gates every
+   * filterable dimension EXCEPT folder + language (which keep their dedicated
+   * sets below): kind, category, env, runtime, role, and any provider facet.
+   * No entry for a key ⇒ all of its values enabled.
+   */
+  enabledFacets: Map<FacetKey, FacetSelection>;
   enabledEdgeKinds: Set<ViewEdgeKind>;
   enabledFolders: Set<string>;
   enabledLanguages: Set<string>;
+}
+
+/**
+ * Filterable dimensions that, like the old gate, apply to **symbols only** — a
+ * file card is typed "file" and carries no symbol-category, so the symbol-type
+ * filters never hide files (files are gated by folder/language plus the
+ * file-level env/runtime directives). Every other filterable dim (env, runtime,
+ * role, future provider facets) gates all non-external nodes.
+ */
+const SYMBOL_ONLY_FILTER_DIMS: ReadonlySet<FacetKey> = new Set(["kind", "category"]);
+
+/** Folder + language keep dedicated Sets, so the generic facet gate skips them. */
+const DEDICATED_STRUCTURAL_DIMS: ReadonlySet<FacetKey> = new Set(["folder", "language"]);
+
+/**
+ * The DimensionIndex is a pure function of (graph, catalog), so cache it per pair
+ * — a filter toggle rebuilds the scene but must NOT re-intern the columnar index
+ * (prohibitive on a 1.3M-node graph). Keyed first by catalog, then weakly by
+ * graph, so both are GC'd with the analysis they belong to.
+ */
+const indexCache = new WeakMap<DimensionCatalog, WeakMap<GraphModel, DimensionIndex>>();
+
+function indexFor(graph: GraphModel, catalog: DimensionCatalog): DimensionIndex {
+  let byGraph = indexCache.get(catalog);
+  if (!byGraph) {
+    byGraph = new WeakMap();
+    indexCache.set(catalog, byGraph);
+  }
+  let index = byGraph.get(graph);
+  if (!index) {
+    index = buildDimensionIndex(graph, catalog);
+    byGraph.set(graph, index);
+  }
+  return index;
+}
+
+/** Filterable dims the generic enabledFacets gate covers (everything but folder/language). */
+function gatedFilterDims(catalog: DimensionCatalog): FacetKey[] {
+  return catalog.descriptors
+    .filter((d) => d.filterable && !DEDICATED_STRUCTURAL_DIMS.has(d.key))
+    .map((d) => d.key);
 }
 
 export interface SceneNode {
@@ -111,8 +156,66 @@ export function graphKeyFor(graph: GraphModel): string {
   return id;
 }
 
+let catalogCounter = 0;
+const catalogIds = new WeakMap<DimensionCatalog, string>();
+
+/**
+ * Stable per-catalog id folded into the layout signature. Two analyses can gate
+ * the SAME graph by different catalogs (e.g. the kernel's merged catalog on the
+ * canvas vs. the TS/JS fallback) and produce different visible node sets; without
+ * a catalog component the signatures would collide and one would serve the other's
+ * cached positions (filtered-out nodes reappearing at 0,0). The TS/JS fallback is a
+ * stable singleton, so this is "1" everywhere on the fallback path.
+ */
+export function catalogKeyFor(catalog: DimensionCatalog): string {
+  let id = catalogIds.get(catalog);
+  if (!id) {
+    catalogCounter += 1;
+    id = String(catalogCounter);
+    catalogIds.set(catalog, id);
+  }
+  return id;
+}
+
 function ser<T>(set: Set<T>): string {
   return [...set].map(String).sort().join(",");
+}
+
+/**
+ * Build the Smart layout grouping snapshot for the active mode (Phase C1a). Directory
+ * and Community use the byte-identical buildClusterTree path; Package and facet build a
+ * FLAT snapshot from their grouping hierarchy — resolved over the FULL graph (which
+ * carries the facets/manifest info the bare layout nodes lack), then projected onto the
+ * post-collapse layout node ids (so empty groups are pruned and aggregates fall to root).
+ */
+function buildGroupingSnapshotForMode(
+  layoutInput: LayoutInput,
+  groupBy: GroupBy,
+  communityOf: Map<string, string> | undefined,
+  graph: GraphModel,
+  catalog: DimensionCatalog,
+  manifests: PackageManifest[],
+): CompactGroupingSnapshot {
+  const facetKey = facetKeyOfGroupBy(groupBy);
+  let hierarchy: GroupingHierarchy | null = null;
+  if (groupBy === "package") hierarchy = packageGrouping(graph, manifests);
+  else if (facetKey) {
+    const descriptor = catalog.descriptors.find((d) => d.key === facetKey);
+    if (descriptor) hierarchy = facetGrouping(graph, descriptor);
+  }
+  if (hierarchy) {
+    const h = hierarchy;
+    return buildFlatGroupingSnapshot(
+      layoutInput.nodes.map((n) => n.id),
+      groupBy,
+      (nodeId) => {
+        const gid = h.groupOfNode(nodeId);
+        return gid == null ? null : { id: gid, boxKey: h.boxKey(gid), label: h.label(gid) };
+      },
+    );
+  }
+  // Directory / Community / unknown → the byte-identical buildClusterTree path.
+  return buildSmartGroupingSnapshot(layoutInput, groupBy, communityOf, groupBy);
 }
 
 /**
@@ -134,17 +237,36 @@ export function buildSceneStructure(
   queryIds: Set<string> | null = null,
   /** Package/Workspace projection: nodes aren't files, so skip the facet gates. */
   projected = false,
+  /**
+   * The dimension catalog to gate facets by. The same catalog the Sidebar derives
+   * its sections from, so the gate and the controls always agree. Defaults to the
+   * TS/JS fallback so the TS-only path (no `result.dimensions`) still filters.
+   */
+  catalog: DimensionCatalog = clientCatalog(undefined),
+  /** Package manifests, for the "package" grouping mode's layout snapshot (else []). */
+  manifests: PackageManifest[] = [],
 ): SceneStructure {
-  const {
-    showExternal,
-    enabledNodeKinds,
-    enabledCategories,
-    enabledEnvironments,
-    enabledRuntimes,
-    enabledEdgeKinds,
-    enabledFolders,
-    enabledLanguages,
-  } = filters;
+  const { showExternal, enabledFacets, enabledEdgeKinds, enabledFolders, enabledLanguages } =
+    filters;
+
+  // The interned, columnar index over (graph, catalog) — cached per pair so a
+  // filter toggle never re-interns. The gate reads node values by ordinal.
+  const index = indexFor(graph, catalog);
+  // Prune the gate to the dimensions that can actually hide a node. An unconstrained
+  // selection (no entry / mode "all" / empty "exclude") always passes via facetAllows,
+  // so resolving every node's interned values for it is wasted work — UNLESS the
+  // dimension's MissingPolicy.filter is "exclude", where a value-less node is hidden
+  // even with everything enabled (so it must stay gated to preserve that outcome). On
+  // the default-filter path (and throughout camera/LOD interaction, which re-runs this
+  // whole O(nodes) pass) nothing is constrained, so the per-node loop drops to ~zero
+  // work. Behavior-identical to gating every dim.
+  const gatedDims = gatedFilterDims(catalog).filter((key) => {
+    const sel = enabledFacets.get(key);
+    const constrained =
+      sel !== undefined && sel.mode !== "all" && !(sel.mode === "exclude" && sel.values.size === 0);
+    if (constrained) return true;
+    return index.descriptor(key)?.missing.filter === "exclude";
+  });
 
   // In focus mode, also surface the parent file of any focused *symbol* so the symbols
   // have a container to nest in. Without it the view drops symbols whose file isn't
@@ -159,7 +281,16 @@ export function buildSceneStructure(
     }
   }
 
-  const visible = (n: GraphModel["nodes"][number]) => {
+  // Generic facet gate for one dimension: resolve the node's interned value ids to
+  // strings and test them against the sparse selection, honoring MissingPolicy.
+  const passesFacet = (ordinal: number, key: FacetKey): boolean => {
+    const descriptor = index.descriptor(key);
+    if (!descriptor) return true;
+    const values = index.valuesOfOrdinal(ordinal, key).map((id) => index.valueString(key, id));
+    return facetAllows(enabledFacets, key, values, descriptor.missing.filter);
+  };
+
+  const visible = (n: GraphModel["nodes"][number], ordinal: number) => {
     // Focus mode shows exactly the focused subgraph (plus focused symbols' parent files),
     // overriding the other filters.
     if (focusedIds) return focusedIds.has(n.id) || focusParents.has(n.id);
@@ -172,14 +303,20 @@ export function buildSceneStructure(
     // Folder + language gate — applies to files and the symbols inside them.
     if (!enabledFolders.has(topFolderOf(n.filePath))) return false;
     if (!enabledLanguages.has(fileLanguage(n.filePath).key)) return false;
-    if (n.environment && !enabledEnvironments.has(n.environment)) return false;
-    if (n.runtimes?.length && !n.runtimes.some((r) => enabledRuntimes.has(r))) return false;
-    if (n.kind === "file") return true;
-    return enabledNodeKinds.has(n.kind) && (!n.category || enabledCategories.has(n.category));
+    const isFile = n.kind === "file";
+    // Generic facet gates (kind/category/env/runtime/role/provider facets). Symbol-only
+    // dims (kind, category) never gate file cards; everything else gates files too —
+    // exactly the legacy ordering (env/runtime applied to files; kind/category did not).
+    for (const key of gatedDims) {
+      if (isFile && SYMBOL_ONLY_FILTER_DIMS.has(key)) continue;
+      if (!passesFacet(ordinal, key)) return false;
+    }
+    return true;
   };
-  const keptIds = new Set(graph.nodes.filter(visible).map((n) => n.id));
+  const keptNodes = graph.nodes.filter((n, i) => visible(n, i));
+  const keptIds = new Set(keptNodes.map((n) => n.id));
   const filteredGraph = {
-    nodes: graph.nodes.filter(visible),
+    nodes: keptNodes,
     edges: graph.edges.filter((e) => keptIds.has(e.source) && keptIds.has(e.target)),
   };
   // Single source of truth for communities: detect once on the filtered graph,
@@ -218,14 +355,16 @@ export function buildSceneStructure(
 
   const signature = [
     graphKeyFor(graph),
+    // Catalog identity: a different gating catalog yields a different visible set,
+    // so it must not collide with another catalog's cached layout for this graph.
+    `cat:${catalogKeyFor(catalog)}`,
     algorithm,
     direction,
     `x${showExternal ? 1 : 0}`,
     ser(expanded),
-    ser(enabledNodeKinds),
-    ser(enabledCategories),
-    ser(enabledEnvironments),
-    ser(enabledRuntimes),
+    // Canonical (sorted, order-independent) serialization of every facet selection,
+    // so a Map insertion-order change can't churn the layout cache.
+    `f:${serializeFacetSelections(enabledFacets)}`,
     ser(enabledEdgeKinds),
     ser(enabledFolders),
     ser(enabledLanguages),
@@ -287,21 +426,35 @@ export function buildSceneStructure(
     };
   });
 
+  const layoutInput: LayoutInput = {
+    nodes: view.nodes.map((n) => ({ id: n.id, kind: n.kind })),
+    edges: visibleEdges.map((e) => ({
+      source: e.source,
+      target: e.target,
+      kind: e.kind,
+      count: e.count,
+      weight: edgeWeight(e.kind, e.count),
+    })),
+  };
+
+  // Phase C1a: build the grouping snapshot the Smart layout consumes (the new layout
+  // INPUT contract) from the post-filter/post-collapse layout nodes, here on the main
+  // thread; its typed arrays transfer to the worker. Only Smart WITH containers uses
+  // it — classic engines and Smart+None lay out flat (no cluster tree). Directory and
+  // Community go through the byte-identical buildClusterTree path; Package and facet
+  // build a flat snapshot from their grouping hierarchy (resolved over the full graph,
+  // which carries the facets/manifest info the bare layout nodes lack).
+  const groupingSnapshot =
+    algorithm === "smart" && groupBy !== "none"
+      ? buildGroupingSnapshotForMode(layoutInput, groupBy, communityOf, graph, catalog, manifests)
+      : undefined;
+
   return {
     nodes,
     edges,
     signature,
-    layoutInput: {
-      nodes: view.nodes.map((n) => ({ id: n.id, kind: n.kind })),
-      edges: visibleEdges.map((e) => ({
-        source: e.source,
-        target: e.target,
-        kind: e.kind,
-        count: e.count,
-        weight: edgeWeight(e.kind, e.count),
-      })),
-    },
-    options: { algorithm, direction, groupBy, density, communityOf },
+    layoutInput,
+    options: { algorithm, direction, groupBy, density, communityOf, groupingSnapshot },
   };
 }
 

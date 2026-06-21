@@ -7,6 +7,8 @@ import {
   type Scene,
   type SceneFilters,
 } from "@/lib/graph/scene";
+import type { DimensionCatalog } from "@/lib/graph/dimensions";
+import type { PackageManifest } from "@/lib/graph/levels/types";
 import type { GraphModel } from "@/lib/graph/types";
 import {
   type ClusterBox,
@@ -42,7 +44,15 @@ export function useScene(
   focusedIds: Set<string> | null,
   queryIds: Set<string> | null = null,
   projected = false,
-): { scene: Scene; layingOut: boolean; ready: boolean } {
+  catalog?: DimensionCatalog,
+  manifests: PackageManifest[] = [],
+): {
+  scene: Scene;
+  layingOut: boolean;
+  ready: boolean;
+  /** The community assignment this scene laid out (filtered-graph detection), or undefined. */
+  communityOf: Map<string, string> | undefined;
+} {
   const structure = useMemo(
     () =>
       buildSceneStructure(
@@ -58,6 +68,8 @@ export function useScene(
         focusedIds,
         queryIds,
         projected,
+        catalog,
+        manifests,
       ),
     [
       graph,
@@ -72,6 +84,8 @@ export function useScene(
       focusedIds,
       queryIds,
       projected,
+      catalog,
+      manifests,
     ],
   );
 
@@ -163,5 +177,5 @@ export function useScene(
     () => applyPositions(structure, positions, clusters),
     [structure, positions, clusters],
   );
-  return { scene, layingOut, ready };
+  return { scene, layingOut, ready, communityOf: structure.options.communityOf };
 }

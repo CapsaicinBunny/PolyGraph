@@ -44,6 +44,9 @@ interface SettingsPanelProps {
   onCommunityCollapse: (v: boolean) => void;
   telemetryOn: boolean;
   onTelemetry: (v: boolean) => void;
+  /** Phase C1b — the representation-LOD cut (proxies + budgeted antichain) vs the C1a path. */
+  representationLod: boolean;
+  onRepresentationLod: (v: boolean) => void;
   onClose: () => void;
 }
 
@@ -143,6 +146,8 @@ export function SettingsPanel({
   onCommunityCollapse,
   telemetryOn,
   onTelemetry,
+  representationLod,
+  onRepresentationLod,
   onClose,
 }: SettingsPanelProps) {
   return (
@@ -184,6 +189,11 @@ export function SettingsPanel({
             checked={telemetryOn}
             onClick={() => onTelemetry(!telemetryOn)}
             label="Local logs"
+          />
+          <CheckRow
+            checked={representationLod}
+            onClick={() => onRepresentationLod(!representationLod)}
+            label="Representation LOD (experimental)"
           />
         </Stack>
         <HStack gap="2" mt="3">

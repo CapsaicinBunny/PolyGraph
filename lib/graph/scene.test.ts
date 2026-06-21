@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { edgeWeight } from "../layout/weight";
-import type { Environment, GraphModel, NodeCategory, Runtime } from "./types";
-import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "./visual";
+import type { GraphModel } from "./types";
+import { FILTERABLE_EDGE_KINDS } from "./visual";
+import type { FacetKey } from "./dimensions";
+import type { FacetSelection } from "./facet-selection";
+import { writeFacet } from "./facets-write";
+import { mergeDescriptors, STRUCTURAL_DESCRIPTORS, type DimensionCatalog } from "./dimensions";
+import { TS_FACET_DESCRIPTORS } from "../analyzer/facet-schema";
 import { buildSceneStructure, type SceneFilters } from "./scene";
 
 function fileNode(filePath: string) {
@@ -20,13 +25,16 @@ const graph: GraphModel = {
   edges: [],
 };
 
+/** Build an enabledFacets map that excludes exactly the given values of one facet. */
+function exclude(key: FacetKey, ...values: string[]): Map<FacetKey, FacetSelection> {
+  return new Map([[key, { mode: "exclude", values: new Set(values) }]]);
+}
+
 function filters(overrides: Partial<SceneFilters> = {}): SceneFilters {
   return {
     showExternal: false,
-    enabledNodeKinds: new Set(FILTERABLE_NODE_KINDS),
-    enabledCategories: new Set<NodeCategory>(["ui", "feature"]),
-    enabledEnvironments: new Set<Environment>(["client", "server"]),
-    enabledRuntimes: new Set<Runtime>(["node", "deno", "bun"]),
+    // Sparse: an empty map means every value of every facet is enabled.
+    enabledFacets: new Map<FacetKey, FacetSelection>(),
     enabledEdgeKinds: new Set(FILTERABLE_EDGE_KINDS),
     enabledFolders: new Set(["src", "lib", "/"]),
     enabledLanguages: new Set(["TS", "RS", "{}"]),
@@ -60,6 +68,98 @@ test("disabling a language hides its files (JSON off)", () => {
     "LR",
   );
   expect(s.nodes.map((n) => n.id)).not.toContain("pkg.json");
+});
+
+// ── Generic facet gate: kind / category / env / runtime ───────────────────────
+// These assert the registry-driven gate hides EXACTLY the nodes the old named-set
+// gate did (behavior-preserving parity), expressed through the sparse enabledFacets.
+
+function symbol(id: string, kind: GraphModel["nodes"][number]["kind"]) {
+  return { id, kind, label: id, filePath: "src/a.ts", line: 1, parentFile: "src/a.ts" };
+}
+
+// A file plus two symbols inside it; expanded so the symbols render. Facets are
+// dual-written via writeFacet exactly as the analyzer produces them (the index
+// reads node.facets, not the legacy typed fields).
+const fn = symbol("src/a.ts#fn", "function") as GraphModel["nodes"][number];
+writeFacet(fn, "category", ["feature"]); // default → not materialized; resolves via complement
+const cls = symbol("src/a.ts#C", "class") as GraphModel["nodes"][number];
+writeFacet(cls, "category", ["ui"]);
+const withSymbols: GraphModel = { nodes: [fileNode("src/a.ts"), fn, cls], edges: [] };
+const expandAll = new Set(["src/a.ts"]);
+
+test("disabling a node kind hides exactly that kind's symbols (not files)", () => {
+  const s = buildSceneStructure(
+    withSymbols,
+    expandAll,
+    filters({ enabledFacets: exclude("kind", "function") }),
+    "force",
+    "LR",
+  );
+  const ids = s.nodes.map((n) => n.id);
+  expect(ids).toContain("src/a.ts"); // file unaffected by the kind gate
+  expect(ids).toContain("src/a.ts#C"); // class kept
+  expect(ids).not.toContain("src/a.ts#fn"); // function hidden
+});
+
+test("disabling a category hides exactly that category's symbols", () => {
+  const s = buildSceneStructure(
+    withSymbols,
+    expandAll,
+    filters({ enabledFacets: exclude("category", "ui") }),
+    "force",
+    "LR",
+  );
+  const ids = s.nodes.map((n) => n.id);
+  expect(ids).toContain("src/a.ts#fn"); // feature kept
+  expect(ids).not.toContain("src/a.ts#C"); // ui hidden
+});
+
+test("disabling an environment hides nodes with that environment (files included)", () => {
+  const g: GraphModel = {
+    nodes: [fileNode("src/client.ts"), fileNode("src/server.ts")],
+    edges: [],
+  };
+  writeFacet(g.nodes[0], "env", ["client"]);
+  writeFacet(g.nodes[1], "env", ["server"]);
+  const s = buildSceneStructure(
+    g,
+    new Set(),
+    filters({ enabledFacets: exclude("env", "client") }),
+    "force",
+    "LR",
+  );
+  const ids = s.nodes.map((n) => n.id);
+  expect(ids).toContain("src/server.ts");
+  expect(ids).not.toContain("src/client.ts");
+});
+
+test("multi-valued runtime: a node survives if ANY of its runtimes stays enabled", () => {
+  const g: GraphModel = { nodes: [fileNode("src/iso.ts"), fileNode("src/node.ts")], edges: [] };
+  writeFacet(g.nodes[0], "runtime", ["node", "bun"]);
+  writeFacet(g.nodes[1], "runtime", ["node"]);
+  const s = buildSceneStructure(
+    g,
+    new Set(),
+    filters({ enabledFacets: exclude("runtime", "node") }),
+    "force",
+    "LR",
+  );
+  const ids = s.nodes.map((n) => n.id);
+  expect(ids).toContain("src/iso.ts"); // still has bun enabled
+  expect(ids).not.toContain("src/node.ts"); // only node, which is disabled
+});
+
+test("a node with no environment is kept when an environment is disabled (MissingPolicy include)", () => {
+  const g: GraphModel = { nodes: [fileNode("src/plain.ts")], edges: [] };
+  const s = buildSceneStructure(
+    g,
+    new Set(),
+    filters({ enabledFacets: exclude("env", "client", "server") }),
+    "force",
+    "LR",
+  );
+  expect(s.nodes.map((n) => n.id)).toContain("src/plain.ts");
 });
 
 // Two disjoint 2-cycles → two communities of size 2.
@@ -216,6 +316,38 @@ test("layoutInput edges carry kind, count, and a precomputed weight (Gap B)", ()
   expect(e?.kind).toBe("import");
   expect(e?.count).toBe(3);
   expect(e?.weight).toBe(edgeWeight("import", 3));
+});
+
+test("the layout signature includes catalog identity (distinct catalogs cannot collide)", () => {
+  // Two analyses can gate the SAME graph by DIFFERENT catalogs (e.g. the kernel's
+  // merged catalog on the canvas vs. the TS/JS fallback in an export). They generally
+  // produce different visible sets, so their signatures must differ — otherwise one
+  // serves the other's cached layout and filtered-out nodes reappear at (0,0).
+  const catalogA: DimensionCatalog = mergeDescriptors([STRUCTURAL_DESCRIPTORS]).catalog;
+  const catalogB: DimensionCatalog = mergeDescriptors([
+    STRUCTURAL_DESCRIPTORS,
+    TS_FACET_DESCRIPTORS,
+  ]).catalog;
+  const args = [
+    graph,
+    new Set<string>(),
+    filters(),
+    "force",
+    "LR",
+    new Set<string>(),
+    "directory",
+    1,
+    false,
+    null,
+    null,
+    false,
+  ] as const;
+  const sigA = buildSceneStructure(...args, catalogA).signature;
+  const sigB = buildSceneStructure(...args, catalogB).signature;
+  expect(sigA).not.toBe(sigB);
+  // Same catalog, identical inputs → identical signature (cache hits are still possible).
+  const sigA2 = buildSceneStructure(...args, catalogA).signature;
+  expect(sigA2).toBe(sigA);
 });
 
 test("queryIds narrows the visible set and intersects with the filters", () => {

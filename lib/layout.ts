@@ -10,6 +10,7 @@ import {
 import { stratify, tree as d3tree } from "d3-hierarchy";
 import { Layout as ColaLayout } from "webcola";
 import type { ViewEdgeKind } from "./aggregate";
+import type { CompactGroupingSnapshot } from "./graph/grouping-snapshot";
 import { coreness } from "./layout/backbone";
 import { detectCommunities } from "./layout/community";
 import {
@@ -72,8 +73,17 @@ export type LayoutAlgorithm =
 /** Algorithms for which the direction selector is meaningful. */
 export const DIRECTIONAL_ALGORITHMS: LayoutAlgorithm[] = ["smart", "layered", "tree"];
 
-/** How the Smart layout groups nodes into clusters. */
-export type GroupBy = "directory" | "community" | "none";
+/**
+ * How the Smart layout groups nodes into clusters — a grouping-mode KEY (Phase C1a).
+ * The well-known built-ins are "directory" / "community" / "none"; provider-eligible
+ * modes add "package" and "facet:<key>" (e.g. "facet:env"). A `string` because the set
+ * is open (eligible groupable facets are discovered per graph); consumers branch only on
+ * the built-ins and otherwise drive the layout from the injected grouping snapshot.
+ */
+export type GroupBy = string;
+
+/** The always-available built-in grouping modes (no provider/manifest needed). */
+export const BUILTIN_GROUP_BY = ["directory", "community", "none"] as const;
 
 export interface LayoutOptions {
   algorithm?: LayoutAlgorithm;
@@ -92,6 +102,13 @@ export interface LayoutOptions {
    * reshuffling. Nodes without a prior position fall back to the engine default.
    */
   previousPositions?: Map<string, XYPosition>;
+  /**
+   * The injected grouping snapshot (Phase C1a). When present, the Smart layout builds
+   * its cluster tree from it (the new grouping INPUT contract) rather than deriving
+   * directory ancestry from node ids. Built once on the main thread; its typed arrays
+   * transfer to the worker. See lib/graph/grouping-snapshot.ts.
+   */
+  groupingSnapshot?: CompactGroupingSnapshot;
 }
 
 /** Why the budget guard downgraded a leaf cluster's planner choice to grid (null = it didn't). */
@@ -1240,6 +1257,7 @@ function smartOptions(options: LayoutOptions) {
     density: options.density,
     communityOf: options.communityOf,
     previousPositions: options.previousPositions,
+    groupingSnapshot: options.groupingSnapshot,
   };
 }
 
@@ -1375,6 +1393,7 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
         density: options.density,
         communityOf: options.communityOf,
         previousPositions: options.previousPositions,
+        groupingSnapshot: options.groupingSnapshot,
       }).nodes;
     case "tree":
       return cappedComponents(view, HEAVY_COMPONENT_CAP.tree, (sub) => treeLayout(sub, direction));
