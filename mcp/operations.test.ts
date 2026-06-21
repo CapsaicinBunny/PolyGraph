@@ -2,8 +2,8 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { telemetry } from "../lib/telemetry";
 import { clearScanCache } from "./cache";
+import { telemetry } from "./telemetry";
 import {
   checkRules,
   diffRevisions,
@@ -85,7 +85,9 @@ test("checkRules without a config gives an actionable error", async () => {
 });
 
 test("diffRevisions outside a git repo gives an actionable error", async () => {
-  expect(await rejectMessage(diffRevisions(dir, "main"))).toMatch(/Could not diff/);
+  expect(await rejectMessage(diffRevisions(dir, "main"))).toMatch(
+    /Could not read revisions to diff/,
+  );
 });
 
 test("readSource reads a scanned file and honors a line range", async () => {
@@ -112,6 +114,19 @@ test("logs reads and controls the telemetry bus", () => {
   const tail = logs("tail");
   expect(tail.eventCount).toBe(1);
   expect(tail.events?.[0]?.event).toBe("mcp.test");
+
+  // metrics action surfaces recorded metric series.
+  telemetry.metric("mcp.scan.ms", 12);
+  const metrics = logs("metrics");
+  expect(metrics.metrics?.histograms["mcp.scan.ms"]?.count).toBe(1);
+  expect(metrics.metrics?.histograms["mcp.scan.ms"]?.max).toBe(12);
+
+  // tail honors `limit` and returns the most recent events, in order.
+  telemetry.clearAll();
+  telemetry.event("analysis", "mcp.a");
+  telemetry.event("analysis", "mcp.b");
+  telemetry.event("analysis", "mcp.c");
+  expect(logs("tail", 2).events?.map((e) => e.event)).toEqual(["mcp.b", "mcp.c"]);
 
   expect(logs("disable").enabled).toBe(false);
   expect(logs("enable").enabled).toBe(true);

@@ -1,23 +1,29 @@
-// The six read-only PolyGraph operations the MCP tools expose, as plain async
-// functions returning structured data. Deliberately free of any MCP/SDK types so
-// they're unit-testable directly against a fixture; mcp/server.ts wraps each one.
+// The eight PolyGraph operations the MCP tools expose, returning structured data.
+// Deliberately free of any MCP/SDK types so they're unit-testable directly against
+// a fixture; mcp/server.ts wraps each one as a tool.
 
 import { readFile, realpath } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { scanRevision, scanTarget, WORKING_TREE } from "../lib/cli/scan";
+import { type ScanResult, scanRevision, scanTarget, WORKING_TREE } from "../lib/cli/scan";
 import { loadConfigFile } from "../lib/config/load";
 import { diffGraphs } from "../lib/diff/diff";
 import { analyzeInsights, unresolvedToInsights } from "../lib/graph/insights";
 import { runQuery } from "../lib/graph/query-language";
 import type { GraphNode } from "../lib/graph/types";
 import { evaluate } from "../lib/rules/engine";
-import { telemetry } from "../lib/telemetry";
+import type { HistogramSummary } from "../lib/telemetry";
 import { getScan, rootKey } from "./cache";
 import { type BriefNode, briefNode, edgeConfidence, errMsg, histogram } from "./format";
+import { telemetry } from "./telemetry";
 
 const LIST_CAP = 100;
 const EDGE_CAP = 50;
 const NODE_CAP = 30;
+
+// Result types below are `type` aliases, not interfaces: the MCP SDK's
+// `structuredContent` requires assignability to `{ [k: string]: unknown }`, which
+// object-literal type aliases get implicitly but interfaces do not. (BriefNode in
+// format.ts stays an interface — it's only ever nested, never assigned directly.)
 
 // --- scan -------------------------------------------------------------------
 
@@ -108,9 +114,8 @@ export async function nodeDetail(path: string, id: string): Promise<NodeDetail> 
   const d = await getScan(path);
   const node = d.graph.nodes.find((n) => n.id === id);
   if (!node) {
-    const hint = id.includes("#") ? (id.split("#").pop() ?? id) : id;
     throw new Error(
-      `No node with id "${id}". Find ids with polygraph_query — e.g. {"query":"label:${hint}"} or {"query":"path:**/<file>"}.`,
+      `No node with id "${id}". Discover ids with polygraph_query — e.g. {"query":"path:**/<file>"} or {"query":"kind:file"} — then use a returned node's id.`,
     );
   }
   const labelById = new Map(d.graph.nodes.map((n) => [n.id, n.label]));
@@ -233,26 +238,30 @@ export async function diffRevisions(
   head?: string,
 ): Promise<DiffResult> {
   const root = rootKey(path);
+  // Wrap ONLY the git/revision acquisition: a bug in diffGraphs (a pure function)
+  // must surface unmodified, not get mislabeled as a git/revision problem.
+  let before: ScanResult;
+  let after: ScanResult;
   try {
-    const before = await scanRevision(root, base);
-    const after = await scanTarget(root, head ?? WORKING_TREE);
-    const diff = diffGraphs(before.graph, after.graph, before.label, after.label);
-    return {
-      base: diff.base,
-      head: diff.head,
-      summary: diff.summary,
-      addedNodes: diff.nodes.added.slice(0, NODE_CAP).map(briefNode),
-      removedNodes: diff.nodes.removed.slice(0, NODE_CAP).map(briefNode),
-      newCycles: diff.newCycles.slice(0, 10).map((c) => ({ members: c.labels })),
-      blastRadius: diff.blastRadiusDeltas
-        .slice(0, 10)
-        .map((b) => ({ label: b.label, delta: b.delta })),
-    };
+    before = await scanRevision(root, base);
+    after = await scanTarget(root, head ?? WORKING_TREE);
   } catch (err) {
     throw new Error(
-      `Could not diff "${root}": ${errMsg(err)}. Diff needs a git repo and valid revisions (a base, and optionally a head — omit head to compare against the working tree).`,
+      `Could not read revisions to diff under "${root}": ${errMsg(err)}. Diff needs a git repo and valid revisions (a base, and optionally a head — omit head to compare against the working tree).`,
     );
   }
+  const diff = diffGraphs(before.graph, after.graph, before.label, after.label);
+  return {
+    base: diff.base,
+    head: diff.head,
+    summary: diff.summary,
+    addedNodes: diff.nodes.added.slice(0, NODE_CAP).map(briefNode),
+    removedNodes: diff.nodes.removed.slice(0, NODE_CAP).map(briefNode),
+    newCycles: diff.newCycles.slice(0, 10).map((c) => ({ members: c.labels })),
+    blastRadius: diff.blastRadiusDeltas
+      .slice(0, 10)
+      .map((b) => ({ label: b.label, delta: b.delta })),
+  };
 }
 
 // --- read (source within scanned roots) -------------------------------------
@@ -272,9 +281,12 @@ export type FileSlice = {
  * Read a slice of a source file — but ONLY a file PolyGraph already analyzed under
  * `path`, and ONLY if it resolves (canonicalized) inside that scanned root. Two
  * independent gates: graph membership (so it's a real source file that passed the
- * scanner's filters — never node_modules/.env/secrets) and a realpath containment
- * check (defeats `../` and symlink escapes). This is the deliberate guard against
- * an LLM being steered into reading arbitrary files.
+ * scanner's extension/ignore filters — excludes node_modules, build output, and
+ * non-source files like a bare .env; note source files such as .json/.sql ARE in
+ * scope, so this bounds reads to the analyzed source set rather than being a
+ * secrets firewall) and a realpath containment check (defeats `../` and symlink
+ * escapes). The deliberate guard against an LLM being steered into reading
+ * arbitrary files.
  */
 export async function readSource(
   path: string,
@@ -320,16 +332,9 @@ export type LogEvent = {
   event: string;
   data?: Record<string, unknown>;
 };
-export type MetricSummary = {
-  count: number;
-  total: number;
-  mean: number;
-  min: number;
-  max: number;
-  p50: number;
-  p95: number;
-  p99: number;
-};
+// Identical to the telemetry bus's own summary type — alias it rather than keep a
+// second copy that can drift.
+export type MetricSummary = HistogramSummary;
 export type LogsAction = "tail" | "metrics" | "status" | "enable" | "disable" | "clear";
 export type LogsResult = {
   action: LogsAction;
