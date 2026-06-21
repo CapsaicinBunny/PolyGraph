@@ -35,7 +35,7 @@ import { frameBoxes } from "@/lib/graph/frame";
 import { buildDirTree, type DirNode } from "@/lib/graph/hierarchy";
 import type { CollapseIntent, GroupId } from "@/lib/graph/collapse-model";
 import type { CompactGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
-import { buildGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
+import { buildGroupingSnapshot, NO_GROUP } from "@/lib/graph/grouping-snapshot";
 import { directoryGrouping, syntheticNoneGrouping } from "@/lib/graph/grouping";
 import { directoryLodSelection } from "@/lib/graph/lod-selection";
 import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
@@ -51,6 +51,12 @@ import {
 } from "@/lib/graph/lod-representation-cut";
 import { cameraBand, proxyBoxes, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
 import { decideRecut, type RecutTrigger } from "@/lib/graph/lod-recut-mode";
+import {
+  BoundedLayoutCache,
+  type LayoutCacheKey,
+  planTransition,
+  ReadinessController,
+} from "@/lib/graph/readiness";
 import {
   centerCameraOn,
   contentBounds,
@@ -539,6 +545,16 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const proxySessionRef = useRef<{ session: IncrementalSceneSession; signature: string } | null>(
     null,
   );
+  // The async-readiness orchestrator (design B3 + impl note (d), P3 "async-readiness"). Governs
+  // the PENDING-target → committed-scene transition: a coarsen (fold) and a refine with a cached
+  // local layout commit immediately; a refine whose local layout is a cache MISS retains the
+  // existing proxy and runs ASYNC (the worker layout in useScene), tagged with the committed
+  // generation; a result whose generation is superseded is discarded; advancing the generation
+  // CANCELS every obsolete in-flight request. The bounded cache is the P3 "cache memory limit /
+  // LRU" — a HIT/MISS probe here, the actual layout bytes live in useScene's HierarchicalLayout.
+  // Both reset on a grouping-mode switch (the rep id domain + generation chain move).
+  const readinessRef = useRef<ReadinessController>(new ReadinessController());
+  const layoutCacheRef = useRef<BoundedLayoutCache>(new BoundedLayoutCache());
   // Reference-identity tokens for the material signature: a monotonic id per distinct object
   // reference (graph / snapshot / visible-set / cost inputs). React hands a NEW reference on
   // a real change, so comparing references is a cheap, correct proxy for "did the material
@@ -659,6 +675,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     lod.current.rawCut = new Set();
     repRuntimeRef.current = undefined;
     proxySessionRef.current = null; // the rep id domain moved — start a fresh fold session
+    // The generation chain + the in-flight async requests belong to the OLD mode's rep id
+    // domain; forget them so a late result from the prior mode can never commit (and the
+    // bounded local-layout cache's entries — keyed on the old material — can never be hit).
+    readinessRef.current.reset();
+    layoutCacheRef.current.clear();
   }
   lod.current.groupBy = groupBy;
   lod.current.groupingSnapshot = groupingSnapshot ?? null;
@@ -1044,6 +1065,53 @@ export function VelloGraphCanvas(props: GraphViewProps) {
               signature: sig,
             };
             proxySessionRef.current = entry;
+          }
+
+          // ── Single atomic readiness policy (design B3 + impl note (d)) ──────────────────
+          // Advance the live target generation; this CANCELS every obsolete in-flight async
+          // request from a prior generation (the spec's "cancellation of obsolete requests"),
+          // so a late worker result from a superseded cut can never commit (rule 6 — stale
+          // generations discarded; the controller judges such a result "cancelled"/"stale").
+          const gen = result.runtime.generation;
+          readinessRef.current.beginGeneration(gen);
+          // Classify the pending transition against the bounded local-layout cache. A COARSEN
+          // (fold) and a refine with a cached local layout are IMMEDIATE; a refine that MISSES
+          // retains its proxy and would run async (the visual layout itself runs in useScene's
+          // worker, keyed off the cutSignature below — the prior committed cut stays visible
+          // until it lands, with no blank/partial frame; rules 2–5). The cache key is the rep's
+          // stable box key under THIS material signature (generation-independent), so the same
+          // group's layout is a HIT across recuts of the same material that merely re-open it.
+          const diff = entry.session.peekDiff(result.cut);
+          const cols = runtime.hierarchy.columns;
+          const boxKeyByGroup = runtime.hierarchy.snapshot.boxKeyByGroup;
+          const cacheKeyOf = (root: number): LayoutCacheKey => {
+            // A group rep keys on its stable box key (stable across recuts of the same material);
+            // an intermediate-tier / super-root / orphan rep (NO_GROUP, or a group ordinal with no
+            // box key) keys on its rep id. Both are prefixed by the material signature so a
+            // material flip can never hit a stale entry.
+            const g = cols.groupByRep[root];
+            const bk = g !== NO_GROUP ? boxKeyByGroup[g] : undefined;
+            return `${sig}\n${bk ?? `rep:${root}`}`;
+          };
+          if (diff) {
+            const plan = planTransition(diff, layoutCacheRef.current, cacheKeyOf, gen);
+            // Track each cache MISS as an in-flight async request (generation-tagged). The
+            // worker layout in useScene resolves it; when its result lands at the live
+            // generation the group's local layout is cached (via the future resolve() path),
+            // turning the next recut into a HIT.
+            //
+            // NOTE: we deliberately do NOT seed the BoundedLayoutCache with a placeholder layout
+            // here. A cache entry must stand for a REAL local layout the worker actually produced
+            // (positioned children) — seeding an empty `{ positions: new Map() }` would (1) make
+            // the very next recut that re-opens the same group classify as a HIT (under-reporting
+            // `pendingAsync`), and (2) plant a blank-frame trap for the moment resolve() is wired
+            // to gate commits: a phantom empty layout would "commit immediately" with zero
+            // positions. Until the worker→resolve() path lands the real layout (builder note 1),
+            // the cache stays empty and every refine is an honest MISS that retains its proxy
+            // (the prior committed scene stays visible via useScene's positionedSig lag).
+            for (const req of plan.requests) readinessRef.current.track(req.root, gen);
+            telemetry.metric("lod.readiness.immediate", plan.immediateRoots.length);
+            telemetry.metric("lod.readiness.pendingAsync", plan.pendingRoots.length);
           }
           const folded = entry.session.recut(result.cut);
           // Adopt the folded scene as the render scene. The salt (material signature + committed
