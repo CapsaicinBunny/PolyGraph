@@ -28,6 +28,9 @@ import {
   materializeProxyScene,
 } from "./proxy-materialize";
 import type { RepresentationHierarchy } from "./representation";
+import type { RepresentationEdgeIndex } from "./representation-edge-index";
+import type { LodBudget, LodCut } from "./lod-cut-solver";
+import { commitTransitionBatches, type TransitionResult } from "./transition";
 import type { DimensionCatalog, FacetKey } from "./dimensions";
 import { buildDimensionIndex, type DimensionIndex } from "./dimension-index";
 import { type FacetSelection, facetAllows, serializeFacetSelections } from "./facet-selection";
@@ -708,13 +711,18 @@ export function materializeRepresentationScene(
  */
 export class IncrementalSceneSession {
   private readonly mat: IncrementalMaterializer;
+  private readonly hierarchy: RepresentationHierarchy;
+  private readonly edgeIndex: RepresentationEdgeIndex | undefined;
   private readonly repCount: number;
   private prevSelected: Uint32Array | null = null;
 
   constructor(
     graph: GraphModel,
     hierarchy: RepresentationHierarchy,
-    options: { visibleNode?: (ordinal: number) => boolean } = {},
+    options: {
+      visibleNode?: (ordinal: number) => boolean;
+      edgeIndex?: RepresentationEdgeIndex;
+    } = {},
   ) {
     const ordinalOfNode = new Map<string, number>();
     for (let i = 0; i < graph.nodes.length; i++) ordinalOfNode.set(graph.nodes[i].id, i);
@@ -726,6 +734,8 @@ export class IncrementalSceneSession {
       visibleNode: options.visibleNode,
       edgeInputs,
     });
+    this.hierarchy = hierarchy;
+    this.edgeIndex = options.edgeIndex;
     this.repCount = hierarchy.repCount;
   }
 
@@ -751,6 +761,38 @@ export class IncrementalSceneSession {
     if (this.prevSelected === null) return null;
     const next = Uint32Array.from(cut.selectedRepresentations as ArrayLike<number>);
     return diffCuts(this.prevSelected, next, this.repCount);
+  }
+
+  /**
+   * Commit a recut as a sequence of atomic {@link TransitionBatch}es (design B3 + impl note (b)).
+   * Unlike {@link recut} — which applies the WHOLE diff in one mutation — this partitions the
+   * changed subtrees into connected batches, REVALIDATES each against the hard budgets immediately
+   * before commit, and commits each accepted batch atomically. A batch that would breach a hard
+   * ceiling is REJECTED — it leaves both the scene and the committed selection unchanged — while
+   * independent batches still commit. Requires a baseline (call {@link recut} once first, or this
+   * folds the full baseline of `committed`).
+   *
+   * The session's committed selection is advanced to {@link TransitionResult.committedSelection}
+   * (the post-accept cut), so the NEXT recut/transition diffs against it correctly.
+   */
+  commitTransition(
+    committed: LodCut,
+    target: LodCut,
+    budget: LodBudget,
+    targetGeneration: number,
+  ): TransitionResult {
+    if (this.prevSelected === null) this.recut(committed); // establish the baseline
+    const result = commitTransitionBatches({
+      hierarchy: this.hierarchy,
+      edgeIndex: this.edgeIndex,
+      materializer: this.mat,
+      committed,
+      target,
+      budget,
+      targetGeneration,
+    });
+    this.prevSelected = result.committedSelection;
+    return result;
   }
 }
 
