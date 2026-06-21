@@ -8,7 +8,7 @@ import { clientCatalog } from "../graph/client-catalog";
 import { buildDimensionIndex } from "../graph/dimension-index";
 import { evaluate, fingerprint } from "../rules/engine";
 import { toSarifString } from "../rules/sarif";
-import { formatCheck } from "./report";
+import { CROSS, formatCheck, WARN } from "./report";
 import { scanRevision, scanWorkingTree } from "./scan";
 
 export interface CheckArgs {
@@ -59,7 +59,7 @@ export async function runCheck(args: CheckArgs): Promise<CommandOutcome> {
   // violation document) ahead of the report so they aren't lost below a long list.
   const prefix =
     args.format !== "sarif" && configProblems.length > 0
-      ? `${configProblems.map((p) => `${p.severity === "error" ? "✗" : "⚠"} config: ${p.where}: ${p.message}`).join("\n")}\n\n`
+      ? `${configProblems.map((p) => `${p.severity === "error" ? CROSS : WARN} config: ${p.where}: ${p.message}`).join("\n")}\n\n`
       : "";
 
   return { stdout: prefix + body, exitCode };

@@ -9,13 +9,11 @@
 // fallback so legacy-only nodes still match. The loader mirrors the legacy typed
 // selector fields into `facets`, so this one path covers both old and new configs.
 
+import { FACET_DEFAULTS } from "../graph/facets-write";
 import { canonicalLanguageKey, fileLanguage, topFolderOf } from "../graph/filters";
 import type { GraphNode } from "../graph/types";
 import { matchAnyGlob } from "../glob/match";
 import type { NodeSelector } from "../config/schema";
-
-/** Implicit value for a facet key whose value is absent (only `category` today). */
-const FACET_DEFAULTS: Record<string, string> = { category: "feature" };
 
 /**
  * Legacy typed field reads, so a node carrying only legacy fields still matches.
