@@ -151,17 +151,9 @@ export interface GraphViewProps {
    */
   groupingSnapshot?: CompactGroupingSnapshot | null;
   /**
-   * When true (AND adaptiveLod is on AND a groupingSnapshot exists), the camera runs the
-   * REPRESENTATION cut — a budgeted valid antichain through the proxy hierarchy (Appendix A),
-   * the sole LOD authority now that C1a is retired (spec P5). The result flows through `onCut`
-   * as a GroupLodSelection, so the render path is unchanged. When off, the recut is inert (the
-   * bootstrap seed bounds the first frame meanwhile).
-   */
-  representationLod?: boolean;
-  /**
    * The active grouping mode's user collapse INTENT (group id → open/closed). The
-   * representation cut consumes it as solver constraints (forceClosed/forceOpen). Unused by
-   * the C1a path (which receives the already-composed collapsedClusters).
+   * representation cut — the sole LOD authority now that C1a is retired (spec P5) — consumes
+   * it as solver constraints (forceClosed/forceOpen).
    */
   intent?: CollapseIntent;
   /** Dev: observe each committed representation cut (overlay / telemetry). */
@@ -313,7 +305,6 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     onCut,
     onCommunityOf,
     groupingSnapshot,
-    representationLod,
     intent,
     onRepLod,
     onProxyScene,
@@ -331,11 +322,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     [showExternal, enabledFacets, enabledEdgeKinds, enabledFolders, enabledLanguages],
   );
 
-  // The AUTHORITATIVE rep-cut render scene (design impl point 5). When `representationLod` is on,
-  // the recut materializes the committed cut into a folded proxy GraphModel and stores it here;
-  // `useScene` then builds the rendered structure DIRECTLY from it (NOT from
-  // `compose()`/`collapsedClusters`/`collapseClusters()`). Null until the first committed cut (the
-  // C1a base structure renders meanwhile as the bootstrap) and whenever representationLod is off.
+  // The AUTHORITATIVE rep-cut render scene (design impl point 5). The recut materializes the
+  // committed cut into a folded proxy GraphModel and stores it here; `useScene` then builds the
+  // rendered structure DIRECTLY from it (NOT from `compose()`/`collapsedClusters`/
+  // `collapseClusters()`). Null until the first committed cut (the bootstrap-seeded base
+  // structure renders meanwhile).
   const [repScene, setRepScene] = useState<{ scene: GraphModel; cutSignature: string } | null>(
     null,
   );
@@ -361,7 +352,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     projected,
     catalog,
     manifests,
-    representationLod ? repScene : null,
+    repScene,
   );
   const { resolvedTheme } = useTheme();
 
@@ -574,8 +565,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const dirTree = useMemo(() => buildDirTree(graph), [graph]);
   // Phase C1b: Directory and None modes have no `groupingSnapshot` prop (Directory uses the
   // DirNode cut; None renders no visible containers), so build one here for the representation
-  // cut. Only when representationLod is on AND the mode is one of those — otherwise this is null
-  // and never built (the snapshot prop covers the rest).
+  // cut, but only when the mode is one of those — otherwise this is null and never built (the
+  // snapshot prop covers the rest).
   //
   //   - Directory → directoryGrouping (the canvas's own DirNode path has no snapshot).
   //   - None → syntheticNoneGrouping (components → communities, design Gap 2 / P2). This is a
@@ -587,7 +578,6 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   //     drawing group boxes. None emits no live cluster boxes, so the cut runs purely on those
   //     stable bounds. The C1a seed/intent/cluster machinery still must NOT run for None.
   const directoryRepSnapshot = useMemo(() => {
-    if (!representationLod) return null;
     if (groupBy === "directory") {
       return buildGroupingSnapshot(
         directoryGrouping(graph),
@@ -603,7 +593,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       );
     }
     return null;
-  }, [representationLod, groupBy, graph]);
+  }, [groupBy, graph]);
   const lod = useRef<{
     adaptiveLod?: boolean;
     onCut?: (modeKey: string, selection: Set<GroupId>) => void;
@@ -615,7 +605,6 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     // The active mode's CUT snapshot (non-directory modes), for the mode-agnostic cut.
     groupingSnapshot: CompactGroupingSnapshot | null;
     // Phase C1b representation-cut inputs + the committed runtime (persists across recuts).
-    representationLod?: boolean;
     intent?: CollapseIntent;
     onRepLod?: (result: RepLodResult) => void;
     onProxyScene?: (scene: GraphModel) => void;
@@ -633,7 +622,6 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     symbolCount,
     groupBy,
     groupingSnapshot: groupingSnapshot ?? null,
-    representationLod,
     intent,
     onRepLod,
     onProxyScene,
@@ -647,7 +635,6 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.scene = scene;
   lod.current.expanded = expanded;
   lod.current.symbolCount = symbolCount;
-  lod.current.representationLod = representationLod;
   lod.current.intent = intent;
   lod.current.onRepLod = onRepLod;
   lod.current.onProxyScene = onProxyScene;
@@ -672,19 +659,20 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.groupingSnapshot = groupingSnapshot ?? null;
   const lodBand = useRef(cameraBand(1));
 
-  // Drop the authoritative rep scene when the rep id domain moves (a grouping-mode switch), the
-  // rep cut is turned off, OR the POST-FILTER projection could have changed (graph / filters /
-  // query narrowing). A folded scene from the OLD mode (or a now-disabled cut) must not keep
-  // rendering; just as important, a fold from the PRIOR filter set is stale —
+  // Drop the authoritative rep scene when the rep id domain moves (a grouping-mode switch) OR
+  // the POST-FILTER projection could have changed (graph / filters / query narrowing). A folded
+  // scene from the OLD mode must not keep rendering; just as important, a fold from the PRIOR
+  // filter set is stale —
   // `buildSceneStructureFromModel` renders the materialized nodes VERBATIM (it deliberately does
   // not re-filter), so a now-hidden node would linger as a rendered own-node and a proxy's
   // member-count badge would be wrong until the next committed recut lands. Clearing here drops to
-  // the always-correct C1a base structure for one frame (the honest bootstrap) instead of showing
-  // the stale fold. The scene-ready effect then fires a recut that repopulates `repScene` from the
+  // the always-correct bootstrap-seeded base structure for one frame (the honest bootstrap) instead
+  // of showing the stale fold. The scene-ready effect then fires a recut that repopulates `repScene`
+  // from the
   // new projection. (This effect only invalidates; the recut owns repopulation.)
   useEffect(() => {
     setRepScene(null);
-  }, [groupBy, representationLod, graph, filters, queryIds]);
+  }, [groupBy, graph, filters, queryIds]);
 
   // The JSON payload Vello consumes. Built from the positioned scene.
   const payload = useMemo(() => {
@@ -911,31 +899,24 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     const recomputeCut = (trigger: RecutTrigger) => {
       const l = lod.current;
       if (!l.adaptiveLod || !l.onCut) return;
-      // The cut measures each group's on-screen size from the live scene's boxes (open
-      // ClusterBoxes + collapsed aggregate cards). When there are NO boxes at all — the
-      // grid fallback (forced on large/dense graphs) and groupBy:"none" emit none — every
-      // group reads as "off-screen, height 0" and the cut would wrongly collapse the whole
-      // graph (the disappearing view). With no hierarchy boxes to measure, leave the cut
-      // alone. (Generalized from the old groupBy!=="directory" + zero-cluster guards: the
-      // cut now runs in EVERY mode via boxKey, fixing the bug where changing the group mode
-      // disabled LOD.)
-      // Box geometry the cut measures from. The rep cut is authoritative, so the rendered scene
-      // is the materializer's proxy cards — a collapsed group is a generic `«proxy»` card, NOT an
-      // `isAggregateId` directory card — so read collapsed-group bounds via `proxyBoxes` (rep →
-      // group → box key through the prior cut's hierarchy). Open groups still come from
-      // scene.clusters. Before the first committed cut (no hierarchy yet) the bootstrap-seeded base
-      // structure is what's rendered, so the directory-aggregate `sceneBoxes` is correct.
-      const prevHier = lastRep.current?.hierarchy;
-      const boxes =
-        l.representationLod && prevHier ? proxyBoxes(l.scene, prevHier) : sceneBoxes(l.scene);
-      // The rep cut does not depend on live boxes: it carries STABLE, layout-independent proxy
-      // bounds (design Gap 3 / P2), so it OPERATES under box-less engines (Grid / classic / None)
-      // where `boxes.size === 0`. With the C1a fallback cuts retired (spec P5), there is no
-      // box-measuring cut left to protect, so the recut is simply inert when the rep cut will NOT
-      // run — bail here only in that case (representationLod off or no snapshot).
+      // The representation cut is the SOLE LOD authority (spec P5 — C1a retired). It runs only
+      // when the active mode supplies a hierarchy: every non-directory mode passes a
+      // `groupingSnapshot`; Directory/None use the canvas-built `directoryRepSnapshot`. No
+      // snapshot → nothing to cut → the recut is inert (the bootstrap-seeded base scene bounds
+      // the first frame meanwhile).
       const repSnap = l.groupingSnapshot ?? l.directoryRepSnapshot;
-      const willRunRepCut = l.representationLod && !!repSnap;
-      if (boxes.size === 0 && !willRunRepCut) return;
+      if (!repSnap) return;
+      // Box geometry the cut measures from. The rendered scene is the materializer's proxy cards —
+      // a collapsed group is a generic `«proxy»` card, NOT an `isAggregateId` directory card — so
+      // read collapsed-group bounds via `proxyBoxes` (rep → group → box key through the prior cut's
+      // hierarchy). Open groups still come from scene.clusters. Before the first committed cut (no
+      // hierarchy yet) the bootstrap-seeded base structure is what's rendered, so the
+      // directory-aggregate `sceneBoxes` is correct. The cut does NOT depend on live boxes existing:
+      // it carries STABLE, layout-independent proxy bounds (design Gap 3 / P2), so it OPERATES under
+      // box-less engines (Grid / classic / None) where `boxes.size === 0` — no zero-box guard is
+      // needed now that the box-measuring C1a fallback is gone.
+      const prevHier = lastRep.current?.hierarchy;
+      const boxes = prevHier ? proxyBoxes(l.scene, prevHier) : sceneBoxes(l.scene);
       const c = cam.current;
       const band = cameraBand(c.scale);
       // Apply the camera policy. Zoom only ever REFINEs as the user zooms IN (band increases),
@@ -958,15 +939,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       const sc = l.symbolCount;
       const nodeCost = (id: string) => 1 + (exp.has(id) ? (sc.get(id) ?? 0) : 0);
 
-      // Phase C1b — REPRESENTATION CUT (gated behind representationLod + a snapshot). A
-      // budgeted valid antichain through the proxy hierarchy (Appendix A) replaces the C1a
-      // collapse-shaped cut for the rendered scene. It still hands up a GroupLodSelection via
-      // onCut, so the render path is unchanged; the C1a branches below remain the fallback
-      // when representationLod is off. Only a materially-different COMMITTED cut fires onCut
-      // (the runtime gates the generation), and the runtime persists across recuts on the ref.
-      // Directory has no snapshot prop, so it uses the canvas-built directoryRepSnapshot.
-      // (`repSnap` / `willRunRepCut` were computed above to gate the box-less early-return.)
-      if (willRunRepCut) {
+      // Phase C1b — REPRESENTATION CUT (the sole LOD authority; spec P5). A budgeted valid
+      // antichain through the proxy hierarchy (Appendix A) drives the rendered scene. It hands up
+      // a GroupLodSelection via onCut, so the downstream render path is unchanged. Only a
+      // materially-different COMMITTED cut fires onCut (the runtime gates the generation), and the
+      // runtime persists across recuts on the ref. Directory has no snapshot prop, so it uses the
+      // canvas-built directoryRepSnapshot. (`repSnap` was computed above; a missing snapshot
+      // already early-returned.)
+      {
         // MATERIAL-signature inputs (Gap 4): reference-identity tokens for the filtered graph
         // (graph ref + visible-set ref), the grouping (snapshot ref), and the per-node cost
         // inputs (expanded set + symbol-count map refs). React hands a NEW reference on a real
@@ -1104,14 +1084,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
           // depends on it, but keep the hook for callers that observe the folded scene directly.
           l.onProxyScene?.(folded);
         }
-        return;
       }
-
-      // The C1a fallback cuts (computeCut / computeGroupCut / directoryLodSelection) have been
-      // RETIRED (spec P5 — the representation cut is the sole LOD authority). When the rep cut
-      // does not run (representationLod off, or no snapshot yet), the recut is inert: there is no
-      // longer a legacy zoom-shaped cut to fall back to. The bootstrap seed (Explorer's
-      // budgetGroupCut → compose()) bounds the first frame meanwhile.
     };
     // Expose to the scene-ready effect so it can fire the first cut on a new scene (no gesture).
     recomputeCutRef.current = recomputeCut;
@@ -1378,11 +1351,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // layout-ready scene lands (a new graph / filter / grouping / the rep scene itself), fire one cut
   // so the committed cut is materialized into the production scene. The solver's committed-generation
   // guard makes this idempotent: re-running the SAME committed cut returns committed=false, so
-  // folding the rep scene's own re-layout does NOT loop (no second setRepScene). Skipped while the
-  // rep cut is off (the bootstrap-seeded scene renders directly) and until recomputeCut is installed.
+  // folding the rep scene's own re-layout does NOT loop (no second setRepScene). Skipped until the
+  // scene is layout-ready and recomputeCut is installed.
   const lastCutScene = useRef<Scene | null>(null);
   useEffect(() => {
-    if (!representationLod || !ready || !layoutReady) return;
+    if (!ready || !layoutReady) return;
     if (scene === lastCutScene.current) return; // same scene (highlight/dim only) — nothing to recut
     lastCutScene.current = scene;
     // "pan" (visibility) ALWAYS runs the cut (no band-advance requirement) without forcing deeper
@@ -1390,7 +1363,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     // refines via the wheel handler.
     recomputeCutRef.current?.("pan");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [representationLod, ready, layoutReady, scene]);
+  }, [ready, layoutReady, scene]);
 
   // Selection / search are cheap — just update + redraw.
   useEffect(() => {

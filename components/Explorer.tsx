@@ -167,15 +167,13 @@ export function Explorer() {
   const [projectPath, setProjectPath] = useState("");
   // Adaptive level-of-detail (LOD): recompute the collapsed cut as the camera
   // zooms so a huge repo stays drawable. Off by default — see docs/SCALE-100K.md.
-  const [adaptiveLod, setAdaptiveLod] = useState(true);
   // REPRESENTATION LOD: the budgeted valid-antichain cut through the proxy hierarchy
-  // (Appendix A) is now the ONLY rendered-scene LOD algorithm — always on as the cut kind,
-  // gated by `adaptiveLod` (the master on/off the single top-bar "LOD" button toggles). So
-  // "LOD: on" == this layout-independent cut running; "LOD: off" == no cut. (Was an opt-in
-  // experimental toggle against the old C1a collapse cut, which is retired as a UI choice.)
-  const representationLod = true;
-  // The latest committed representation-cut stats, for the dev overlay (Phase C1b §I). Only
-  // populated while representationLod is on (the canvas reports each committed generation).
+  // (Appendix A) is the ONLY rendered-scene LOD algorithm, gated by `adaptiveLod` (the master
+  // on/off the single top-bar "LOD" button toggles). So "LOD: on" == this layout-independent
+  // cut running; "LOD: off" == no cut. (The old C1a collapse cut is retired — spec P5.)
+  const [adaptiveLod, setAdaptiveLod] = useState(true);
+  // The latest committed representation-cut stats, for the dev overlay (Phase C1b §I). The
+  // canvas reports each committed generation.
   const [repLodStats, setRepLodStats] = useState<RepLodOverlayStats | null>(null);
   // Navigation minimap overlay (graph extent + viewport rect). Default on; toggle
   // in Settings. Helps re-find the graph when zoomed out / panned out of bounds.
@@ -461,7 +459,7 @@ export function Explorer() {
   // The active grouping mode's CUT hierarchy + snapshot, for the mode-agnostic adaptive
   // cut (Phase C1a). Directory keeps its dedicated DirNode path (byte-identical) so it
   // builds no snapshot here; Community (and later Package/facet) build one over the
-  // active graph so the camera can run computeGroupCut. None has NO visible containers but
+  // active graph so the camera can run the representation cut. None has NO visible containers but
   // is NOT inert: it builds the SYNTHETIC safety hierarchy (connected-components →
   // communities; spec Gap 2) so the rep cut gives it a budgeted cut — every node gets a
   // representation path and nothing bypasses the render budget. The synthetic ids are
@@ -839,8 +837,8 @@ export function Explorer() {
   }, []);
 
   // Phase C1b — receive each representation cut and summarize it for the dev overlay
-  // (Appendix A §I). Only fired while representationLod is on; the canvas collects the
-  // solver diagnostics for us, so we just fold in the budget + timing it measured.
+  // (Appendix A §I). The canvas collects the solver diagnostics for us, so we just fold in
+  // the budget + timing it measured.
   const handleRepLod = useCallback((res: RepLodResult) => {
     setRepLodStats(
       summarizeRepLod(res, {
@@ -1076,12 +1074,11 @@ export function Explorer() {
             onCut={handleCut}
             onCommunityOf={handleCommunityOf}
             groupingSnapshot={cutGrouping?.snapshot ?? null}
-            representationLod={representationLod}
             intent={activeIntent}
             onRepLod={handleRepLod}
             fitSignature={fitSignature}
           />
-          {representationLod && repLodStats && <RepLodOverlay stats={repLodStats} />}
+          {repLodStats && <RepLodOverlay stats={repLodStats} />}
         </Box>
         {filtersOpen && (
           <FiltersPanel
