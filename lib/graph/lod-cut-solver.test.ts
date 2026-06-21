@@ -13,7 +13,6 @@ import {
   cutSignature,
   cutSignaturesEqual,
   type LimitedDetail,
-  LOD_BUDGET,
   type LodBudget,
   type LodCut,
   makeRuntimeCut,
@@ -22,6 +21,7 @@ import {
   type SolveDiagnostics,
   solveLodCut,
 } from "./lod-cut-solver";
+import { LOD_BUDGET } from "./lod-representation-cut";
 import type { GraphModel } from "./types";
 
 const file = (path: string) => ({

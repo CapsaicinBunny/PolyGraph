@@ -8,6 +8,7 @@ import {
   activeProxyBoxKeyOfNode,
   buildSceneRepresentationCut,
   DEFAULT_REP_LOD_OPTIONS,
+  LOD_BUDGET,
   materialSignature,
   type RepresentationRuntime,
 } from "./lod-representation-cut";
@@ -59,6 +60,56 @@ function solve(cam: Camera, intent: CollapseIntent = noIntent) {
     options: opts,
   });
 }
+
+describe("budget consolidation (P4) — ONE finite source", () => {
+  test("LOD_BUDGET is the single finite source: every ceiling finite, targets ≤ hards", () => {
+    for (const v of [
+      LOD_BUDGET.targetCards,
+      LOD_BUDGET.hardCards,
+      LOD_BUDGET.targetLayoutCost,
+      LOD_BUDGET.hardLayoutCost,
+      LOD_BUDGET.targetEdges,
+      LOD_BUDGET.hardEdges,
+      LOD_BUDGET.targetLabels,
+      LOD_BUDGET.hardLabels,
+      LOD_BUDGET.maxGpuBytes,
+    ]) {
+      expect(Number.isFinite(v)).toBe(true);
+      expect(v).toBeGreaterThan(0);
+    }
+    expect(LOD_BUDGET.targetCards).toBeLessThanOrEqual(LOD_BUDGET.hardCards);
+    expect(LOD_BUDGET.targetLayoutCost).toBeLessThanOrEqual(LOD_BUDGET.hardLayoutCost);
+    expect(LOD_BUDGET.targetEdges).toBeLessThanOrEqual(LOD_BUDGET.hardEdges);
+    expect(LOD_BUDGET.targetLabels).toBeLessThanOrEqual(LOD_BUDGET.hardLabels);
+  });
+
+  test("DEFAULT_REP_LOD_OPTIONS sources its card budgets from LOD_BUDGET (no duplicate copies)", () => {
+    // The canvas/Explorer no longer carry their own LOD_MAX_CARDS / AUTO_COLLAPSE_MAX_CARDS /
+    // LOD_NODE_BUDGET copies; the defaults derive from the one model.
+    expect(DEFAULT_REP_LOD_OPTIONS.maxCards).toBe(LOD_BUDGET.targetCards);
+    expect(DEFAULT_REP_LOD_OPTIONS.nodeBudget).toBe(LOD_BUDGET.hardCards);
+  });
+
+  test("expand-all fix preserved: hardCards stays 1500 (within Smart's reliable range)", () => {
+    // The expand-all / scan seed resolve `nodeBudget` to LOD_BUDGET.hardCards. It MUST remain
+    // 1500 — the measured value that keeps the layout input small enough for Smart to finish
+    // inside the 8s worker timeout (do not regress to the old 2500 that hung, nor the unused
+    // 2000 example default). See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
+    expect(LOD_BUDGET.hardCards).toBe(1500);
+    expect(DEFAULT_REP_LOD_OPTIONS.nodeBudget).toBe(1500);
+  });
+
+  test("the solved budget reads layout/edge/label/gpu ceilings from LOD_BUDGET", () => {
+    const r = solve({ x: 0, y: 0, scale: 0.1 });
+    expect(r.budget.targetLayoutCost).toBe(LOD_BUDGET.targetLayoutCost);
+    expect(r.budget.hardLayoutCost).toBe(LOD_BUDGET.hardLayoutCost);
+    expect(r.budget.targetEdges).toBe(LOD_BUDGET.targetEdges);
+    expect(r.budget.hardEdges).toBe(LOD_BUDGET.hardEdges);
+    expect(r.budget.targetLabels).toBe(LOD_BUDGET.targetLabels);
+    expect(r.budget.hardLabels).toBe(LOD_BUDGET.hardLabels);
+    expect(r.budget.maxGpuBytes).toBe(LOD_BUDGET.maxGpuBytes);
+  });
+});
 
 describe("buildSceneRepresentationCut — valid antichain + collapse-shaped derivation", () => {
   test("fully zoomed out: every group collapses to its proxy; the cut is a valid antichain", () => {

@@ -47,6 +47,7 @@ import {
   activeProxyBoxKeyOfNode,
   buildSceneRepresentationCut,
   DEFAULT_REP_LOD_OPTIONS,
+  LOD_BUDGET,
   materialSignature,
 } from "@/lib/graph/lod-representation-cut";
 import { cameraBand, proxyBoxes, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
@@ -71,13 +72,15 @@ import { useScene } from "./useScene";
 // children once its on-screen height passes OPEN_PX, and the cut is capped at
 // MAX_CARDS cards. These want desktop calibration (see docs/SCALE-100K.md).
 const LOD_OPEN_PX = 240;
-const LOD_MAX_CARDS = 800;
-// Cap on estimated layout NODES (files + their symbols when expanded). Keep the cut's
-// input under this so Smart finishes within the 8s worker timeout (never degrading to the
-// grid fallback). Lowered from 2500 after desktop testing showed Smart timing out (>8s) on
-// ~1.5k-node inputs from filter/zoom churn — not the optimistic ~1s-at-2.5k estimate.
-// See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
-const LOD_NODE_BUDGET = 1500;
+// The card budgets are sourced from the ONE finite LOD_BUDGET (P4 budget-consolidation):
+//   maxCards   = LOD_BUDGET.targetCards (the soft antichain-width target the cut steers toward)
+//   nodeBudget = LOD_BUDGET.hardCards   (the finite ceiling on a forced open / expand-all)
+// The local `LOD_MAX_CARDS` (800) and `LOD_NODE_BUDGET` (1500) copies were removed — the same
+// numbers now live in exactly one place. `hardCards` stays 1500 (the measured value that keeps
+// the layout input within Smart's reliable range and the 8s worker timeout — the expand-all fix;
+// see docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md), so nothing here regresses.
+const LOD_MAX_CARDS = LOD_BUDGET.targetCards;
+const LOD_NODE_BUDGET = LOD_BUDGET.hardCards;
 // Bound on RETAINED auto-opened group proxies (the deadband set): a group opened while
 // on-screen stays open through a small pan/zoom-out, but exploring many regions can't grow
 // the open set without limit — the IntrusiveLru evicts the oldest offscreen opens past this

@@ -21,7 +21,8 @@ import { buildRepresentationEdgeIndex, type EdgeIndexInput } from "./representat
 import { buildFlatGroupingSnapshot } from "./grouping-snapshot";
 import { buildRepresentationHierarchy } from "./representation";
 import { computeRepresentationBounds, DEFAULT_BOUNDS_OPTIONS } from "./representation-bounds";
-import { cutFromSelection, LOD_BUDGET } from "./lod-cut-solver";
+import { cutFromSelection } from "./lod-cut-solver";
+import { LOD_BUDGET } from "./lod-representation-cut";
 import type { GlobalLayoutInputs } from "./global-relayout";
 import { type GraphModel, makeEdge } from "./types";
 

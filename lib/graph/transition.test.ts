@@ -21,7 +21,8 @@ import { IncrementalSceneSession } from "./scene";
 import { buildRepresentationEdgeIndex, type EdgeIndexInput } from "./representation-edge-index";
 import { buildFlatGroupingSnapshot } from "./grouping-snapshot";
 import { buildRepresentationHierarchy } from "./representation";
-import { cutFromSelection, LOD_BUDGET, type LodBudget } from "./lod-cut-solver";
+import { cutFromSelection, type LodBudget } from "./lod-cut-solver";
+import { LOD_BUDGET } from "./lod-representation-cut";
 import { type GraphModel, makeEdge } from "./types";
 
 // ── fixture: three flat groups A/B/C, 4 leaves each ──────────────────────────

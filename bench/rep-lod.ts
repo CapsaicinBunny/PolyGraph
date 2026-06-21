@@ -22,6 +22,7 @@ import {
   type LodBudget,
   solveLodCut,
 } from "../lib/graph/lod-cut-solver";
+import { LOD_BUDGET } from "../lib/graph/lod-representation-cut";
 import { aggregateLodEdges, type LodEdgeInput } from "../lib/graph/lod-edge";
 import { makeDenseGraph, makeDeepGraph, makeSyntheticGraph, makeWideGraph } from "./synthetic";
 import { round, timeIt } from "./metrics";
@@ -42,16 +43,24 @@ interface Row {
   validAntichain: boolean;
 }
 
+// Derive the bench budget from the ONE finite production source (P4 budget-consolidation) so
+// this harness can never silently drift from what the app actually solves under. The card
+// ceilings (the user-visible antichain width — the budget the rep cut's `nodeBudget` resolves
+// to) are taken VERBATIM from LOD_BUDGET. Only the SCALE-headroom dimensions (layout cost,
+// edges, labels) are widened, explicitly, so the 25k–150k fixtures exercise deep refinement
+// instead of all clamping at the bootstrap antichain — this is a scale harness, not a
+// production-fidelity replay. The card cap stays production-exact precisely so a drift in
+// `hardCards` (the expand-all/Smart guard) shows up here too.
 const BUDGET: LodBudget = {
-  targetCards: 2000,
-  hardCards: 50_000,
+  ...LOD_BUDGET,
+  // scale headroom (bench-only): let large fixtures refine past the production card cap on the
+  // non-card dimensions so solve/edge-aggregate timings are measured on a deep cut.
   targetLayoutCost: 5_000,
   hardLayoutCost: 200_000,
   targetEdges: 4000,
   hardEdges: 200_000,
   targetLabels: 2000,
   hardLabels: 50_000,
-  maxGpuBytes: 128 * 1024 * 1024,
 };
 
 /** Map a graph's edges to the aggregator's ordinal/integer-kind input shape. */

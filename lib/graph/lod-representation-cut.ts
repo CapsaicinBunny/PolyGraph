@@ -48,7 +48,6 @@ import {
   type CutConstraints,
   cutSignature,
   type LimitedDetail,
-  LOD_BUDGET,
   type LodBudget,
   type LodCut,
   makeRuntimeCut,
@@ -85,6 +84,48 @@ export const REPRESENTATION_BUILDER_VERSION = representationBuilderVersion;
  */
 export const REPRESENTATION_EDGE_INDEX_VERSION = representationEdgeIndexVersion;
 
+/**
+ * The ONE finite LOD budget — the single source of truth for every LOD ceiling (P4
+ * budget-consolidation). Every consumer reads these numbers; no module redefines them.
+ * This replaces the duplicated, drifting card constants that used to live in the canvas and
+ * the Explorer (`LOD_MAX_CARDS`, `AUTO_COLLAPSE_MAX_CARDS`, two copies of `LOD_NODE_BUDGET`)
+ * and the example defaults that previously lived in the solver.
+ *
+ * The {@link LodBudget} SHAPE is owned by the solver (it consumes a budget); the NUMBERS are
+ * owned here (the scene bridge), so there is exactly one place to tune them.
+ *
+ * Card-budget rationale (the expand-all / Smart-timeout guard — design "Risks": "budget
+ * reconciliation regressing the expand-all fix"):
+ *  - `targetCards` (800) — the soft antichain width auto-refinement steers toward (was the
+ *    canvas's `LOD_MAX_CARDS`).
+ *  - `hardCards` (1500) — the FINITE ceiling a forced open / expand-all is capped at. This is
+ *    the measured value that keeps the layout input within Smart's reliable range (Smart timed
+ *    out >8s on ~1.5k-node inputs at the old 2500). It is the value the expand-all seed and the
+ *    rep cut's `nodeBudget` resolve to; it MUST stay 1500 so the expand-all fix does not regress.
+ *    (Deliberately NOT 2000 — the old example default — which the rep cut never actually used.)
+ * The remaining dimensions are unchanged from the prior example defaults.
+ */
+export const LOD_BUDGET: LodBudget = {
+  // visible cards (one proxy = one card; the antichain width the user sees)
+  targetCards: 800,
+  hardCards: 1_500,
+  // layout cost (Σ (1 + symbols) over refined reps — the relayout work pressure)
+  targetLayoutCost: 2_500,
+  hardLayoutCost: 6_000,
+  // aggregated edges in the active quotient graph (cut-dependent; via the edge index — B2)
+  targetEdges: 8_000,
+  hardEdges: 25_000,
+  // labels drawn
+  targetLabels: 500,
+  hardLabels: 2_000,
+  // GPU geometry budget
+  maxGpuBytes: 128 * 1024 * 1024,
+};
+
+// Re-export the budget SHAPE so a single import of this module gives a consumer both the
+// type and the one concrete budget (the solver still owns the type definition).
+export type { LodBudget };
+
 /** Tuning for the representation cut, mirroring the C1a GroupCutOptions surface. */
 export interface RepLodOptions {
   /** Minimum on-screen box height (px) for a proxy to auto-refine into its children. */
@@ -99,11 +140,16 @@ export interface RepLodOptions {
   nodeCost?: (nodeId: string) => number;
 }
 
-/** Conservative defaults aligned with the canvas's LOD constants. */
+/**
+ * Conservative defaults. The card budgets are sourced from the one finite {@link LOD_BUDGET}
+ * (P4 budget-consolidation) — `maxCards` = soft `targetCards`, `nodeBudget` = finite `hardCards`
+ * — so the canvas no longer carries its own copies. `openPx` is a camera-legibility knob (px),
+ * not a budget, so it stays here.
+ */
 export const DEFAULT_REP_LOD_OPTIONS: RepLodOptions = {
   openPx: 240,
-  maxCards: 800,
-  nodeBudget: 2500,
+  maxCards: LOD_BUDGET.targetCards,
+  nodeBudget: LOD_BUDGET.hardCards,
   margin: 0,
 };
 

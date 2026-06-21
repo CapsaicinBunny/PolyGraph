@@ -48,7 +48,7 @@ import {
 import { buildGroupingSnapshot, type CompactGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
 import { budgetGroupCut, groupLodSelection } from "@/lib/graph/group-cut";
 import { deriveGroupByOptions, facetKeyOfGroupBy } from "@/lib/graph/group-by-options";
-import type { RepLodResult } from "@/lib/graph/lod-representation-cut";
+import { LOD_BUDGET, type RepLodResult } from "@/lib/graph/lod-representation-cut";
 import { type RepLodOverlayStats, summarizeRepLod } from "@/lib/graph/lod-observability";
 import { RepLodOverlay } from "./RepLodOverlay";
 import { FiltersPanel } from "./FiltersPanel";
@@ -75,16 +75,20 @@ const VelloGraphCanvas = dynamic(
   { ssr: false },
 );
 
-// Above this many file nodes, auto-collapse directories so the initial scene the
-// renderer receives stays drawable (LOD v0; see docs/SCALE-100K.md).
-const AUTO_COLLAPSE_MAX_CARDS = 2000;
-// Cap on estimated layout NODES (files + their symbols when expanded) used to seed the
-// collapse on expand-all ("Reveal detail"). Keeps the layout input small enough for Smart
-// to finish within the 8s worker timeout. Lowered from 2500 after desktop testing: Smart
-// timed out (>8s, 3× → a multi-second hang) on ~1.5k-node inputs from filter/zoom churn,
-// so the old 2.5k let a full expand-all lay out flat and hang. Matches VelloGraphCanvas.
-// See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
-const LOD_NODE_BUDGET = 1500;
+// The seed/expand-all card budgets are sourced from the ONE finite LOD_BUDGET
+// (P4 budget-consolidation): the local `AUTO_COLLAPSE_MAX_CARDS` (2000) and `LOD_NODE_BUDGET`
+// (1500) copies were removed — every LOD ceiling now lives in exactly one place.
+//   - The directory scan/seed cap (how drawable the FIRST scene is; LOD v0, see
+//     docs/SCALE-100K.md) reads the finite card ceiling `LOD_BUDGET.hardCards`.
+//   - The expand-all ("Reveal detail") layout-cost cap — the value that keeps Smart's input
+//     small enough to finish inside the 8s worker timeout (lowered to 1500 after desktop
+//     testing showed Smart hanging >8s on ~1.5k-node inputs; see
+//     docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md) — also reads
+//     `LOD_BUDGET.hardCards` (still 1500), so the expand-all fix does NOT regress. The old
+//     2000 seed cap only ever made the initial scene LARGER, so reading 1500 here can only
+//     tighten the bootstrap — never trip the timeout.
+const AUTO_COLLAPSE_MAX_CARDS = LOD_BUDGET.hardCards;
+const LOD_NODE_BUDGET = LOD_BUDGET.hardCards;
 
 // The modeKey the Directory-scoped collapse wiring targets. Package / Community /
 // facet are now peer modes too (each with its own per-mode intent map, Phase C1a);

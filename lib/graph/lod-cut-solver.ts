@@ -116,26 +116,12 @@ export interface LodBudget {
   maxGpuBytes: number;
 }
 
-/**
- * Example production defaults for the finite split budget (design "Finite budget model").
- * Exact numbers are pinned by the P4 bench; every ceiling is finite by construction.
- */
-export const LOD_BUDGET: LodBudget = {
-  // visible cards (one proxy = one card; the antichain width the user sees)
-  targetCards: 800,
-  hardCards: 2_000,
-  // layout cost (Σ (1 + symbols) over refined reps — the relayout work pressure)
-  targetLayoutCost: 2_500,
-  hardLayoutCost: 6_000,
-  // aggregated edges in the active quotient graph (cut-dependent; via the edge index — B2)
-  targetEdges: 8_000,
-  hardEdges: 25_000,
-  // labels drawn
-  targetLabels: 500,
-  hardLabels: 2_000,
-  // GPU geometry budget
-  maxGpuBytes: 128 * 1024 * 1024,
-};
+// The production budget defaults (the single finite LOD_BUDGET source) live in
+// ./lod-representation-cut alongside the scene bridge that owns the cut's budget surface
+// (P4 budget-consolidation). The solver only defines the {@link LodBudget} SHAPE and consumes
+// a budget passed in by its caller — it deliberately holds no concrete numbers, so there is
+// exactly ONE place those numbers are written. Importers that previously took `LOD_BUDGET`
+// from here now import it from ./lod-representation-cut.
 
 /**
  * Why an explicit open could not be honored within the hard ceiling (design "Deterministic
