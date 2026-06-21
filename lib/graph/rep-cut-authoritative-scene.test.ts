@@ -109,16 +109,22 @@ describe("authoritative rep-cut scene (materializer output, not collapseClusters
     for (const id of nodeIds) expect(structureIds.has(id)).toBe(false);
   });
 
-  test("zoomed into 'a': a's files render as themselves while 'b' stays one proxy card", () => {
+  test("zoomed into 'a': a's on-screen files render as themselves while 'b' stays a proxy card", () => {
+    // The cut now reads the STABLE proxy bounds (a layout-independent treemap), NOT the live
+    // engine boxes. In that layout `a` fills the LEFT of the world canvas (x≈[8,2456], the full
+    // height) and `b` the RIGHT (x≈[2456,4088]). At scale 1 / origin the viewport (800×600) sits
+    // over `a`'s top-left: a/x's files are on-screen and render verbatim, while a/y (below the
+    // viewport) and all of `b` (right of it) stay folded into proxy cards. (With the old live
+    // boxes `b` sat at x=5000 and a was only 1000 tall, so the whole of `a` opened — that
+    // geometry no longer drives the cut.)
     const { folded, structure } = authoritative({ x: 0, y: 0, scale: 1 } as Camera);
     const ids = new Set(structure.nodes.map((n) => n.id));
     // The structure mirrors the materializer's fold exactly.
     expect(ids).toEqual(new Set(folded.nodes.map((n) => n.id)));
-    // a's files are present verbatim (a opened); b's files are absorbed into one proxy.
+    // a/x's files are present verbatim (a/x opened on-screen); b's files are absorbed into a proxy.
     expect(ids.has("a/x/f1.c")).toBe(true);
-    expect(ids.has("a/y/f3.c")).toBe(true);
     expect(ids.has("b/z/f4.c")).toBe(false);
-    // Exactly one proxy card stands in for the b subtree.
+    // The off-screen b subtree (and the off-screen a/y) stand in as proxy cards.
     const proxyCards = [...ids].filter((id) => isProxyId(id));
     expect(proxyCards.length).toBeGreaterThanOrEqual(1);
   });
@@ -175,11 +181,13 @@ describe("authoritative rep-cut scene (materializer output, not collapseClusters
   });
 
   test("an explicit edge between two folded proxies is aggregated into ONE boundary edge", () => {
-    // Scale 0.1: the P0.5 super-root has refined into the two top-group proxies {a, b}. (At 0.01
-    // both endpoints fold into the SINGLE super-root, making the edge internal → zero boundary
-    // edges; the a|b boundary only exists once a and b are distinct selected proxies.)
-    const { structure } = authoritative({ x: 0, y: 0, scale: 0.1 } as Camera);
-    // The lone import a/x/f1.c → b/z/f4.c crosses the a|b boundary; both ends are folded, so it
+    // Scale 0.054 is the coarsest level with visible group proxies under the STABLE bounds the
+    // cut now reads: the import endpoints fold into the distinct leaf-group proxies a/x and b/z.
+    // (At 0.01 both endpoints fold into the SINGLE super-root, making the edge internal → zero
+    // boundary edges; the boundary only exists once the two ends sit in distinct selected
+    // proxies.)
+    const { structure } = authoritative({ x: 0, y: 0, scale: 0.054 } as Camera);
+    // The lone import a/x/f1.c → b/z/f4.c crosses the proxy boundary; both ends are folded, so it
     // surfaces as a single aggregated edge between the two proxy cards.
     const importEdges = structure.edges.filter((e) => e.kind === "import");
     expect(importEdges.length).toBe(1);

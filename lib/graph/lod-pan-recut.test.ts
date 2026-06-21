@@ -50,7 +50,12 @@ const nodeIds = graph.nodes.map((n) => n.id);
 const snap = buildGroupingSnapshot(directoryGrouping(graph), "directory", nodeIds);
 const vp: Viewport = { w: 800, h: 600 };
 
-// Big, on-screen-when-centered boxes so each group auto-refines when the camera is over it.
+// NOTE: the cut is layout-INDEPENDENT — it reads the STABLE proxy bounds (a treemap of the rep
+// tree within a fixed world canvas), NOT these live engine boxes, which are now ignored by the
+// gate/visibility/arbitration. They are kept only to satisfy the input type. Under the stable
+// bounds the three top dirs tile the canvas, so `camAt(worldX)` for a large worldX simply pans
+// the whole forest off-screen — which is exactly what these deadband/eviction tests need (a group
+// auto-opens while centered, then is retained/evicted as the camera pans it out of view).
 const allBoxes = (): Map<string, Box> =>
   new Map<string, Box>([
     ["a", { x: 0, y: 0, w: 2000, h: 2000 }],

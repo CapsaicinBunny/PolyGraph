@@ -137,15 +137,23 @@ describe("budget consolidation (P4) — ONE finite source", () => {
 });
 
 describe("buildSceneRepresentationCut — valid antichain + collapse-shaped derivation", () => {
-  test("fully zoomed out: every group collapses to its proxy; the cut is a valid antichain", () => {
-    // Scale 0.1: the synthetic super-root (P0.5 bootstrap normalization) has refined into the
-    // semantic top groups {a, b} but those groups have not opened further — the coarsest
-    // SEMANTIC level. (At 0.01 the cut would be the single render-only super-root card, which
-    // carries no box key; the super-root adds one extra coarsest LOD level above the groups.)
-    const r = solve({ x: 0, y: 0, scale: 0.1 }); // groups ~100px tall, super-root refined
-    // Every TOP group is collapsed (its box key present in the collapsed set).
-    expect(r.collapsedBoxKeys.has("a")).toBe(true);
-    expect(r.collapsedBoxKeys.has("b")).toBe(true);
+  test("coarsest semantic level: leaf groups collapse to proxies; the cut is a valid antichain", () => {
+    // The cut now reads the STABLE proxy bounds (a layout-independent treemap of the rep tree),
+    // NOT the visual engine's live boxes — so the test cameras key off that geometry. In the
+    // stable layout the top dirs {a, b} fill the world canvas at the SAME scale as the synthetic
+    // super-root's slots, so there is no camera band where {a, b} themselves are collapsed
+    // proxies: the moment the super-root is legible enough to refine, a and b are too. The
+    // genuinely-coarsest level with VISIBLE group proxies is therefore the leaf groups
+    // {a/x, a/y, b/z} (their parents a, b are open). At 0.01 the cut is the single render-only
+    // super-root card, which carries no box key.
+    const r = solve({ x: 0, y: 0, scale: 0.054 }); // coarsest level with group proxies
+    // The leaf groups are collapsed (their box keys present in the collapsed set).
+    expect(r.collapsedBoxKeys.has("a/x")).toBe(true);
+    expect(r.collapsedBoxKeys.has("a/y")).toBe(true);
+    expect(r.collapsedBoxKeys.has("b/z")).toBe(true);
+    // Their parents a and b are OPEN (refined past their proxy), not collapsed.
+    expect(r.collapsedBoxKeys.has("a")).toBe(false);
+    expect(r.collapsedBoxKeys.has("b")).toBe(false);
     // The derived open selection equals groupLodSelection over the collapsed set.
     expect([...r.openSelection].sort()).toEqual(
       [...openSelectionOracle(r.collapsedBoxKeys, snap)].sort(),
@@ -241,12 +249,14 @@ describe("buildSceneRepresentationCut — finite split budget (Gap 6 / 'Finite b
 
 describe("activeProxyBoxKeyOfNode — a selected hidden node highlights its active proxy", () => {
   test("a node inside a collapsed group maps to that group's proxy box key", () => {
-    // Scale 0.1: collapsed to the semantic top groups {a, b} (the super-root has refined). At
-    // 0.01 the sole selected rep is the render-only super-root, whose proxy box key is null.
-    const r = solve({ x: 0, y: 0, scale: 0.1 }); // groups collapsed
-    // f4 lives in b/z → its active proxy is the outermost selected ancestor, box key "b".
+    // Scale 0.054 is the coarsest level with visible group proxies under the STABLE bounds the
+    // cut now reads (see the antichain suite for why {a, b} are never themselves proxies). The
+    // collapsed proxies here are the leaf groups {a/x, a/y, b/z}. At 0.01 the sole selected rep
+    // is the render-only super-root, whose proxy box key is null.
+    const r = solve({ x: 0, y: 0, scale: 0.054 }); // leaf groups collapsed to proxies
+    // f4 lives in b/z → the outermost SELECTED ancestor on its chain is the b/z proxy itself.
     const key = activeProxyBoxKeyOfNode(r, nodeIds.indexOf("b/z/f4.c"));
-    expect(key).toBe("b");
+    expect(key).toBe("b/z");
   });
 
   test("a node whose own leaf rep is selected maps to null (it's visible, no proxy)", () => {
@@ -452,27 +462,31 @@ describe("buildSceneRepresentationCut — POST-FILTER projection (Gap 7)", () =>
     });
 
   test("a filtered-out subtree produces NO proxy (no collapsed box key, no open selection)", () => {
-    // Scale 0.1: the super-root has refined to the coarsest SEMANTIC level (only `a` is visible
-    // post-filter, so it is the single visible top group). At 0.01 the sole rep is the super-root.
-    const r = filtered({ x: 0, y: 0, scale: 0.1 }); // coarsest semantic proxies
-    // `a` still proxies its visible members; `b`/`b/z` have no visible members → no proxy.
-    expect(r.collapsedBoxKeys.has("a")).toBe(true);
+    // Scale 0.054 is the coarsest level with visible group proxies under the STABLE bounds the
+    // cut now reads. With `b` hidden, only `a`'s subtree survives: it opens to its leaf-group
+    // proxies {a/x, a/y}. The fully-hidden `b`/`b/z` produce NO proxy at all.
+    const r = filtered({ x: 0, y: 0, scale: 0.054 }); // coarsest level with group proxies
+    // `a`'s visible members are proxied (a/x, a/y collapsed); `b`/`b/z` are absent entirely.
+    expect(r.collapsedBoxKeys.has("a/x")).toBe(true);
+    expect(r.collapsedBoxKeys.has("a/y")).toBe(true);
     expect(r.collapsedBoxKeys.has("b")).toBe(false);
+    expect(r.collapsedBoxKeys.has("b/z")).toBe(false);
     // The open selection never mentions the fully-hidden groups.
     expect(r.openSelection.has("directory:b")).toBe(false);
     expect(r.openSelection.has("directory:b/z")).toBe(false);
   });
 
   test("the hidden subtree drops its contribution to the cut budget (cards + layout)", () => {
-    // Coarsest SEMANTIC cut (scale 0.1, super-root refined): unfiltered selects {a, b} (2 cards);
-    // filtered selects {a} only (1 card). At 0.01 both collapse to the single super-root (1 card).
-    const f = filtered({ x: 0, y: 0, scale: 0.1 });
-    const u = unfiltered({ x: 0, y: 0, scale: 0.1 });
+    // Coarsest-with-group-proxies cut (scale 0.054) under the STABLE bounds the cut now reads:
+    // unfiltered selects {a/x, a/y, b/z} (3 cards); with `b` hidden, filtered selects {a/x, a/y}
+    // only (2 cards) — the whole `b` subtree contributes nothing.
+    const f = filtered({ x: 0, y: 0, scale: 0.054 });
+    const u = unfiltered({ x: 0, y: 0, scale: 0.054 });
     expect(f.cut.cardCost).toBeLessThan(u.cut.cardCost);
     expect(f.cut.layoutCost).toBeLessThanOrEqual(u.cut.layoutCost);
-    // Concretely: the coarsest filtered cut is the single top group `a`.
-    expect(f.cut.cardCost).toBe(1);
-    expect(u.cut.cardCost).toBe(2);
+    // Concretely: filtered drops b/z, keeping a's two leaf-group proxies.
+    expect(f.cut.cardCost).toBe(2);
+    expect(u.cut.cardCost).toBe(3);
   });
 
   test("the hidden subtree's proxy carries ZERO subtree cost (no card-budget pressure)", () => {
@@ -600,15 +614,22 @@ describe("buildSceneRepresentationCut — hierarchy reuse across camera recuts (
     expect(r2.hierarchy.columns.parentByRep).toBe(r1.hierarchy.columns.parentByRep);
   });
 
-  test("the reused recut still UPDATES bounds (camera geometry) in place", () => {
+  test("the reused recut seeds bounds from the STABLE (layout-independent) bounds in place", () => {
     const r1 = run({ x: 0, y: 0, scale: 0.01 });
     const aRep = r1.hierarchy.repOfGroup[snap.groupIds.indexOf("directory:a")];
-    // Bounds were populated from the live boxes (box "a" is 1000 wide).
-    expect(r1.hierarchy.columns.boundsW[aRep]).toBe(1000);
+    // Bounds are now seeded from the STABLE proxy bounds (the layout-independent treemap),
+    // DELIBERATELY independent of the live scene boxes — that decoupling is what kills the
+    // layout↔cut feedback loop (a drifting live box used to make every recut commit a different
+    // cut). The stable box for `a` is the same on every recut; assert it matches the runtime's
+    // own stable bounds rather than any live box dimension.
+    const stableW = r1.repRuntime.stableBounds.w[aRep];
+    expect(stableW).toBeGreaterThan(0);
+    expect(r1.hierarchy.columns.boundsW[aRep]).toBe(stableW);
     const r2 = run({ x: 0, y: 0, scale: 1 }, r1.repRuntime);
-    // Same hierarchy object, bounds still reflect the (same here) live box — updated in place.
+    // Same hierarchy object; bounds re-seeded in place from the SAME stable bounds (idempotent).
     expect(r2.hierarchy).toBe(r1.hierarchy);
-    expect(r2.hierarchy.columns.boundsW[aRep]).toBe(1000);
+    expect(r2.hierarchy.columns.boundsW[aRep]).toBe(stableW);
+    expect(r2.repRuntime.stableBounds.w[aRep]).toBe(stableW);
   });
 
   test("a material change (grouping version) REBUILDS the hierarchy for the next recut", () => {

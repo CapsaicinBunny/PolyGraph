@@ -47,10 +47,14 @@ describe("representation cut → collapseClusters (the rendered scene is the cut
       snapshot: snap,
       nodeIds,
       boxes: boxes(),
-      // Scale 0.1: the P0.5 super-root (always applied now) has refined into the semantic top
-      // groups {a, b}. At 0.01 the sole rep is the render-only super-root, which has no box key,
-      // so collapseClusters would absorb everything into one unnamed aggregate instead of a/b.
-      cam: { x: 0, y: 0, scale: 0.1 } as Camera,
+      // The cut now reads the STABLE proxy bounds (a layout-independent treemap), NOT the live
+      // engine boxes. In that layout the top dirs {a, b} fill the world canvas at the SAME scale
+      // as the synthetic super-root's slots, so there is no camera band where {a, b} themselves
+      // are collapsed proxies — the coarsest level with VISIBLE group proxies is the leaf groups
+      // {a/x, a/y, b/z} (their parents a, b already open). Scale 0.054 is that level. (At 0.01 the
+      // sole rep is the render-only super-root, which has no box key, so collapseClusters would
+      // absorb everything into one unnamed aggregate.)
+      cam: { x: 0, y: 0, scale: 0.054 } as Camera,
       vp,
       intent: new Map() as CollapseIntent,
       options: opts,
@@ -61,13 +65,14 @@ describe("representation cut → collapseClusters (the rendered scene is the cut
     // Every original file is absorbed into an aggregate (no raw file nodes survive).
     const survivingFiles = folded.nodes.filter((n) => !isAggregateId(n.id) && n.kind === "file");
     expect(survivingFiles.length).toBe(0);
-    // The aggregate cards correspond to the top groups a and b.
+    // The aggregate cards correspond to the coarsest visible proxies: the leaf groups.
     const aggIds = new Set(folded.nodes.filter((n) => isAggregateId(n.id)).map((n) => n.id));
-    expect(aggIds.has(aggregateNodeId("a"))).toBe(true);
-    expect(aggIds.has(aggregateNodeId("b"))).toBe(true);
+    expect(aggIds.has(aggregateNodeId("a/x"))).toBe(true);
+    expect(aggIds.has(aggregateNodeId("a/y"))).toBe(true);
+    expect(aggIds.has(aggregateNodeId("b/z"))).toBe(true);
   });
 
-  test("zoomed into 'a': a's files render while 'b' stays one aggregate proxy", () => {
+  test("zoomed into 'a': a's on-screen files render while 'b' stays one aggregate proxy", () => {
     const r = buildSceneRepresentationCut({
       snapshot: snap,
       nodeIds,
@@ -79,9 +84,13 @@ describe("representation cut → collapseClusters (the rendered scene is the cut
     });
     const folded = collapseClusters(graph, r.collapsedBoxKeys);
     const ids = new Set(folded.nodes.map((n) => n.id));
-    // a's files are present (a opened); b is one aggregate.
+    // Under the STABLE bounds the cut now reads, `a` fills the world's left half (full height) and
+    // `b` its right half. At scale 1 / origin the 800×600 viewport sits over a/x (top-left): a/x's
+    // files render verbatim, while the below-viewport a/y and the right-of-viewport b stay folded
+    // as aggregate proxies. (With the old live boxes b sat at x=5000 and a was only 1000 tall, so
+    // all of `a` opened — that geometry no longer drives the cut.)
     expect(ids.has("a/x/f1.c")).toBe(true);
-    expect(ids.has("a/y/f3.c")).toBe(true);
+    expect(ids.has(aggregateNodeId("a/y"))).toBe(true); // off-screen a/y folded into its aggregate
     expect(ids.has(aggregateNodeId("b"))).toBe(true);
     expect(ids.has("b/z/f4.c")).toBe(false); // absorbed into the b proxy
   });

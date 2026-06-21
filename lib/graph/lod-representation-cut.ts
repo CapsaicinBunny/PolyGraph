@@ -422,7 +422,10 @@ export interface RepLodResult {
  * when `committed` is true (the caller gates the scene rebuild on it).
  */
 export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
-  const { snapshot, boxes, cam, vp, intent, options } = input;
+  // `boxes` (live scene boxes) is intentionally NOT consumed here: the cut is layout-independent
+  // (it reads only the STABLE bounds + camera). It remains on the input type for callers and for
+  // the material signature, but the cut's geometry must never depend on the drifting live boxes.
+  const { cam, vp, intent, options } = input;
 
   // 0. Acquire the PERSISTENT runtime (Gap 4). When the caller passes a runtime whose
   //    material signature already matches the input, the cached hierarchy / node ordinals /
@@ -440,31 +443,26 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   const isDetachedGroup = (rep: number): boolean =>
     cols.parentByRep[rep] === DETACHED_REP && cols.firstChildByRep[rep] === -1;
 
-  // 2. UPDATE proxy bounds for every rep — the per-recut camera update, mutating the cached
-  //    hierarchy's geometry columns IN PLACE (never reconstructing them). Each rep takes the
-  //    visual engine's LIVE box for its group when one exists; otherwise it falls back to the
-  //    STABLE, layout-independent box (design Gap 3 / P2). The stable fallback is the fix for
-  //    "not actually layout-independent": under Grid / the classic engines / None the engine
-  //    emits NO cluster boxes, so without this every rep would read as height-0 / off-screen and
-  //    the cut would be inert. Now every non-detached rep ALWAYS has bounds, so the cut OPERATES
-  //    with every engine, not merely ignores its name. Seed ALL reps from the stable bounds first
-  //    (group reps, leaf reps, and render-only intermediate / bootstrap proxies — none of which
-  //    the engine addresses by group box key), then override the group reps the engine DID place.
+  // 2. UPDATE proxy bounds for every rep from the STABLE, layout-independent bounds ONLY — the
+  //    per-recut camera update mutates the cached hierarchy's geometry columns IN PLACE (never
+  //    reconstructing them). The cut is DELIBERATELY decoupled from the visual engine's live
+  //    boxes here: Stress/Smart are non-deterministic (seeded from the previous frame's
+  //    positions) so their cluster boxes DRIFT every layout run and never converge. If the cut's
+  //    geometry columns tracked those drifting boxes, every geometry consumer downstream — the
+  //    refine gate (`canRefine`), the solver's `visibilityWeight` / `viewportCentreDistance`
+  //    arbitration tiebreak, and the eviction `onScreen` test — would read a different geometry
+  //    each recut, commit a DIFFERENT selection, bump the generation, trigger another recut, and
+  //    loop unbounded (the "constantly cutting" / "Laying out…" never clears bug). Seeding from
+  //    the stable bounds makes a recut of the same material at the same camera IDEMPOTENT
+  //    (committed=false), which is exactly what the canvas's scene-ready effect relies on. Stable
+  //    bounds are also non-zero under every engine (Grid / classic / None emit no cluster boxes),
+  //    so the cut OPERATES with every engine, not merely ignores its name. Zoom still refines:
+  //    the gate scales the STABLE screen height by cam.scale.
   for (let rep = 0; rep < hierarchy.repCount; rep++) {
     cols.boundsX[rep] = stableBounds.x[rep];
     cols.boundsY[rep] = stableBounds.y[rep];
     cols.boundsW[rep] = stableBounds.w[rep];
     cols.boundsH[rep] = stableBounds.h[rep];
-  }
-  for (let g = 0; g < snapshot.groupIds.length; g++) {
-    const rep = hierarchy.repOfGroup[g];
-    if (isDetachedGroup(rep)) continue; // fully filtered out — no proxy to place
-    const box = boxes.get(snapshot.boxKeyByGroup[g]);
-    if (!box) continue; // engine emitted no box for this group → keep the stable fallback box
-    cols.boundsX[rep] = box.x;
-    cols.boundsY[rep] = box.y;
-    cols.boundsW[rep] = box.w;
-    cols.boundsH[rep] = box.h;
   }
 
   // 3a. Intent → constraints (rep ids from the cached group-id map). A group id with no rep
@@ -480,39 +478,30 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   }
   const constraints: CutConstraints = { forceClosed, forceOpen };
 
-  // The EFFECTIVE box of a group rep: the visual engine's live box when it placed one, else the
-  // STABLE layout-independent box (design Gap 3 / P2). Under Grid / the classic engines / None the
-  // engine emits no cluster box, so the live lookup misses — but the rep still has stable geometry,
-  // so the gate below OPERATES under every engine instead of short-circuiting to "can't refine".
-  const effectiveGroupBox = (g: number): Box | undefined => {
-    const live = boxes.get(snapshot.boxKeyByGroup[g]);
-    if (live) return live;
-    const rep = hierarchy.repOfGroup[g];
+  // The STABLE, layout-independent box of a rep, or undefined when it has no geometry (detached /
+  // empty). DELIBERATELY independent of the visual engine's live boxes: the gate and every other
+  // geometry consumer must read identical geometry across recuts of the same material, or the
+  // committed selection drifts with Stress/Smart's non-deterministic boxes and the recut never
+  // reaches a fixed point (the layout↔cut feedback loop). Stable bounds are non-zero under every
+  // engine, so the gate OPERATES everywhere instead of short-circuiting to "can't refine".
+  const stableBoxOf = (rep: number): Box | undefined => {
     const w = stableBounds.w[rep];
     const h = stableBounds.h[rep];
     if (w <= 0 || h <= 0) return undefined; // detached / empty — genuinely no geometry
     return { x: stableBounds.x[rep], y: stableBounds.y[rep], w, h };
   };
 
-  // 3b. Refine gate: a proxy auto-refines only when its box is on-screen AND at least
-  //     openPx tall (legible). The box is the engine's live box OR the stable fallback, so a
-  //     proxy can refine under EVERY engine (not only the cluster-box-emitting ones — that
-  //     short-circuit was Gap 3's inertness). Forced opens ignore this gate (handled in the solver).
+  // 3b. Refine gate: a proxy auto-refines only when its STABLE box is on-screen AND at least
+  //     openPx tall (legible). Gating on the stable box (never the drifting live box) makes a
+  //     recut of the same material at the same camera IDEMPOTENT — the property the canvas's
+  //     scene-ready effect relies on to avoid the layout↔cut feedback loop. The group and
+  //     no-group paths are now identical: both read the rep's stable box. Zoom still refines
+  //     (cam.scale grows the stable screen height past openPx). Forced opens ignore this gate
+  //     (handled in the solver).
   const canRefine = (rep: number): boolean => {
-    const g = cols.groupByRep[rep];
-    if (g === NO_GROUP) {
-      // A render-only intermediate / bootstrap proxy (no group) still refines when it has stable
-      // geometry on-screen and legible — otherwise an oversized group could never open under a
-      // box-less engine. Leaf reps (no children) never reach the solver's refine path.
-      if (cols.firstChildByRep[rep] === -1) return false;
-      const w = stableBounds.w[rep];
-      const h = stableBounds.h[rep];
-      if (w <= 0 || h <= 0) return false;
-      const box: Box = { x: stableBounds.x[rep], y: stableBounds.y[rep], w, h };
-      if (!intersectsViewport(worldToScreen(box, cam), vp, options.margin)) return false;
-      return screenHeight(box, cam.scale) >= options.openPx;
-    }
-    const box = effectiveGroupBox(g);
+    // Leaf reps (no children) never reach the solver's refine path.
+    if (cols.firstChildByRep[rep] === -1) return false;
+    const box = stableBoxOf(rep);
     if (!box) return false;
     if (!intersectsViewport(worldToScreen(box, cam), vp, options.margin)) return false;
     return screenHeight(box, cam.scale) >= options.openPx;
@@ -584,11 +573,11 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   let totalEvictions = 0;
   if (eviction) {
     const onScreen = (rep: number): boolean => {
-      const g = cols.groupByRep[rep];
-      if (g === NO_GROUP) return false;
-      // Live box when the engine placed one, else the stable fallback (design Gap 3 / P2) — so a
-      // box-less engine (Grid / classic / None) still tracks visibility for the eviction LRU.
-      const box = effectiveGroupBox(g);
+      // The STABLE box (never the drifting live box), matching the refine gate — so the eviction
+      // LRU's visibility decision is layout-independent and the retained-open set can't oscillate
+      // with Stress/Smart's non-deterministic boxes. Box-less engines (Grid / classic / None)
+      // still get non-zero stable bounds, so visibility tracking OPERATES under every engine.
+      const box = stableBoxOf(rep);
       if (!box) return false;
       return intersectsViewport(worldToScreen(box, cam), vp, options.margin);
     };
