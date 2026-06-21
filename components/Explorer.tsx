@@ -47,6 +47,9 @@ import {
 import { buildGroupingSnapshot, type CompactGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
 import { budgetGroupCut, groupLodSelection } from "@/lib/graph/group-cut";
 import { deriveGroupByOptions, facetKeyOfGroupBy } from "@/lib/graph/group-by-options";
+import type { RepLodResult } from "@/lib/graph/lod-representation-cut";
+import { type RepLodOverlayStats, summarizeRepLod } from "@/lib/graph/lod-observability";
+import { RepLodOverlay } from "./RepLodOverlay";
 import { FiltersPanel } from "./FiltersPanel";
 import { graphKeyFor, type SceneEdge } from "@/lib/graph/scene";
 import { EdgeDetailPanel } from "./EdgeDetailPanel";
@@ -155,6 +158,14 @@ export function Explorer() {
   // Adaptive level-of-detail (LOD): recompute the collapsed cut as the camera
   // zooms so a huge repo stays drawable. Off by default — see docs/SCALE-100K.md.
   const [adaptiveLod, setAdaptiveLod] = useState(true);
+  // Phase C1b — REPRESENTATION LOD: the budgeted valid-antichain cut through the proxy
+  // hierarchy (Appendix A) replaces the C1a collapse-shaped cut for the rendered scene.
+  // Opt-in (default off) so the C1a path stays the byte-identical fallback; gated by
+  // adaptiveLod in the canvas. Toggle in Settings.
+  const [representationLod, setRepresentationLod] = useState(false);
+  // The latest committed representation-cut stats, for the dev overlay (Phase C1b §I). Only
+  // populated while representationLod is on (the canvas reports each committed generation).
+  const [repLodStats, setRepLodStats] = useState<RepLodOverlayStats | null>(null);
   // Navigation minimap overlay (graph extent + viewport rect). Default on; toggle
   // in Settings. Helps re-find the graph when zoomed out / panned out of bounds.
   const [minimap, setMinimap] = useState(true);
@@ -772,6 +783,20 @@ export function Explorer() {
     setSelectionByMode((prev) => new Map(prev).set(modeKey, selection));
   }, []);
 
+  // Phase C1b — receive each representation cut and summarize it for the dev overlay
+  // (Appendix A §I). Only fired while representationLod is on; the canvas collects the
+  // solver diagnostics for us, so we just fold in the budget + timing it measured.
+  const handleRepLod = useCallback((res: RepLodResult) => {
+    setRepLodStats(
+      summarizeRepLod(res, {
+        budget: res.budget,
+        cutSolveMs: res.cutSolveMs,
+        whyNotRefined: res.diagnostics?.whyNotRefined,
+        refinements: res.diagnostics?.refinements,
+      }),
+    );
+  }, []);
+
   const handleToggleEdgeKind = useCallback((kind: ViewEdgeKind) => {
     setEnabledEdgeKinds((prev) => {
       const next = new Set(prev);
@@ -996,8 +1021,12 @@ export function Explorer() {
             onCut={handleCut}
             onCommunityOf={handleCommunityOf}
             groupingSnapshot={cutGrouping?.snapshot ?? null}
+            representationLod={representationLod}
+            intent={activeIntent}
+            onRepLod={handleRepLod}
             fitSignature={fitSignature}
           />
+          {representationLod && repLodStats && <RepLodOverlay stats={repLodStats} />}
         </Box>
         {filtersOpen && (
           <FiltersPanel
@@ -1027,6 +1056,8 @@ export function Explorer() {
             onCommunityCollapse={setCommunityCollapse}
             telemetryOn={telemetryOn}
             onTelemetry={handleTelemetry}
+            representationLod={representationLod}
+            onRepresentationLod={setRepresentationLod}
             onClose={() => setSettingsOpen(false)}
           />
         )}

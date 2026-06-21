@@ -133,6 +133,38 @@ function sumCost(cols: RepresentationColumns, reps: ArrayLike<number>): CostVec 
 // ── The solve ────────────────────────────────────────────────────────────────
 
 /**
+ * Why a selected proxy was not refined further (Appendix A §I observability — the per-rep
+ * "why-not-refined" the dev overlay surfaces; tuning the priority blindly is otherwise
+ * hopeless). `none` means it IS refined (a leaf) or simply wasn't the best candidate.
+ */
+export type WhyNotRefined =
+  | "forced-closed" // a force-closed constraint freezes it at/above this level
+  | "screen-gate" // canRefine() said no (off-screen / sub-legible)
+  | "soft-budget" // refining it would exceed the soft target
+  | "leaf"; // it is a leaf — nothing finer to refine
+
+/** Optional diagnostics the solver fills for the observability overlay (§I). */
+export interface SolveDiagnostics {
+  /** rep id → why it wasn't refined past its level (only for still-selected non-leaf reps). */
+  whyNotRefined: Map<number, WhyNotRefined>;
+  /** Count of atomic refinements committed this solve. */
+  refinements: number;
+}
+
+/**
+ * An optional hard refinement gate (beyond budget + force-closed). `canRefine(rep)`
+ * returning false freezes a proxy at its level during AUTOMATIC refinement — used by the
+ * scene bridge to stop opening off-screen / sub-legible proxies (the screen-space-error
+ * cutoff the C1c `minScale` will later formalize). Forced opens IGNORE this gate (user
+ * intent overrides). When absent, every selected non-leaf proxy is refinable. An optional
+ * `diagnostics` sink collects the per-rep why-not-refined trace (§I).
+ */
+export interface SolveGate {
+  canRefine?: (rep: number) => boolean;
+  diagnostics?: SolveDiagnostics;
+}
+
+/**
  * Solve the constrained budgeted antichain cut (Appendix A). The returned cut is always
  * valid; it never exceeds the HARD budget; automatic refinement never exceeds the SOFT
  * targets; forced opens may exceed soft up to hard. The result is canonical.
@@ -143,6 +175,7 @@ export function solveLodCut(
   constraints: CutConstraints,
   cam: CameraState,
   budget: LodBudget,
+  gate?: SolveGate,
 ): LodCut {
   const cols = h.columns;
   // Working antichain as a Set of rep ids. Seed from the bootstrap; if empty, fall to the
@@ -170,7 +203,7 @@ export function solveLodCut(
   // 3. Budget-driven refinement (§D/E): greedily refine the highest error-per-cost proxy
   //    while the SOFT budget allows. Atomic: each refine is committed only if it keeps the
   //    cut within soft budget; otherwise it is skipped (the prior cut is unchanged).
-  refineUnderBudget(h, selected, cam, budget, constraints);
+  refineUnderBudget(h, selected, cam, budget, constraints, gate, cur);
 
   return cutFromSelection(h, selected, bootstrap.generation);
 }
@@ -245,9 +278,12 @@ function refineUnderBudget(
   cam: CameraState,
   budget: LodBudget,
   constraints: CutConstraints,
+  gate: SolveGate | undefined,
+  cur: CostVec,
 ): void {
   const cols = h.columns;
-  const cur = sumCost(cols, [...selected]); // running cost, updated on each commit
+  const canRefine = gate?.canRefine;
+  const diag = gate?.diagnostics;
   // Bound the number of refinements to the rep count (each rep is refined at most once).
   let guard = h.repCount + 1;
   while (guard-- > 0) {
@@ -263,6 +299,7 @@ function refineUnderBudget(
     for (const r of selected) {
       if (cols.firstChildByRep[r] === -1) continue; // a leaf can't be refined
       if (isForceClosedHere(cols, constraints, r)) continue; // closed at/above r → frozen
+      if (canRefine && !canRefine(r)) continue; // screen-space / legibility gate
       const p = refinePriority(cols, cam, r, remaining);
       if (p > bestPriority) {
         bestPriority = p;
@@ -273,6 +310,18 @@ function refineUnderBudget(
     // Refine the best within the SOFT budget; if it doesn't fit, no further auto
     // refinement is beneficial under the current pressure → stop.
     if (!refineAtomic(cols, selected, best, budget, "soft", cur)) break;
+    if (diag) diag.refinements += 1;
+  }
+  // Per-rep why-not-refined (§I): classify every still-selected non-leaf proxy.
+  if (diag) {
+    for (const r of selected) {
+      if (cols.firstChildByRep[r] === -1) continue; // leaf — nothing to refine
+      let reason: WhyNotRefined;
+      if (isForceClosedHere(cols, constraints, r)) reason = "forced-closed";
+      else if (canRefine && !canRefine(r)) reason = "screen-gate";
+      else reason = "soft-budget"; // selected, refinable, but budget/priority stopped it
+      diag.whyNotRefined.set(r, reason);
+    }
   }
 }
 
