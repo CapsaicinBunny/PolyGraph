@@ -45,6 +45,7 @@ import {
   toDirectoryGroupIds,
 } from "@/lib/graph/grouping";
 import { buildGroupingSnapshot, type CompactGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
+import { budgetGroupCut, groupLodSelection } from "@/lib/graph/group-cut";
 import { deriveGroupByOptions, facetKeyOfGroupBy } from "@/lib/graph/group-by-options";
 import { FiltersPanel } from "./FiltersPanel";
 import { graphKeyFor, type SceneEdge } from "@/lib/graph/scene";
@@ -114,6 +115,13 @@ export function Explorer() {
   const [selectionByMode, setSelectionByMode] = useState<Map<string, Set<GroupId>>>(
     () => new Map(),
   );
+  // The community assignment the SCENE actually laid out (detected over the FILTERED
+  // graph), reported up from the canvas. The cut snapshot below must reuse it so its
+  // "Community N" box keys match the rendered boxes — re-detecting over the full graph
+  // here would relabel communities under active filters and silently disable LOD in
+  // Community mode (the cut would find no matching box for any group). Null until the
+  // first scene lands, or in non-community modes.
+  const [communityCutOf, setCommunityCutOf] = useState<Map<string, string> | null>(null);
   const [enabledEdgeKinds, setEnabledEdgeKinds] = useState<Set<ViewEdgeKind>>(
     () => new Set(FILTERABLE_EDGE_KINDS),
   );
@@ -173,17 +181,22 @@ export function Explorer() {
     setSelectionByMode((prev) => new Map(prev).set(DIRECTORY_MODE, set));
   }, []);
 
-  // Mutate the directory-mode collapse intent (the ONLY writer of user intent). Copies
-  // the per-mode map so a stale closure can't mutate live state.
-  const editDirectoryIntent = useCallback((mutate: (intent: CollapseIntent) => void) => {
+  // Mutate a given grouping mode's collapse intent (the ONLY writer of user intent).
+  // Copies the per-mode map so a stale closure can't mutate live state.
+  const editIntent = useCallback((mode: string, mutate: (intent: CollapseIntent) => void) => {
     setIntentByMode((prev) => {
       const next = new Map(prev);
-      const dir = new Map(next.get(DIRECTORY_MODE) ?? EMPTY_INTENT);
-      mutate(dir);
-      next.set(DIRECTORY_MODE, dir);
+      const cur = new Map(next.get(mode) ?? EMPTY_INTENT);
+      mutate(cur);
+      next.set(mode, cur);
       return next;
     });
   }, []);
+  // Directory-scoped intent editor (the Directory wiring writes ONLY this — unchanged).
+  const editDirectoryIntent = useCallback(
+    (mutate: (intent: CollapseIntent) => void) => editIntent(DIRECTORY_MODE, mutate),
+    [editIntent],
+  );
 
   // Seed the two AUTO layers (bootstrap + camera selection) from an auto-collapse result,
   // and clear directory intent. When the graph fits (`seed` null) LOD is off: both layers
@@ -429,8 +442,13 @@ export function Explorer() {
   } | null>(() => {
     if (!graph || groupBy === "directory" || groupBy === "none") return null;
     let hierarchy: GroupingHierarchy | null = null;
-    if (groupBy === "community") hierarchy = communityGrouping(graph);
-    else if (groupBy === "package") hierarchy = packageGrouping(graph, manifests);
+    // Community: reuse the SCENE's community map (detected over the filtered graph) so
+    // the cut's box keys match the rendered boxes. Until the canvas reports it (first
+    // scene), skip — building over the full graph here would diverge under filters.
+    if (groupBy === "community") {
+      if (!communityCutOf) return null;
+      hierarchy = communityGrouping(graph, communityCutOf);
+    } else if (groupBy === "package") hierarchy = packageGrouping(graph, manifests);
     else {
       const facetKey = facetKeyOfGroupBy(groupBy);
       if (facetKey) {
@@ -445,7 +463,74 @@ export function Explorer() {
       graph.nodes.map((n) => n.id),
     );
     return { hierarchy, snapshot };
-  }, [graph, groupBy, manifests, catalog]);
+  }, [graph, groupBy, manifests, catalog, communityCutOf]);
+
+  // Seed the non-directory modes' AUTO collapse layers (bootstrap + camera selection)
+  // from a geometry-free budget cut over the active snapshot — the mode-agnostic mirror
+  // of seedDirectoryLod. Without this the cut was INERT for Community/Package/facet: the
+  // bootstrap stayed empty, so compose() discarded the camera's selection and changing
+  // the group mode effectively disabled LOD (the C1a bug). The bootstrap closes the whole
+  // group universe ("everything starts closed"); the selection opens the budgeted
+  // frontier so the first frame is bounded before the camera moves; both are cleared (LOD
+  // off, everything open) when the graph already fits. NEVER writes intent — a seed is
+  // derived safety. Directory keeps its dedicated seedDirectoryLod path (untouched).
+  useEffect(() => {
+    if (groupBy === "directory") return; // Directory is seeded by seedDirectoryLod
+    const snap = cutGrouping?.snapshot;
+    if (!adaptiveLod || !snap) {
+      // No snapshot (e.g. None, or pre-scene) or LOD off → clear this mode's auto layers.
+      setBootstrapByMode((prev) => {
+        if (!prev.has(groupBy)) return prev;
+        return new Map(prev).set(groupBy, new Set());
+      });
+      setSelectionByMode((prev) => {
+        if (!prev.has(groupBy)) return prev;
+        return new Map(prev).set(groupBy, new Set());
+      });
+      return;
+    }
+    // cutGrouping (and thus snap) only exists when graph is non-null, and snap is keyed by
+    // graph.nodes order — so the full id list is the correct nodeIds for the cost lookups.
+    const cost = (id: string) => 1 + (symbolCount.get(id) ?? 0);
+    const nodeIds = graph ? graph.nodes.map((n) => n.id) : [];
+    const collapsed = budgetGroupCut(
+      snap,
+      { maxCards: AUTO_COLLAPSE_MAX_CARDS, nodeBudget: LOD_NODE_BUDGET, nodeCost: cost },
+      nodeIds,
+    );
+    if (collapsed === null) {
+      // The whole snapshot fits — leave everything open, no bootstrap (LOD effectively off
+      // for this mode until the user/camera narrows). Mirrors Directory's `seed === null`.
+      setBootstrapByMode((prev) => new Map(prev).set(groupBy, new Set()));
+      setSelectionByMode((prev) => new Map(prev).set(groupBy, new Set()));
+      return;
+    }
+    const bootstrap = new Set<GroupId>(snap.groupIds); // everything starts closed
+    const selection = groupLodSelection(collapsed, snap); // open the budgeted frontier
+    setBootstrapByMode((prev) => new Map(prev).set(groupBy, bootstrap));
+    setSelectionByMode((prev) => new Map(prev).set(groupBy, selection));
+    // Intent is the user's; a seed must not touch it (only clear is via Reset elsewhere).
+  }, [groupBy, cutGrouping, adaptiveLod, symbolCount, graph]);
+
+  // Receive the SCENE's community assignment (filtered-graph detection) so the cut
+  // snapshot reuses it. Only meaningful in Community mode; cleared otherwise so a stale
+  // map can't leak into a later Community session.
+  const handleCommunityOf = useCallback((map: Map<string, string> | null) => {
+    setCommunityCutOf((prev) => {
+      if (prev === map) return prev;
+      if (prev && map && prev.size === map.size) {
+        // Cheap identity guard: same size AND same entries ⇒ no state churn.
+        let same = true;
+        for (const [k, v] of map)
+          if (prev.get(k) !== v) {
+            same = false;
+            break;
+          }
+        if (same) return prev;
+      }
+      return map;
+    });
+  }, []);
 
   // The effective collapsed set (box keys) for the ACTIVE grouping mode, composed from
   // that mode's three layers. This is the single value the scene pipeline consumes — it
@@ -630,32 +715,52 @@ export function Explorer() {
     });
   }, []);
 
-  // Manual collapse/drill — the ONLY writer of user collapse INTENT. `clusterId` is a bare
-  // directory path (from the renderer's cluster/aggregate hit). Whether we drill or collapse
-  // is decided against the EFFECTIVE collapsed set, but we only ever write namespaced intent
-  // — so the camera can no longer clobber this choice (the C0 fix).
+  // Manual collapse/drill — the ONLY writer of user collapse INTENT. `clusterId` is the
+  // bare box key from the renderer's cluster/aggregate hit (a directory path in Directory
+  // mode; a "Community N" / package / facet box key otherwise). Whether we drill or
+  // collapse is decided against the EFFECTIVE collapsed set, but we only ever write
+  // namespaced intent into the ACTIVE mode's map — so the camera can't clobber this choice
+  // (the C0 fix) AND a non-directory click no longer pollutes the directory intent with
+  // ids that map to no directory box (the C1a fix).
   const handleToggleCollapse = useCallback(
     (clusterId: string) => {
       const isCollapsed = collapsedClusters.has(clusterId);
-      editDirectoryIntent((intent) => {
-        if (isCollapsed) {
-          // Drill in ONE level: open this aggregate but fold its immediate child
-          // directories, so the layout grows by a handful of child aggregates instead of
-          // the dir's entire subtree (which on a big dir would dump thousands of
-          // files+symbols in, time Smart out, and lock the view to grid). Direct files of
-          // this dir still render; deeper dirs stay aggregated and can be drilled too.
-          // Writing 'closed' intent on the children (not just relying on bootstrap) keeps
-          // them folded even if the camera selection would open them — intent wins.
-          intent.set(directoryGroupId(clusterId), "open");
-          const node = dirNodes.get(clusterId);
-          if (node)
-            for (const child of node.children) intent.set(directoryGroupId(child.path), "closed");
-        } else {
-          intent.set(directoryGroupId(clusterId), "closed");
+      if (groupBy === "directory") {
+        editDirectoryIntent((intent) => {
+          if (isCollapsed) {
+            // Drill in ONE level: open this aggregate but fold its immediate child
+            // directories, so the layout grows by a handful of child aggregates instead of
+            // the dir's entire subtree (which on a big dir would dump thousands of
+            // files+symbols in, time Smart out, and lock the view to grid). Direct files of
+            // this dir still render; deeper dirs stay aggregated and can be drilled too.
+            // Writing 'closed' intent on the children (not just relying on bootstrap) keeps
+            // them folded even if the camera selection would open them — intent wins.
+            intent.set(directoryGroupId(clusterId), "open");
+            const node = dirNodes.get(clusterId);
+            if (node)
+              for (const child of node.children) intent.set(directoryGroupId(child.path), "closed");
+          } else {
+            intent.set(directoryGroupId(clusterId), "closed");
+          }
+        });
+        return;
+      }
+      // Non-directory modes: resolve the clicked box key → its namespaced group id via the
+      // active cut snapshot, then toggle that group's intent in the ACTIVE mode's map. A
+      // plain open/close (no child-folding drill — that is directory-tree-specific).
+      const snap = cutGrouping?.snapshot;
+      if (!snap) return;
+      let gid: GroupId | undefined;
+      for (let g = 0; g < snap.boxKeyByGroup.length; g++) {
+        if (snap.boxKeyByGroup[g] === clusterId) {
+          gid = snap.groupIds[g];
+          break;
         }
-      });
+      }
+      if (gid === undefined) return;
+      editIntent(groupBy, (intent) => intent.set(gid, isCollapsed ? "open" : "closed"));
     },
-    [collapsedClusters, dirNodes, editDirectoryIntent],
+    [groupBy, collapsedClusters, dirNodes, editDirectoryIntent, editIntent, cutGrouping],
   );
 
   // The camera's adaptive cut hands up a GroupLodSelection (the set of OPEN namespaced
@@ -889,6 +994,7 @@ export function Explorer() {
             minimap={minimap}
             adaptiveLod={adaptiveLod}
             onCut={handleCut}
+            onCommunityOf={handleCommunityOf}
             groupingSnapshot={cutGrouping?.snapshot ?? null}
             fitSignature={fitSignature}
           />

@@ -108,6 +108,14 @@ export interface GraphViewProps {
    */
   onCut?: (modeKey: string, selection: Set<GroupId>) => void;
   /**
+   * Reports the community assignment the scene actually laid out (detected over the
+   * FILTERED graph). Explorer feeds it back into the cut snapshot so its "Community N"
+   * box keys match the rendered boxes — otherwise re-detecting over the full graph
+   * relabels communities under filters and silently disables Community-mode LOD. Null in
+   * non-community modes / before the first scene.
+   */
+  onCommunityOf?: (communityOf: Map<string, string> | null) => void;
+  /**
    * The active grouping mode's CUT snapshot (full, over the rendered graph). Directory
    * keeps its dedicated DirNode cut (null here); every OTHER mode supplies a snapshot so
    * the camera runs the mode-agnostic computeGroupCut. Null disables the generic cut.
@@ -248,6 +256,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     minimap = true,
     adaptiveLod,
     onCut,
+    onCommunityOf,
     groupingSnapshot,
     fitSignature,
   } = props;
@@ -267,6 +276,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     scene,
     layingOut,
     ready: layoutReady,
+    communityOf,
   } = useScene(
     graph,
     expanded,
@@ -284,6 +294,14 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     manifests,
   );
   const { resolvedTheme } = useTheme();
+
+  // Report the scene's community assignment up so Explorer's cut snapshot reuses the SAME
+  // (filtered-graph) labels the layout used — keeping Community-mode LOD box keys aligned
+  // with the rendered boxes. Fires only when the map identity changes (it's memoized in
+  // the scene structure). Explorer guards against redundant updates.
+  useEffect(() => {
+    onCommunityOf?.(communityOf ?? null);
+  }, [communityOf, onCommunityOf]);
 
   // "Layout simplified" notice: surfaces when the budget guard downgraded any Smart cluster's
   // engine (e.g. Layered → Grid for an oversized component), so a grid fallback isn't mistaken
@@ -446,6 +464,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   lod.current.scene = scene;
   lod.current.expanded = expanded;
   lod.current.symbolCount = symbolCount;
+  // On a grouping-mode switch, drop the raw cut: it holds the PREVIOUS mode's box keys
+  // (e.g. directory paths while now in Community), which live in a disjoint key domain.
+  // Carrying it over makes the first post-switch cut read every group as "was open" and
+  // apply the relaxed hysteresis threshold to all of them. Reset so hysteresis compares
+  // within the active mode's key domain (the fit effect resets lodBand but not rawCut).
+  if (lod.current.groupBy !== groupBy) lod.current.rawCut = new Set();
   lod.current.groupBy = groupBy;
   lod.current.groupingSnapshot = groupingSnapshot ?? null;
   const lodBand = useRef(cameraBand(1));

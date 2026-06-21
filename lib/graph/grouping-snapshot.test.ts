@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { directoryGrouping } from "./grouping";
 import {
   ancestorGroupOrdinals,
+  buildFlatGroupingSnapshot,
   buildGroupingSnapshot,
   type CompactGroupingSnapshot,
   groupPath,
@@ -158,6 +159,37 @@ describe("CompactGroupingSnapshot is JSON / structured-clone round-trippable", (
     expect(groupPath(clone, o)).toEqual(["directory:a", "directory:a/x"]);
   });
 
+  test("copy-on-send (no transfer list) does NOT detach the sender's buffers (spec App. G)", () => {
+    // The worker boundary (lib/layout-client.ts) posts the snapshot WITHOUT a transfer
+    // list, so the main thread keeps reading it (sync fallback, re-post on re-layout).
+    // structuredClone is the structured-clone algorithm postMessage uses; without a
+    // transfer list it COPIES, leaving every sender buffer attached. (A transfer list
+    // would detach these — byteLength 0 — and break the next post + the sync fallback.)
+    const lenParent = snap.parentByGroup.length;
+    const lenDepth = snap.depthByGroup.length;
+    const lenNodes = snap.directGroupByNode.length;
+    const lenRoots = snap.roots.length;
+
+    const clone = structuredClone(snap); // == postMessage's clone, no { transfer: [...] }
+
+    // The clone is independent data...
+    expect([...clone.directGroupByNode]).toEqual([...snap.directGroupByNode]);
+    // ...and the SENDER's buffers are still attached and fully readable.
+    expect(snap.parentByGroup.byteLength).toBeGreaterThan(0);
+    expect(snap.depthByGroup.byteLength).toBeGreaterThan(0);
+    expect(snap.directGroupByNode.byteLength).toBeGreaterThan(0);
+    expect(snap.roots.byteLength).toBeGreaterThan(0);
+    expect(snap.parentByGroup.length).toBe(lenParent);
+    expect(snap.depthByGroup.length).toBe(lenDepth);
+    expect(snap.directGroupByNode.length).toBe(lenNodes);
+    expect(snap.roots.length).toBe(lenRoots);
+    // The retained snapshot still answers a path query (proves the data survived intact).
+    expect(groupPath(snap, snap.groupIds.indexOf("directory:a/x"))).toEqual([
+      "directory:a",
+      "directory:a/x",
+    ]);
+  });
+
   test("a JSON round-trip (arrays as plain arrays) rebuilds an equivalent snapshot", () => {
     // Durable workspace copies may be plain JSON — assert the data survives a JSON trip
     // when the typed arrays are reconstructed from their materialized contents.
@@ -200,5 +232,28 @@ describe("buildGroupingSnapshot — edge cases", () => {
     const s = buildGroupingSnapshot(directoryGrouping(g), "directory", ["top.c"]);
     expect(s.groupIds).toEqual([]);
     expect(s.directGroupByNode[0]).toBe(NO_GROUP);
+  });
+});
+
+// buildFlatGroupingSnapshot is the helper scene.ts uses to project a GroupingHierarchy
+// (facet/package) onto the post-collapse layout ids. Its two contracts — empty groups are
+// pruned (a group no layout node resolves to is never created) and an unresolved node is
+// NO_GROUP — are load-bearing for the cut's budget accounting, so pin them directly.
+describe("buildFlatGroupingSnapshot — empty-group pruning + NO_GROUP", () => {
+  test("a group no resolved node belongs to is pruned; a null node is NO_GROUP", () => {
+    // n1,n2 → group G1; n3 → null (unclassified). "G2" is never returned by resolve, so it
+    // must not appear in the snapshot (empty groups don't get an ordinal).
+    const ids = ["n1", "n2", "n3"];
+    const s = buildFlatGroupingSnapshot(ids, "facet:env", (id) =>
+      id === "n3" ? null : { id: "facet:env:client", boxKey: "facet:env:client", label: "client" },
+    );
+    expect(s.groupIds).toEqual(["facet:env:client"]); // only the group with members
+    expect(s.groupIds).not.toContain("facet:env:server"); // empty group pruned
+    expect(s.directGroupByNode[0]).toBe(0); // n1 → ordinal 0
+    expect(s.directGroupByNode[1]).toBe(0); // n2 → same group
+    expect(s.directGroupByNode[2]).toBe(NO_GROUP); // n3 unresolved
+    // Flat snapshot: the single group is a root with no parent.
+    expect([...s.roots]).toEqual([0]);
+    expect(s.parentByGroup[0]).toBe(-1);
   });
 });

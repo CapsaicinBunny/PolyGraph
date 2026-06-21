@@ -13,7 +13,7 @@ import { describe, expect, test } from "bun:test";
 import { type CollapseIntent, compose, type GroupId } from "./collapse-model";
 import { communityGrouping, syntheticNoneGrouping } from "./grouping";
 import { buildGroupingSnapshot, groupPath, NO_GROUP } from "./grouping-snapshot";
-import { computeGroupCut, groupLodSelection } from "./group-cut";
+import { budgetGroupCut, computeGroupCut, groupLodSelection } from "./group-cut";
 import type { Box, Camera, Viewport } from "./lod-screen";
 import { type GraphModel, makeEdge } from "./types";
 
@@ -135,6 +135,70 @@ describe("C1a (b) — the adaptive cut runs in a non-directory mode (LOD not dis
   });
 });
 
+// ── (b2) The non-directory bootstrap seed makes the cut EFFECTIVE (not inert) ──
+describe("C1a (b2) — seeding the non-directory bootstrap composes into a real collapse", () => {
+  // A graph big enough that the budget must collapse something: two communities, tight cap.
+  const graph: GraphModel = {
+    nodes: ["a", "b", "c", "x", "y", "z"].map(file),
+    edges: [
+      E("a", "b"),
+      E("b", "c"),
+      E("a", "c"),
+      E("x", "y"),
+      E("y", "z"),
+      E("x", "z"),
+      E("c", "x"),
+    ],
+  };
+  const hier = communityGrouping(graph);
+  const nodeIds = graph.nodes.map((n) => n.id);
+  const snap = buildGroupingSnapshot(hier, "community", nodeIds);
+
+  test("the Explorer seed (bootstrap=all groupIds + budgeted selection) bounds the scene", () => {
+    // This mirrors the exact maps the Explorer effect writes for a non-directory mode:
+    // budgetGroupCut → collapsed frontier; selection = open frontier; bootstrap = all ids.
+    const collapsed = budgetGroupCut(snap, { maxCards: 3, nodeBudget: 1000 }, nodeIds);
+    expect(collapsed).not.toBeNull(); // over budget → LOD engages (not the "fits" null path)
+    const bootstrap = new Set<GroupId>(snap.groupIds);
+    const selection = groupLodSelection(collapsed!, snap);
+
+    // compose with EMPTY intent — the camera seed alone must produce a non-empty collapse.
+    // (Pre-fix the bootstrap was empty, so compose returned ∅ and the cut was INERT.)
+    const effective = compose({ intent: new Map(), bootstrapClosed: bootstrap, selection });
+    expect(effective.size).toBeGreaterThan(0); // SOMETHING is collapsed → LOD is not disabled
+
+    // And the open card count respects the budget.
+    const open = openMemberCount(snap, toBoxKeys(effective, snap), nodeIds);
+    expect(open).toBeLessThanOrEqual(3);
+  });
+
+  test("when the snapshot fits, the seed is null → empty bootstrap → everything open", () => {
+    const collapsed = budgetGroupCut(snap, { maxCards: 1000, nodeBudget: 1000 }, nodeIds);
+    expect(collapsed).toBeNull(); // fits → Explorer clears bootstrap/selection (LOD off)
+    const effective = compose({
+      intent: new Map(),
+      bootstrapClosed: new Set(), // what the effect writes on the null path
+      selection: new Set(),
+    });
+    expect(effective.size).toBe(0); // nothing collapsed — full detail, as before
+  });
+});
+
+/** Map an effective collapsed group-id set to its box keys (what the scene consumes). */
+function toBoxKeys(
+  ids: ReadonlySet<GroupId>,
+  snap: ReturnType<typeof buildGroupingSnapshot>,
+): Set<string> {
+  const byId = new Map<GroupId, string>();
+  for (let g = 0; g < snap.groupIds.length; g++) byId.set(snap.groupIds[g], snap.boxKeyByGroup[g]);
+  const out = new Set<string>();
+  for (const id of ids) {
+    const bk = byId.get(id);
+    if (bk !== undefined) out.add(bk);
+  }
+  return out;
+}
+
 // ── (c) None can't bypass the render budget ──────────────────────────────────
 describe("C1a (c) — None keeps an internal safety hierarchy that bounds the budget", () => {
   // A larger None graph: one big connected component + isolated nodes.
@@ -157,7 +221,7 @@ describe("C1a (c) — None keeps an internal safety hierarchy that bounds the bu
     }
   });
 
-  test("the cut over None's hierarchy stays bounded by maxCards", () => {
+  test("the cut over None's hierarchy keeps the OPEN card count within maxCards", () => {
     // Give every group a big on-screen box; with a tight maxCards the cut must NOT open
     // every node — the budget caps the rendered cards (the disappearing-budget safety).
     const boxes = new Map<string, Box>();
@@ -173,7 +237,41 @@ describe("C1a (c) — None keeps an internal safety hierarchy that bounds the bu
       { openPx: 50, maxCards },
       nodeIds,
     );
-    // At least one group collapsed → the budget bounded the open set (didn't open all 50).
+    // The real safety property: the number of OPEN leaf cards (members of groups that are
+    // NOT under the cut) must stay within budget — not merely "at least one collapsed".
+    // A cut that wrongly opened 49/50 while collapsing one group would FAIL this.
+    const openCards = openMemberCount(snap, cut, nodeIds);
+    expect(openCards).toBeLessThanOrEqual(maxCards);
+    // And the 50-node graph genuinely overflowed, so the cut had to collapse something.
     expect(cut.size).toBeGreaterThan(0);
   });
 });
+
+/** Count the leaf member nodes that render OPEN: members of any group not under the cut. */
+function openMemberCount(
+  snap: ReturnType<typeof buildGroupingSnapshot>,
+  collapsed: ReadonlySet<string>,
+  nodeIds: readonly string[],
+): number {
+  // A node is open iff its direct group — and every ancestor — has its box key NOT collapsed.
+  let open = 0;
+  for (let i = 0; i < snap.directGroupByNode.length; i++) {
+    let g = snap.directGroupByNode[i];
+    if (g === NO_GROUP) {
+      open += 1; // ungrouped nodes render directly (not behind any aggregate)
+      continue;
+    }
+    let underCut = false;
+    let guard = snap.groupIds.length + 1;
+    while (g !== -1 && guard-- > 0) {
+      if (collapsed.has(snap.boxKeyByGroup[g])) {
+        underCut = true;
+        break;
+      }
+      g = snap.parentByGroup[g];
+    }
+    if (!underCut) open += 1;
+    void nodeIds;
+  }
+  return open;
+}

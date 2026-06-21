@@ -169,6 +169,92 @@ export function computeGroupCut(
   return collapsed;
 }
 
+/** Options for the geometry-free initial budget cut. */
+export interface BudgetCutOptions {
+  /** Cap on rendered cards; opens stop once the estimate reaches this. */
+  maxCards: number;
+  /** Cap on estimated layout NODES; opens stop once reached. Default Infinity. */
+  nodeBudget?: number;
+  /** Layout-node cost of opening one member node (default 1 = a card). */
+  nodeCost?: (nodeId: string) => number;
+}
+
+/**
+ * The geometry-free, budget-bounded initial cut over ANY grouping mode — the
+ * mode-agnostic analog of `autoCollapseDirs` (the Directory seed). Unlike
+ * {@link computeGroupCut} it has no camera/boxes: it assumes every group is on-screen
+ * and opens groups heaviest-first until the card / node budget is spent, so the FIRST
+ * frame of a large non-directory graph is bounded before the camera ever moves. The
+ * camera's `computeGroupCut` then refines from here as the user zooms.
+ *
+ * Returns the collapsed BOX-KEY set, or `null` when the whole snapshot already fits the
+ * budget (so the caller can leave everything open and turn the camera cut OFF — matching
+ * Directory's `autoCollapseDirs(...) === null` "graph fits, no LOD" path). Feeding the
+ * result through {@link groupLodSelection} yields the open-selection seed; the bootstrap
+ * is the full group-id set ("everything starts closed").
+ */
+export function budgetGroupCut(
+  snapshot: CompactGroupingSnapshot,
+  opts: BudgetCutOptions,
+  nodeIds: readonly string[] = [],
+): Set<string> | null {
+  const { maxCards, nodeBudget = Infinity, nodeCost = () => 1 } = opts;
+  const tree = groupTree(snapshot, nodeIds);
+
+  // Total layout cost if EVERYTHING opened (every direct member as a card). When this
+  // fits both budgets there is nothing to bound — return null (LOD off).
+  let totalCost = 0;
+  for (let g = 0; g < snapshot.groupIds.length; g++) {
+    for (const id of tree.membersOf[g]) totalCost += nodeCost(id);
+  }
+  const totalCards = snapshot.directGroupByNode.length;
+  if (totalCards <= maxCards && totalCost <= nodeBudget) return null;
+
+  const collapsed = new Set<string>();
+  let cards = 0;
+  let nodes = 0;
+  const openCost = (g: number) => {
+    let c = 0;
+    for (const id of tree.membersOf[g]) c += nodeCost(id);
+    return c;
+  };
+  const collapse = (g: number) => {
+    collapsed.add(snapshot.boxKeyByGroup[g]);
+    cards += 1;
+    nodes += 1; // an aggregate card is one layout node
+  };
+  const visit = (g: number) => {
+    const hasContent = tree.childrenOf[g].length + tree.membersOf[g].length > 0;
+    if (!hasContent) return collapse(g);
+    if (cards + tree.membersOf[g].length > maxCards || nodes + openCost(g) > nodeBudget) {
+      return collapse(g);
+    }
+    cards += tree.membersOf[g].length;
+    nodes += openCost(g);
+    for (const c of tree.childrenOf[g]) {
+      if (cards >= maxCards || nodes >= nodeBudget) {
+        collapse(c);
+        continue;
+      }
+      visit(c);
+    }
+  };
+  // Roots heaviest-first (stable budget spending — mirrors computeGroupCut).
+  const roots = [...snapshot.roots].sort(
+    (a, b) =>
+      tree.subtreeNodes[b] - tree.subtreeNodes[a] ||
+      (snapshot.boxKeyByGroup[a] < snapshot.boxKeyByGroup[b] ? -1 : 1),
+  );
+  for (const r of roots) {
+    if (cards >= maxCards || nodes >= nodeBudget) {
+      collapse(r);
+      continue;
+    }
+    visit(r);
+  }
+  return collapsed;
+}
+
 /**
  * Convert a collapsed BOX-KEY set to the GroupLodSelection: the OPEN namespaced group
  * ids (generalizing C0's `directoryLodSelection`). A group is open iff neither it nor

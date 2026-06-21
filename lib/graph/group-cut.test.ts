@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { communityGrouping, facetGrouping } from "./grouping";
 import { buildGroupingSnapshot } from "./grouping-snapshot";
-import { computeGroupCut, groupCutEquals, groupLodSelection } from "./group-cut";
+import { budgetGroupCut, computeGroupCut, groupCutEquals, groupLodSelection } from "./group-cut";
 import type { Box, Camera, Viewport } from "./lod-screen";
 import type { DimensionDescriptor } from "./dimensions";
 import { type GraphModel, makeEdge } from "./types";
@@ -103,6 +103,92 @@ describe("computeGroupCut — budget bounds the open set (None safety / large gr
     const cam: Camera = { x: 0, y: 0, scale: 1 };
     const cut = computeGroupCut(csnap, boxes, cam, vp, { openPx: 100, maxCards: 3 });
     // The first community (3 members) opens; the budget is then spent → the second collapses.
+    const openCount = [boxA, boxX].filter((b) => !cut.has(b)).length;
+    expect(openCount).toBeLessThan(2);
+  });
+
+  test("nodeBudget (not just maxCards) caps the open set on the generic path", () => {
+    // Both communities big on screen, maxCards generous, but a per-node cost of 2 with a
+    // nodeBudget of 4 lets only the first community's 3 members (cost 6 > 4 → actually the
+    // budget stops it). Use cost 1 and nodeBudget 4 so exactly one 3-member community opens.
+    const boxes = new Map<string, Box>([
+      [boxA, { x: 0, y: 0, w: 1000, h: 1000 }],
+      [boxX, { x: 0, y: 1100, w: 1000, h: 1000 }],
+    ]);
+    const cut = computeGroupCut(
+      csnap,
+      boxes,
+      { x: 0, y: 0, scale: 1 },
+      vp,
+      { openPx: 100, maxCards: 1000, nodeBudget: 4, nodeCost: () => 1 },
+      cnodeIds,
+    );
+    // maxCards alone would open both (6 cards < 1000); the nodeBudget=4 stops the second.
+    const openCount = [boxA, boxX].filter((b) => !cut.has(b)).length;
+    expect(openCount).toBeLessThan(2);
+  });
+});
+
+describe("computeGroupCut — hysteresis on the generic (non-directory) path", () => {
+  // A single community box whose on-screen height sits between openPx*hysteresis and openPx,
+  // so the decision depends ENTIRELY on whether it was previously open (panning stability).
+  const boxes = (h: number) => new Map<string, Box>([[boxA, { x: 0, y: 0, w: 1000, h }]]);
+  const cam: Camera = { x: 0, y: 0, scale: 1 };
+  // openPx 200, hysteresis 0.8 → relaxed threshold 160. Box 180px tall: below 200, above 160.
+  const opts = { openPx: 200, hysteresis: 0.8, maxCards: 100 };
+
+  test("a box that WAS open stays open under the relaxed openPx*hysteresis threshold", () => {
+    // prevCut does NOT contain boxA → wasOpen(boxA) is true → threshold 160; 180 ≥ 160 → open.
+    const cut = computeGroupCut(
+      csnap,
+      boxes(180),
+      cam,
+      vp,
+      { ...opts, prevCut: new Set() },
+      cnodeIds,
+    );
+    expect(cut.has(boxA)).toBe(false);
+  });
+
+  test("the SAME box, when it was collapsed, stays collapsed (full openPx threshold)", () => {
+    // prevCut contains boxA → wasOpen is false → threshold 200; 180 < 200 → collapse.
+    const cut = computeGroupCut(
+      csnap,
+      boxes(180),
+      cam,
+      vp,
+      { ...opts, prevCut: new Set([boxA]) },
+      cnodeIds,
+    );
+    expect(cut.has(boxA)).toBe(true);
+  });
+});
+
+describe("budgetGroupCut — geometry-free initial budget cut (the non-directory seed)", () => {
+  test("returns null when the whole snapshot fits the budget (LOD off)", () => {
+    // 6 nodes, generous budgets → nothing to bound.
+    expect(budgetGroupCut(csnap, { maxCards: 1000, nodeBudget: 1000 }, cnodeIds)).toBeNull();
+  });
+
+  test("bounds the open set when over budget (heaviest-first), the rest collapse", () => {
+    const cut = budgetGroupCut(csnap, { maxCards: 3, nodeBudget: 1000 }, cnodeIds)!;
+    expect(cut).not.toBeNull();
+    // One 3-member community opens (3 cards == maxCards), the other collapses.
+    const openCount = [boxA, boxX].filter((b) => !cut.has(b)).length;
+    expect(openCount).toBeLessThan(2);
+    // Feeding the open frontier through groupLodSelection yields a usable selection seed.
+    const open = groupLodSelection(cut, csnap);
+    expect(open.size).toBeGreaterThan(0);
+  });
+
+  test("honors a node-cost budget independent of the card cap", () => {
+    // maxCards generous, but cost 1/node with nodeBudget 4 stops after the first community.
+    const cut = budgetGroupCut(
+      csnap,
+      { maxCards: 1000, nodeBudget: 4, nodeCost: () => 1 },
+      cnodeIds,
+    )!;
+    expect(cut).not.toBeNull();
     const openCount = [boxA, boxX].filter((b) => !cut.has(b)).length;
     expect(openCount).toBeLessThan(2);
   });

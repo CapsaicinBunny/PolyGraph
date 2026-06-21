@@ -46,7 +46,13 @@ export function useScene(
   projected = false,
   catalog?: DimensionCatalog,
   manifests: PackageManifest[] = [],
-): { scene: Scene; layingOut: boolean; ready: boolean } {
+): {
+  scene: Scene;
+  layingOut: boolean;
+  ready: boolean;
+  /** The community assignment this scene laid out (filtered-graph detection), or undefined. */
+  communityOf: Map<string, string> | undefined;
+} {
   const structure = useMemo(
     () =>
       buildSceneStructure(
@@ -171,5 +177,5 @@ export function useScene(
     () => applyPositions(structure, positions, clusters),
     [structure, positions, clusters],
   );
-  return { scene, layingOut, ready };
+  return { scene, layingOut, ready, communityOf: structure.options.communityOf };
 }

@@ -709,8 +709,10 @@ function deriveGroupOf(
  * the SAME cluster tree Smart would have derived from node ids, serialized into typed
  * arrays — so Directory layout output is byte-identical and the worker no longer needs
  * the node-path logic. Built on the main thread from the post-filter/post-collapse
- * layout node set. (None still groups by directory here for the LOD safety boxes; the
- * renderer's None path keeps containers hidden as before.)
+ * layout node set. None is NOT routed here at all: scene.ts excludes groupBy==="none"
+ * from the layout grouping snapshot (its deriveGroupOf returns `() => []` — a flat,
+ * all-at-root tree with no containers), so None lays out boxless. Its synthetic safety
+ * hierarchy (syntheticNoneGrouping) feeds the cut/budget path, not this layout snapshot.
  */
 export function buildSmartGroupingSnapshot(
   view: LayoutInput,
