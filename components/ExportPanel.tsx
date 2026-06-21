@@ -70,10 +70,7 @@ function baseName(path: string): string {
 function sceneFiltersOf(s: ExplorerWorkspaceState): SceneFilters {
   return {
     showExternal: s.showExternal,
-    enabledNodeKinds: s.enabledNodeKinds,
-    enabledCategories: s.enabledCategories,
-    enabledEnvironments: s.enabledEnvironments,
-    enabledRuntimes: s.enabledRuntimes,
+    enabledFacets: s.enabledFacets,
     enabledEdgeKinds: s.enabledEdgeKinds,
     enabledFolders: s.enabledFolders,
     enabledLanguages: s.enabledLanguages,

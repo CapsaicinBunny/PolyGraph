@@ -12,21 +12,24 @@ import {
 } from "@/lib/graph/levels/packages";
 import type { Level, PackageManifest } from "@/lib/graph/levels/types";
 import type { QueryMode } from "./QueryBar";
-import type {
-  AnalyzeResult,
-  Environment,
-  GraphModel,
-  NodeCategory,
-  NodeKind,
-  Runtime,
-} from "@/lib/graph/types";
-import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "@/lib/graph/visual";
+import type { AnalyzeResult, GraphModel } from "@/lib/graph/types";
+import { FILTERABLE_EDGE_KINDS } from "@/lib/graph/visual";
 import type { GroupBy, LayoutAlgorithm, LayoutDirection } from "@/lib/layout";
 import {
   availableFolders,
   availableLanguages,
   DEFAULT_HIDDEN_LANGUAGES,
 } from "@/lib/graph/filters";
+import type { FacetKey } from "@/lib/graph/dimensions";
+import {
+  type FacetSelection,
+  serializeFacetSelections,
+  setFacetValues,
+  toggleFacetValue,
+} from "@/lib/graph/facet-selection";
+import { clientCatalog } from "@/lib/graph/client-catalog";
+import { buildDimensionIndex } from "@/lib/graph/dimension-index";
+import { deriveFilterDimensions } from "@/lib/graph/filter-derive";
 import { autoCollapseDirs, type AutoCollapse } from "@/lib/graph/auto-collapse";
 import { buildDirTree, type DirNode, dirIndex } from "@/lib/graph/hierarchy";
 import { type CollapseIntent, compose, type GroupId } from "@/lib/graph/collapse-model";
@@ -59,9 +62,6 @@ const VelloGraphCanvas = dynamic(
   { ssr: false },
 );
 
-const ALL_ENVIRONMENTS: Environment[] = ["client", "server"];
-const ALL_RUNTIMES: Runtime[] = ["node", "deno", "bun"];
-const ALL_CATEGORIES: NodeCategory[] = ["ui", "feature"];
 // Above this many file nodes, auto-collapse directories so the initial scene the
 // renderer receives stays drawable (LOD v0; see docs/SCALE-100K.md).
 const AUTO_COLLAPSE_MAX_CARDS = 2000;
@@ -103,16 +103,13 @@ export function Explorer() {
   const [enabledEdgeKinds, setEnabledEdgeKinds] = useState<Set<ViewEdgeKind>>(
     () => new Set(FILTERABLE_EDGE_KINDS),
   );
-  const [enabledNodeKinds, setEnabledNodeKinds] = useState<Set<NodeKind>>(
-    () => new Set(FILTERABLE_NODE_KINDS),
+  // Sparse, registry-driven facet selections (kind/category/env/runtime/role +
+  // any provider facet) — replaces the four named enabled* sets. Empty map ⇒ all
+  // values of every facet enabled; the dimension spine gate + the dynamic Sidebar
+  // both read from this.
+  const [enabledFacets, setEnabledFacets] = useState<Map<FacetKey, FacetSelection>>(
+    () => new Map(),
   );
-  const [enabledCategories, setEnabledCategories] = useState<Set<NodeCategory>>(
-    () => new Set(ALL_CATEGORIES),
-  );
-  const [enabledEnvironments, setEnabledEnvironments] = useState<Set<Environment>>(
-    () => new Set(ALL_ENVIRONMENTS),
-  );
-  const [enabledRuntimes, setEnabledRuntimes] = useState<Set<Runtime>>(() => new Set(ALL_RUNTIMES));
   const [search, setSearch] = useState("");
   const [queryMode, setQueryMode] = useState<QueryMode>("filter");
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
@@ -219,22 +216,22 @@ export function Explorer() {
   const folders = useMemo(() => (graph ? availableFolders(graph) : []), [graph]);
   const languages = useMemo(() => (graph ? availableLanguages(graph) : []), [graph]);
 
-  // Which scope attributes actually occur in this codebase. The Category /
-  // Environment / Runtime filters are JS/TS heuristics (e.g. "use client",
-  // node/deno/bun APIs); on a C/Rust project none of them appear, so we derive
-  // the present sets here and let the Sidebar hide empty groups and the whole
-  // Scope section rather than offering filters that match nothing.
-  const presentScope = useMemo(() => {
-    const categories = new Set<NodeCategory>();
-    const environments = new Set<Environment>();
-    const runtimes = new Set<Runtime>();
-    for (const n of baseGraph?.nodes ?? []) {
-      if (n.category) categories.add(n.category);
-      if (n.environment) environments.add(n.environment);
-      if (n.runtimes) for (const rt of n.runtimes) runtimes.add(rt);
-    }
-    return { categories, environments, runtimes };
-  }, [baseGraph]);
+  // The dimension catalog (the result's own, or the TS/JS fallback) and the
+  // runtime index over the ACTIVE graph — the single source the scene gate AND
+  // the dynamic Sidebar project from, so controls and filtering always agree.
+  const catalog = useMemo(() => clientCatalog(result?.dimensions), [result]);
+  const dimensionIndex = useMemo(
+    () => (graph ? buildDimensionIndex(graph, catalog) : null),
+    [graph, catalog],
+  );
+  // The filterable facet sections to render: category / env / runtime / role and
+  // any provider facet (Rust visibility, Go exported, …) — each with present()
+  // values, per-value counts, and eligibility. Empty on a graph with no facets,
+  // so a C/Rust project simply shows whichever of its dimensions are present.
+  const filterDimensions = useMemo(
+    () => (graph && dimensionIndex ? deriveFilterDimensions(graph, catalog, dimensionIndex) : []),
+    [graph, catalog, dimensionIndex],
+  );
   const insights = useMemo(
     () =>
       graph ? [...analyzeInsights(graph), ...unresolvedToInsights(result?.unresolved ?? [])] : [],
@@ -301,10 +298,8 @@ export function Explorer() {
       showExternal ? 1 : 0,
       communityCollapse ? 1 : 0,
       set(enabledEdgeKinds as Set<string>),
-      set(enabledNodeKinds as Set<string>),
-      set(enabledCategories as Set<string>),
-      set(enabledEnvironments as Set<string>),
-      set(enabledRuntimes as Set<string>),
+      // Canonical, order-independent facet serialization (kind/category/env/runtime/role/…).
+      `f:${serializeFacetSelections(enabledFacets)}`,
       set(enabledFolders),
       set(enabledLanguages),
       set(expanded),
@@ -322,10 +317,7 @@ export function Explorer() {
     showExternal,
     communityCollapse,
     enabledEdgeKinds,
-    enabledNodeKinds,
-    enabledCategories,
-    enabledEnvironments,
-    enabledRuntimes,
+    enabledFacets,
     enabledFolders,
     enabledLanguages,
     expanded,
@@ -488,10 +480,7 @@ export function Explorer() {
     setShowExternal(s.showExternal);
     setSearch(s.search);
     setEnabledEdgeKinds(s.enabledEdgeKinds);
-    setEnabledNodeKinds(s.enabledNodeKinds);
-    setEnabledCategories(s.enabledCategories);
-    setEnabledEnvironments(s.enabledEnvironments);
-    setEnabledRuntimes(s.enabledRuntimes);
+    setEnabledFacets(s.enabledFacets);
     setEnabledFolders(s.enabledFolders);
     setEnabledLanguages(s.enabledLanguages);
     setAlgorithm(s.algorithm);
@@ -571,51 +560,16 @@ export function Explorer() {
     });
   }, []);
 
-  const handleToggleNodeKind = useCallback((kind: NodeKind) => {
-    setEnabledNodeKinds((prev) => {
-      const next = new Set(prev);
-      if (next.has(kind)) next.delete(kind);
-      else next.add(kind);
-      return next;
-    });
+  // Generic facet handlers — the ONLY writers of facet selection. One value
+  // toggle and one all/none (also used per Node-types layer). Both keep the map
+  // sparse ("all except one" stores one value; clearing the last exclusion drops
+  // the entry).
+  const handleToggleFacetValue = useCallback((key: FacetKey, value: string) => {
+    setEnabledFacets((prev) => toggleFacetValue(prev, key, value));
   }, []);
 
-  const handleSetNodeKinds = useCallback((kinds: NodeKind[], on: boolean) => {
-    setEnabledNodeKinds((prev) => {
-      const next = new Set(prev);
-      for (const kind of kinds) {
-        if (on) next.add(kind);
-        else next.delete(kind);
-      }
-      return next;
-    });
-  }, []);
-
-  const handleToggleCategory = useCallback((category: NodeCategory) => {
-    setEnabledCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(category)) next.delete(category);
-      else next.add(category);
-      return next;
-    });
-  }, []);
-
-  const handleToggleEnvironment = useCallback((env: Environment) => {
-    setEnabledEnvironments((prev) => {
-      const next = new Set(prev);
-      if (next.has(env)) next.delete(env);
-      else next.add(env);
-      return next;
-    });
-  }, []);
-
-  const handleToggleRuntime = useCallback((rt: Runtime) => {
-    setEnabledRuntimes((prev) => {
-      const next = new Set(prev);
-      if (next.has(rt)) next.delete(rt);
-      else next.add(rt);
-      return next;
-    });
+  const handleSetFacetValues = useCallback((key: FacetKey, values: string[], on: boolean) => {
+    setEnabledFacets((prev) => setFacetValues(prev, key, values, on));
   }, []);
 
   const handleToggleFolder = useCallback((name: string) => {
@@ -648,10 +602,8 @@ export function Explorer() {
   const handleResetFilters = useCallback(() => {
     setSearch("");
     setEnabledEdgeKinds(new Set(FILTERABLE_EDGE_KINDS));
-    setEnabledNodeKinds(new Set(FILTERABLE_NODE_KINDS));
-    setEnabledCategories(new Set(ALL_CATEGORIES));
-    setEnabledEnvironments(new Set(ALL_ENVIRONMENTS));
-    setEnabledRuntimes(new Set(ALL_RUNTIMES));
+    // Empty map ⇒ every facet value (kind/category/env/runtime/role/…) enabled.
+    setEnabledFacets(new Map());
     setShowExternal(false);
     // Also drop any impact/focus constraint and selection — Reset means "show all
     // nodes again", and focus (Dependencies/Dependents/…) otherwise persists with no
@@ -776,18 +728,10 @@ export function Explorer() {
           onDeleteSearch={handleDeleteSearch}
           enabledEdgeKinds={enabledEdgeKinds}
           onToggleEdgeKind={handleToggleEdgeKind}
-          enabledNodeKinds={enabledNodeKinds}
-          onToggleNodeKind={handleToggleNodeKind}
-          onSetNodeKinds={handleSetNodeKinds}
-          enabledCategories={enabledCategories}
-          onToggleCategory={handleToggleCategory}
-          enabledEnvironments={enabledEnvironments}
-          onToggleEnvironment={handleToggleEnvironment}
-          enabledRuntimes={enabledRuntimes}
-          onToggleRuntime={handleToggleRuntime}
-          presentCategories={presentScope.categories}
-          presentEnvironments={presentScope.environments}
-          presentRuntimes={presentScope.runtimes}
+          enabledFacets={enabledFacets}
+          filterDimensions={filterDimensions}
+          onToggleFacetValue={handleToggleFacetValue}
+          onSetFacetValues={handleSetFacetValues}
           onResetFilters={handleResetFilters}
           algorithm={algorithm}
           onAlgorithm={setAlgorithm}
@@ -809,10 +753,8 @@ export function Explorer() {
             groupBy={groupBy}
             density={density}
             showExternal={showExternal}
-            enabledNodeKinds={enabledNodeKinds}
-            enabledCategories={enabledCategories}
-            enabledEnvironments={enabledEnvironments}
-            enabledRuntimes={enabledRuntimes}
+            enabledFacets={enabledFacets}
+            catalog={catalog}
             enabledFolders={enabledFolders}
             enabledLanguages={enabledLanguages}
             collapsedClusters={collapsedClusters}
@@ -883,10 +825,7 @@ export function Explorer() {
               showExternal,
               search,
               enabledEdgeKinds,
-              enabledNodeKinds,
-              enabledCategories,
-              enabledEnvironments,
-              enabledRuntimes,
+              enabledFacets,
               enabledFolders,
               enabledLanguages,
               algorithm,

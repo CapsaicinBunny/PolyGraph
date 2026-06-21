@@ -7,6 +7,7 @@ import {
   type Scene,
   type SceneFilters,
 } from "@/lib/graph/scene";
+import type { DimensionCatalog } from "@/lib/graph/dimensions";
 import type { GraphModel } from "@/lib/graph/types";
 import {
   type ClusterBox,
@@ -42,6 +43,7 @@ export function useScene(
   focusedIds: Set<string> | null,
   queryIds: Set<string> | null = null,
   projected = false,
+  catalog?: DimensionCatalog,
 ): { scene: Scene; layingOut: boolean; ready: boolean } {
   const structure = useMemo(
     () =>
@@ -58,6 +60,7 @@ export function useScene(
         focusedIds,
         queryIds,
         projected,
+        catalog,
       ),
     [
       graph,
@@ -72,6 +75,7 @@ export function useScene(
       focusedIds,
       queryIds,
       projected,
+      catalog,
     ],
   );
 

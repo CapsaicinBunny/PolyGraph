@@ -16,7 +16,9 @@ import {
   pruneAnchors,
 } from "@/lib/graph/connections";
 import type { Scene, SceneEdge, SceneFilters } from "@/lib/graph/scene";
-import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
+import type { GraphModel } from "@/lib/graph/types";
+import type { DimensionCatalog, FacetKey } from "@/lib/graph/dimensions";
+import type { FacetSelection } from "@/lib/graph/facet-selection";
 import {
   type GroupBy,
   type LayoutAlgorithm,
@@ -68,10 +70,10 @@ export interface GraphViewProps {
   groupBy: GroupBy;
   density: number;
   showExternal: boolean;
-  enabledNodeKinds: Set<NodeKind>;
-  enabledCategories: Set<NodeCategory>;
-  enabledEnvironments: Set<Environment>;
-  enabledRuntimes: Set<Runtime>;
+  /** Sparse facet selections (kind/category/env/runtime/role + provider facets). */
+  enabledFacets: Map<FacetKey, FacetSelection>;
+  /** The catalog the scene gate resolves facet values against. */
+  catalog: DimensionCatalog;
   enabledFolders: Set<string>;
   enabledLanguages: Set<string>;
   collapsedClusters: Set<string>;
@@ -215,10 +217,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     groupBy,
     density,
     showExternal,
-    enabledNodeKinds,
-    enabledCategories,
-    enabledEnvironments,
-    enabledRuntimes,
+    enabledFacets,
+    catalog,
     enabledFolders,
     enabledLanguages,
     collapsedClusters,
@@ -241,24 +241,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   const filters: SceneFilters = useMemo(
     () => ({
       showExternal,
-      enabledNodeKinds,
-      enabledCategories,
-      enabledEnvironments,
-      enabledRuntimes,
+      enabledFacets,
       enabledEdgeKinds,
       enabledFolders,
       enabledLanguages,
     }),
-    [
-      showExternal,
-      enabledNodeKinds,
-      enabledCategories,
-      enabledEnvironments,
-      enabledRuntimes,
-      enabledEdgeKinds,
-      enabledFolders,
-      enabledLanguages,
-    ],
+    [showExternal, enabledFacets, enabledEdgeKinds, enabledFolders, enabledLanguages],
   );
 
   const {
@@ -278,6 +266,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     focusedIds,
     queryIds,
     projected,
+    catalog,
   );
   const { resolvedTheme } = useTheme();
 
