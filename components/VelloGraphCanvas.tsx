@@ -45,6 +45,7 @@ import {
   materialSignature,
 } from "@/lib/graph/lod-representation-cut";
 import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
+import { decideRecut, type RecutTrigger } from "@/lib/graph/lod-recut-mode";
 import {
   centerCameraOn,
   contentBounds,
@@ -814,9 +815,17 @@ export function VelloGraphCanvas(props: GraphViewProps) {
 
     // Recompute the adaptive cut from what's currently on screen and hand the new
     // collapsed set up. The box coordinates come from the live scene, so the cut
-    // decision matches exactly what the user sees. No-op unless adaptiveLod is on or
-    // the zoom band hasn't actually changed since the last cut.
-    const recomputeCut = () => {
+    // decision matches exactly what the user sees. No-op unless adaptiveLod is on.
+    //
+    // `trigger` separates the two camera gestures (design Gap 8 — "Eviction LRU ignores
+    // panning"; "zoom → band/deadband refine; pan → visibility/LRU only"):
+    //   • "wheel" — a ZOOM gesture: may REFINE to a higher band (advances lodBand). Monotonic
+    //     (never re-collapses on zoom-out); the C1a fallback paths below also gate on this.
+    //   • "pan"  — a DRAG gesture: refreshes on-screen VISIBILITY + the eviction LRU at the
+    //     SAME band WITHOUT advancing lodBand (no forced deeper refinement). Before this, the
+    //     recut fired only from the wheel handler and the band guard rejected any non-zoom
+    //     recompute, so panning an open region off-screen never updated retention / eviction.
+    const recomputeCut = (trigger: RecutTrigger) => {
       const l = lod.current;
       if (!l.adaptiveLod || !l.onCut) return;
       // The cut measures each group's on-screen size from the live scene's boxes (open
@@ -831,14 +840,23 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       if (boxes.size === 0) return;
       const c = cam.current;
       const band = cameraBand(c.scale);
-      // Monotonic LOD: only ever REFINE (open more detail) as the user zooms IN —
-      // never re-collapse on zoom-OUT. Collapsing the view you're looking at when you
-      // zoom out is the disliked behavior; once a region is opened it stays open. The
-      // cut resets (re-fits lodBand) on a new scan / expand / collapse-all. computeCut
-      // still caps the result at maxCards, so the open set stays bounded.
-      if (band <= lodBand.current) return;
+      // Apply the camera policy. Zoom only ever REFINEs as the user zooms IN (band increases),
+      // advancing lodBand — never re-collapsing on zoom-out (collapsing the view you're looking
+      // at is the disliked behavior; once opened a region stays open). Pan runs in VISIBILITY
+      // mode at the unchanged band so the rep cut updates retention + the eviction LRU from the
+      // new viewport, without forcing deeper refinement. lodBand resets on a new scan / expand /
+      // collapse-all; the solver still caps the open set at maxCards.
+      const decision = decideRecut(trigger, band, lodBand.current);
+      if (decision.skip) return;
       const prevBand = lodBand.current;
-      lodBand.current = band;
+      // Only a refine advances the band; a pan-end visibility recut leaves it untouched.
+      if (decision.mode === "refine" && decision.nextRefinedBand !== undefined) {
+        lodBand.current = decision.nextRefinedBand;
+      }
+      // The C1a fallback cuts (computeCut / computeGroupCut) are zoom-refine ONLY — they have no
+      // eviction LRU to update on a pan. A pan-end recut therefore drives just the representation
+      // path; skip the legacy paths so a pan never re-runs a zoom-shaped cut.
+      const visibilityOnly = decision.mode === "visibility";
       const vp = { w: canvas.width, h: canvas.height };
       // An expanded file pulls its symbols into the layout too, so cost it as
       // 1 + symbols; collapsed/unexpanded files are a single node. Bounding the cut on
@@ -919,6 +937,11 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         if (result.committed) l.onCut(l.groupBy, result.openSelection);
         return;
       }
+
+      // Below here are the C1a fallback cuts (representationLod off). They are zoom-refine
+      // ONLY — they carry no eviction LRU, so a pan-end recut has nothing to update in them.
+      // Stop here on a visibility-only (pan) recut so a pan never re-runs a zoom-shaped cut.
+      if (visibilityOnly) return;
 
       // Non-directory modes: run the mode-agnostic cut over the active grouping snapshot,
       // matching boxes by boxKey, and hand up the GroupLodSelection FOR that mode. (No
@@ -1025,8 +1048,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       renderSoon();
       // Debounce the recompute: one cut+rebuild after the zoom gesture settles,
       // not one per wheel tick (each rebuild reprocesses the whole base graph).
+      // A new wheel tick supersedes a pending pan recut — the gesture is now a zoom.
       clearTimeout(recutTimer);
-      recutTimer = setTimeout(recomputeCut, LOD_RECUT_DEBOUNCE_MS);
+      recutTimer = setTimeout(() => recomputeCut("wheel"), LOD_RECUT_DEBOUNCE_MS);
     };
     const onDown = (e: PointerEvent) => {
       dragging = true;
@@ -1044,6 +1068,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       moved += Math.abs(dx) + Math.abs(dy);
       vcRef.current?.set_camera(cam.current.x, cam.current.y, cam.current.scale);
       renderSoon();
+      // Debounce a PAN-end visibility/LRU recut (design Gap 8): each move resets the timer, so
+      // it fires once the pan SETTLES — updating which proxies are on-screen + the eviction LRU
+      // from the new viewport WITHOUT advancing the band (no forced deeper refinement). Without
+      // this, panning an open region off-screen never updated retention / eviction.
+      clearTimeout(recutTimer);
+      recutTimer = setTimeout(() => recomputeCut("pan"), LOD_RECUT_DEBOUNCE_MS);
     };
     const onUp = (e: PointerEvent) => {
       dragging = false;
@@ -1051,6 +1081,15 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         el.releasePointerCapture(e.pointerId);
       } catch {
         /* ignore */
+      }
+      // Pointer-up ends the gesture: always cancel any pending settle-timer (a sub-threshold
+      // jitter-drag may have scheduled one in onMove — see below — and we don't want it firing a
+      // spurious pan recut ~200ms after what the user perceives as a click). Then, only on a real
+      // pan (moved > 4px), run the pan recut NOW so retention/eviction reflect the final viewport
+      // without waiting out the debounce. A click (moved ≤ 4px) panned nothing → no recut.
+      clearTimeout(recutTimer);
+      if (moved > 4) {
+        recomputeCut("pan");
       }
       // A drag isn't a click — reset the double-click tracker so it can't pair into a double.
       if (moved > 4 || !vcRef.current) {
