@@ -19,6 +19,12 @@ import { detectCommunities } from "../layout/community";
 import { edgeWeight } from "../layout/weight";
 import { clientCatalog } from "./client-catalog";
 import { collapseClusters } from "./collapse";
+import {
+  buildProxyEdgeInputs,
+  type MaterializeCut,
+  materializeProxyScene,
+} from "./proxy-materialize";
+import type { RepresentationHierarchy } from "./representation";
 import type { DimensionCatalog, FacetKey } from "./dimensions";
 import { buildDimensionIndex, type DimensionIndex } from "./dimension-index";
 import { type FacetSelection, facetAllows, serializeFacetSelections } from "./facet-selection";
@@ -480,6 +486,42 @@ export function buildSceneStructure(
     // The post-filter visible base nodes (pre-collapse) — the projection the rep cut uses.
     visibleNodeIds: keptIds,
   };
+}
+
+/**
+ * The GENERIC proxy scene materialization wiring (design Gap 1 + P1). Given the committed
+ * representation cut (its hierarchy + selected reps) and the POST-FILTER graph the cut was
+ * built over, produce the folded GraphModel — proxy aggregate cards for committed proxies plus
+ * raw nodes whose own leaf rep is selected, with edges aggregated between active
+ * representatives. This is the authoritative P1 replacement for {@link collapseClusters}'
+ * directory/community-only absorption: it folds Directory / Community / Package / facet / None
+ * cuts UNIFORMLY (working off rep identity, not box keys or path prefixes).
+ *
+ * The post-filter graph's node order MUST match the hierarchy's node ordinals (the same
+ * `nodeIds` the rep cut was built from), so a node's ordinal is its index in `graph.nodes`.
+ * The result drops into {@link buildView}/{@link buildSceneStructure} exactly like the old
+ * collapse output — no renderer change. Pure.
+ */
+export function materializeRepresentationScene(
+  graph: GraphModel,
+  hierarchy: RepresentationHierarchy,
+  cut: MaterializeCut,
+  options: {
+    /** Post-filter visibility by node ordinal (hidden nodes are detached from the scene). */
+    visibleNode?: (ordinal: number) => boolean;
+  } = {},
+): GraphModel {
+  // node id → ordinal (its index in the hierarchy's node order == graph.nodes order).
+  const ordinalOfNode = new Map<string, number>();
+  for (let i = 0; i < graph.nodes.length; i++) ordinalOfNode.set(graph.nodes[i].id, i);
+  const edgeInputs = buildProxyEdgeInputs(graph, (id) => ordinalOfNode.get(id));
+  return materializeProxyScene({
+    hierarchy,
+    cut,
+    graph,
+    visibleNode: options.visibleNode,
+    edgeInputs,
+  });
 }
 
 /** Apply computed positions + cluster boxes to a structure, producing a renderable scene. */
