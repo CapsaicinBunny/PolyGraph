@@ -5,6 +5,12 @@ import { FILTERABLE_EDGE_KINDS } from "./visual";
 import type { FacetKey } from "./dimensions";
 import type { FacetSelection } from "./facet-selection";
 import { writeFacet } from "./facets-write";
+import {
+  mergeDescriptors,
+  STRUCTURAL_DESCRIPTORS,
+  type DimensionCatalog,
+} from "./dimensions";
+import { TS_FACET_DESCRIPTORS } from "../analyzer/facet-schema";
 import { buildSceneStructure, type SceneFilters } from "./scene";
 
 function fileNode(filePath: string) {
@@ -314,6 +320,26 @@ test("layoutInput edges carry kind, count, and a precomputed weight (Gap B)", ()
   expect(e?.kind).toBe("import");
   expect(e?.count).toBe(3);
   expect(e?.weight).toBe(edgeWeight("import", 3));
+});
+
+test("the layout signature includes catalog identity (distinct catalogs cannot collide)", () => {
+  // Two analyses can gate the SAME graph by DIFFERENT catalogs (e.g. the kernel's
+  // merged catalog on the canvas vs. the TS/JS fallback in an export). They generally
+  // produce different visible sets, so their signatures must differ — otherwise one
+  // serves the other's cached layout and filtered-out nodes reappear at (0,0).
+  const catalogA: DimensionCatalog = mergeDescriptors([STRUCTURAL_DESCRIPTORS]).catalog;
+  const catalogB: DimensionCatalog = mergeDescriptors([
+    STRUCTURAL_DESCRIPTORS,
+    TS_FACET_DESCRIPTORS,
+  ]).catalog;
+  const args = [graph, new Set<string>(), filters(), "force", "LR", new Set<string>(),
+    "directory", 1, false, null, null, false] as const;
+  const sigA = buildSceneStructure(...args, catalogA).signature;
+  const sigB = buildSceneStructure(...args, catalogB).signature;
+  expect(sigA).not.toBe(sigB);
+  // Same catalog, identical inputs → identical signature (cache hits are still possible).
+  const sigA2 = buildSceneStructure(...args, catalogA).signature;
+  expect(sigA2).toBe(sigA);
 });
 
 test("queryIds narrows the visible set and intersects with the filters", () => {

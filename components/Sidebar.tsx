@@ -124,25 +124,36 @@ function Chevron({ open }: { open: boolean }) {
 function Section({
   title,
   defaultOpen = true,
+  forceOpen = false,
   modified = false,
   action,
   children,
 }: {
   title: string;
   defaultOpen?: boolean;
+  /**
+   * Force the body open regardless of the user's manual toggle (used by the
+   * filter-search to reveal matches inside an otherwise-collapsed section). React
+   * only reads `defaultOpen` at mount, so a section that becomes relevant *after*
+   * mount — e.g. when a query matches a value living in a collapsed, ineligible
+   * dimension — needs this override to actually open. The user's manual state is
+   * preserved underneath and restored once the override clears.
+   */
+  forceOpen?: boolean;
   modified?: boolean;
   action?: ReactNode;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const toggle = () => setOpen((o) => !o);
+  const effectiveOpen = open || forceOpen;
   return (
     <Box>
       <Flex align="center" justify="space-between" gap="2">
         <HStack
           role="button"
           tabIndex={0}
-          aria-expanded={open}
+          aria-expanded={effectiveOpen}
           onClick={toggle}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
@@ -157,7 +168,7 @@ function Section({
           color="fg.muted"
           _hover={{ color: "fg" }}
         >
-          <Chevron open={open} />
+          <Chevron open={effectiveOpen} />
           <Text
             fontSize="11px"
             fontWeight="semibold"
@@ -179,7 +190,7 @@ function Section({
         </HStack>
         {action}
       </Flex>
-      {open && (
+      {effectiveOpen && (
         <Box mt="2.5" mb="1">
           {children}
         </Box>
@@ -327,14 +338,20 @@ function FacetSection({
   const allValues = dim.values.map((v) => v.value);
   const allOn = allValues.every((v) => valueEnabled(enabledFacets, dim.key, v));
   // A dominant/single-bucket (ineligible) dimension is collapsed by default so it
-  // doesn't clutter the panel — but stays available and searchable.
-  const defaultOpen = dim.stats.eligible || match.length > 0;
+  // doesn't clutter the panel. An active filter-search must still reveal a match that
+  // lives inside such a collapsed section, so force it open while searching (`shown`
+  // is already narrowed to the matches; this section only renders at all when it has
+  // ≥1). `defaultOpen` stays the honest mount-time state; `forceOpen` is the dynamic
+  // search override (a one-time `useState(defaultOpen)` can't react to a later query).
+  const defaultOpen = dim.stats.eligible;
+  const forceOpen = match.length > 0;
   const modified = !allOn;
 
   return (
     <Section
       title={dim.label}
       defaultOpen={defaultOpen}
+      forceOpen={forceOpen}
       modified={modified}
       action={
         <HideAllToggle

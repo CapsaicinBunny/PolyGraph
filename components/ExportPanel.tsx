@@ -20,6 +20,7 @@ import {
   type SceneFilters,
 } from "@/lib/graph/scene";
 import type { GraphModel } from "@/lib/graph/types";
+import type { DimensionCatalog } from "@/lib/graph/dimensions";
 import { layoutCacheGet } from "@/lib/layout";
 import { toDOT, toGraphML, toMermaid, toPolyGraphJSON } from "@/lib/export/graph-formats";
 import { boundsOf, sceneToSVG } from "@/lib/export/svg";
@@ -43,6 +44,17 @@ interface ExportPanelProps {
   graph: GraphModel;
   insights: Insight[];
   state: ExplorerWorkspaceState;
+  /**
+   * The active dimension catalog (the same one the canvas gates by). REQUIRED so
+   * the export's scene gate applies the identical facet filtering — without it the
+   * export falls back to the TS/JS catalog and provider-facet exclusions
+   * (rust.visibility, go.exported, …) are silently dropped from the output.
+   */
+  catalog: DimensionCatalog;
+  /** Restrict to these base-node ids (query "filter" mode), mirroring the canvas. */
+  queryIds?: Set<string> | null;
+  /** Package/Workspace projection: the canvas skips the facet gates, so the export must too. */
+  projected?: boolean;
   onApplyWorkspace: (s: ExplorerWorkspaceState) => void;
   onClose: () => void;
 }
@@ -81,6 +93,9 @@ export function ExportPanel({
   graph,
   insights,
   state,
+  catalog,
+  queryIds = null,
+  projected = false,
   onApplyWorkspace,
   onClose,
 }: ExportPanelProps) {
@@ -105,6 +120,12 @@ export function ExportPanel({
       state.density,
       state.communityCollapse,
       state.focusedIds,
+      queryIds,
+      projected,
+      // Gate by the live catalog so provider-facet exclusions match the canvas;
+      // its identity is also folded into structure.signature, so a different
+      // catalog can't collide with the canvas's layout-cache entry.
+      catalog,
     );
     const cached = layoutCacheGet(structure.signature);
     return cached ? applyPositions(structure, cached.positions, cached.clusters) : null;

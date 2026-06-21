@@ -151,6 +151,27 @@ export function graphKeyFor(graph: GraphModel): string {
   return id;
 }
 
+let catalogCounter = 0;
+const catalogIds = new WeakMap<DimensionCatalog, string>();
+
+/**
+ * Stable per-catalog id folded into the layout signature. Two analyses can gate
+ * the SAME graph by different catalogs (e.g. the kernel's merged catalog on the
+ * canvas vs. the TS/JS fallback) and produce different visible node sets; without
+ * a catalog component the signatures would collide and one would serve the other's
+ * cached positions (filtered-out nodes reappearing at 0,0). The TS/JS fallback is a
+ * stable singleton, so this is "1" everywhere on the fallback path.
+ */
+export function catalogKeyFor(catalog: DimensionCatalog): string {
+  let id = catalogIds.get(catalog);
+  if (!id) {
+    catalogCounter += 1;
+    id = String(catalogCounter);
+    catalogIds.set(catalog, id);
+  }
+  return id;
+}
+
 function ser<T>(set: Set<T>): string {
   return [...set].map(String).sort().join(",");
 }
@@ -187,7 +208,23 @@ export function buildSceneStructure(
   // The interned, columnar index over (graph, catalog) — cached per pair so a
   // filter toggle never re-interns. The gate reads node values by ordinal.
   const index = indexFor(graph, catalog);
-  const gatedDims = gatedFilterDims(catalog);
+  // Prune the gate to the dimensions that can actually hide a node. An unconstrained
+  // selection (no entry / mode "all" / empty "exclude") always passes via facetAllows,
+  // so resolving every node's interned values for it is wasted work — UNLESS the
+  // dimension's MissingPolicy.filter is "exclude", where a value-less node is hidden
+  // even with everything enabled (so it must stay gated to preserve that outcome). On
+  // the default-filter path (and throughout camera/LOD interaction, which re-runs this
+  // whole O(nodes) pass) nothing is constrained, so the per-node loop drops to ~zero
+  // work. Behavior-identical to gating every dim.
+  const gatedDims = gatedFilterDims(catalog).filter((key) => {
+    const sel = enabledFacets.get(key);
+    const constrained =
+      sel !== undefined &&
+      sel.mode !== "all" &&
+      !(sel.mode === "exclude" && sel.values.size === 0);
+    if (constrained) return true;
+    return index.descriptor(key)?.missing.filter === "exclude";
+  });
 
   // In focus mode, also surface the parent file of any focused *symbol* so the symbols
   // have a container to nest in. Without it the view drops symbols whose file isn't
@@ -276,6 +313,9 @@ export function buildSceneStructure(
 
   const signature = [
     graphKeyFor(graph),
+    // Catalog identity: a different gating catalog yields a different visible set,
+    // so it must not collide with another catalog's cached layout for this graph.
+    `cat:${catalogKeyFor(catalog)}`,
     algorithm,
     direction,
     `x${showExternal ? 1 : 0}`,

@@ -199,6 +199,47 @@ describe("Sidebar dynamic facet sections", () => {
     expect(screen.queryByText("Role 2")).toBeNull();
   });
 
+  test("filter-search reveals a value that lives only in a collapsed (ineligible) section", () => {
+    // An ineligible dimension is collapsed by default. Typing a query that matches one
+    // of ITS values must force the section open so the chip is actually visible — the
+    // section is mounted-but-closed, so a one-time useState(defaultOpen) would hide it.
+    // Pad with a second eligible dimension so the >=10-value search box is offered.
+    const dims = [
+      dim(
+        "env",
+        "Environment",
+        [
+          { value: "server", label: "Server", count: 100 },
+          { value: "client", label: "Client", count: 1 },
+        ],
+        { eligible: false, largestBucketFraction: 0.99 },
+      ),
+      dim(
+        "role",
+        "Role",
+        Array.from({ length: 10 }, (_, i) => ({
+          value: `r${i}`,
+          label: `Role ${i}`,
+          count: i + 1,
+        })),
+      ),
+    ];
+    render(
+      <Provider>
+        <Sidebar {...baseProps(dims)} />
+      </Provider>,
+    );
+    // Collapsed up-front: the ineligible Environment value isn't shown.
+    expect(screen.queryByText("Server")).toBeNull();
+    const box = screen.getByPlaceholderText("Filter values…");
+    fireEvent.change(box, { target: { value: "Server" } });
+    // The match inside the collapsed section is now revealed.
+    expect(screen.getByText("Server")).toBeDefined();
+    // Clearing the query collapses it again (the manual/eligibility state is restored).
+    fireEvent.change(box, { target: { value: "" } });
+    expect(screen.queryByText("Server")).toBeNull();
+  });
+
   test("renders nothing for facets when no dimensions are present (empty graph)", () => {
     render(
       <Provider>

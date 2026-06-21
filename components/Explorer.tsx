@@ -816,6 +816,9 @@ export function Explorer() {
           <ExportPanel
             graph={graph}
             insights={insights}
+            catalog={catalog}
+            queryIds={queryIds}
+            projected={projected}
             state={{
               projectPath,
               selectedId,
