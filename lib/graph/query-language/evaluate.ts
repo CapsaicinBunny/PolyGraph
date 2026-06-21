@@ -230,7 +230,9 @@ function matchesPredicate(
     case "runtime":
       return (node.runtimes ?? []).some((r) => r.toLowerCase() === v);
     case "category":
-      return node.category?.toLowerCase() === v;
+      // `category` defaults to "feature" (the ubiquitous value is never stored on
+      // the legacy field), so absence resolves to it — matching the index path.
+      return (node.category ?? "feature").toLowerCase() === v;
     case "role":
       return node.role?.toLowerCase() === v;
     case "package":
