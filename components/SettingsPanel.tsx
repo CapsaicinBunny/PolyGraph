@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Box, Button, Flex, HStack, Stack, Text, chakra } from "@chakra-ui/react";
 import { saveTextFile } from "@/lib/client/download";
 import { type Level, LEVELS } from "@/lib/graph/levels/types";
@@ -39,6 +40,22 @@ const DETAIL_LEVELS: { value: number; label: string }[] = [
   { value: 80, label: "Detailed" },
   { value: 50, label: "Max" },
 ];
+// The LOD-detail slider spans openPx [LOD_PX_MAX, LOD_PX_SPARSE]. Its 0..100 "detail" scale maps
+// INVERSELY — 0 = Sparse (high openPx, left), 100 = Max detail (low openPx, right) — so dragging
+// right shows more. The two maps are shared so the displayed value and the committed openPx can't
+// drift apart.
+const LOD_PX_SPARSE = 240;
+const LOD_PX_MAX = 50;
+const detailFromOpenPx = (px: number): number =>
+  Math.round(((LOD_PX_SPARSE - px) / (LOD_PX_SPARSE - LOD_PX_MAX)) * 100);
+const openPxFromDetail = (d: number): number =>
+  Math.round(LOD_PX_SPARSE - (d / 100) * (LOD_PX_SPARSE - LOD_PX_MAX));
+// Nearest named level, for the live caption.
+function lodDetailLabel(openPx: number): string {
+  return DETAIL_LEVELS.reduce((best, d) =>
+    Math.abs(d.value - openPx) < Math.abs(best.value - openPx) ? d : best,
+  ).label;
+}
 
 interface SettingsPanelProps {
   level: Level;
@@ -159,6 +176,17 @@ export function SettingsPanel({
   onLodOverlay,
   onClose,
 }: SettingsPanelProps) {
+  // Local drag state so the slider thumb tracks smoothly, but the openPx commit (which re-cuts +
+  // re-lays-out the scene) fires only on release — committing on every drag step would relayout
+  // per step. null ⇒ not dragging ⇒ derive the thumb position from the live prop.
+  const [dragDetail, setDragDetail] = useState<number | null>(null);
+  const detail = dragDetail ?? detailFromOpenPx(lodOpenPx);
+  const commitDetail = () => {
+    if (dragDetail != null) {
+      onLodOpenPx(openPxFromDetail(dragDetail));
+      setDragDetail(null);
+    }
+  };
   return (
     <Stack
       w="260px"
@@ -257,19 +285,31 @@ export function SettingsPanel({
 
       <Box>
         <GroupLabel title="LOD detail" />
-        <HStack gap="2">
-          {DETAIL_LEVELS.map((d) => (
-            <Choice
-              key={d.label}
-              active={lodOpenPx === d.value}
-              onClick={() => onLodOpenPx(d.value)}
-            >
-              {d.label}
-            </Choice>
-          ))}
-        </HStack>
+        <Flex align="center" gap="3">
+          <Text fontSize="11px" color="fg.muted" flexShrink="0">
+            Sparse
+          </Text>
+          <chakra.input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            aria-label="LOD detail"
+            value={detail}
+            onChange={(e) => setDragDetail(Number(e.currentTarget.value))}
+            onPointerUp={commitDetail}
+            onKeyUp={commitDetail}
+            onBlur={commitDetail}
+            flex="1"
+            cursor="pointer"
+            style={{ accentColor: "#4f8ff7" }}
+          />
+          <Text fontSize="11px" color="fg.muted" flexShrink="0">
+            Max
+          </Text>
+        </Flex>
         <Text fontSize="xs" color="fg.muted" mt="2">
-          How readily groups expand into detail as you zoom.
+          How readily groups expand into detail as you zoom — currently {lodDetailLabel(lodOpenPx)}.
         </Text>
       </Box>
 
