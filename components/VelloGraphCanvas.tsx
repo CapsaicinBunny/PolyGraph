@@ -68,7 +68,13 @@ import { useScene } from "./useScene";
 // Adaptive-LOD tuning. Conservative starting values — a directory opens into its
 // children once its on-screen height passes OPEN_PX, and the cut is capped at
 // MAX_CARDS cards. These want desktop calibration (see docs/SCALE-100K.md).
-const LOD_OPEN_PX = 240;
+// On-screen height (px) at which a proxy becomes eligible to refine (open into its children).
+// LOWER = more sensitive = less aggressive combining (proxies open at a smaller on-screen size,
+// so more individual detail shows at a given zoom). Lowered 240→120 after desktop testing: at the
+// fitted camera a top-level group projects to ~100-110px, so the old 240 kept the whole graph
+// collapsed to its bootstrap cards ("combining everything"); 120 lets those top groups open while
+// the finite card/layout budget + hysteresis still bound the result (no flood, no oscillation).
+const LOD_OPEN_PX = 120;
 // The card budgets are sourced from the ONE finite LOD_BUDGET (P4 budget-consolidation):
 //   maxCards   = LOD_BUDGET.targetCards (the soft antichain-width target the cut steers toward)
 //   nodeBudget = LOD_BUDGET.hardCards   (the finite ceiling on a forced open / expand-all)
@@ -392,6 +398,13 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     for (let i = 0; i < graph.nodes.length; i++) m.set(graph.nodes[i].id, i);
     return m;
   }, [graph.nodes]);
+  // The most recent representation-cut result (Phase C1b), written by recomputeCut. Read on the
+  // render side to map a SELECTED HIDDEN node to its active proxy's aggregate card so the selection
+  // outline lands on the visible proxy. Holds the hierarchy + runtimeCut for the representativeOf
+  // walk. MUST be declared before `effectiveSelectionId` below: that memo reads `lastRep.current`
+  // at compute time (during render), so a later `useRef` is a temporal-dead-zone crash ("Cannot
+  // access 'lastRep' before initialization") the moment a folded node is selected.
+  const lastRep = useRef<RepLodResult | null>(null);
   const effectiveSelectionId = useMemo(() => {
     if (!selectedId || sceneIds.has(selectedId)) return selectedId ?? undefined;
     const rep = lastRep.current;
@@ -509,11 +522,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   };
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The most recent representation-cut result (Phase C1b), written by recomputeCut. Read on
-  // the render side to map a SELECTED HIDDEN node to its active proxy's aggregate card so the
-  // selection outline lands on the visible proxy (spec: "a selected hidden node highlights
-  // its active proxy"). Holds the hierarchy + runtimeCut for the representativeOf walk.
-  const lastRep = useRef<RepLodResult | null>(null);
+  // (`lastRep` is declared earlier, above `effectiveSelectionId`, which reads it at compute time.)
 
   // A handle to the mount-effect's `recomputeCut`, so effects OUTSIDE the mount effect (e.g. the
   // scene-ready effect that fires the FIRST cut when a new scene lands) can trigger a recut without
