@@ -135,6 +135,12 @@ export interface GraphViewProps {
   /** Adaptive level-of-detail: recompute the collapsed cut as the camera zooms. */
   adaptiveLod?: boolean;
   /**
+   * Live representation-LOD refine-gate openPx (px). Lower = proxies refine at a smaller
+   * on-screen size = less combining. Read at recut time via the `lod` ref; falls back to
+   * LOD_OPEN_PX when undefined. Adjustable without a rebuild.
+   */
+  lodOpenPx?: number;
+  /**
    * Called when the adaptive cut changes with the GroupLodSelection — the set of OPEN
    * namespaced group ids — FOR the active grouping mode (the modeKey is the first arg, so
    * the camera state stays per-mode). It updates only the selection layer of the
@@ -308,6 +314,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     onSelectEdge,
     minimap = true,
     adaptiveLod,
+    lodOpenPx,
     onCut,
     onCommunityOf,
     groupingSnapshot,
@@ -605,6 +612,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   }, [groupBy, graph]);
   const lod = useRef<{
     adaptiveLod?: boolean;
+    lodOpenPx?: number;
     onCut?: (modeKey: string, selection: Set<GroupId>) => void;
     dirTree: DirNode;
     scene: Scene;
@@ -624,6 +632,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     visibleNodeIds: Set<string>;
   }>({
     adaptiveLod,
+    lodOpenPx,
     onCut,
     dirTree,
     scene,
@@ -639,6 +648,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     visibleNodeIds,
   });
   lod.current.adaptiveLod = adaptiveLod;
+  lod.current.lodOpenPx = lodOpenPx;
   lod.current.onCut = onCut;
   lod.current.dirTree = dirTree;
   lod.current.scene = scene;
@@ -1010,7 +1020,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
           liveExtent,
           options: {
             ...DEFAULT_REP_LOD_OPTIONS,
-            openPx: LOD_OPEN_PX,
+            openPx: l.lodOpenPx ?? LOD_OPEN_PX,
             maxCards: LOD_MAX_CARDS,
             nodeBudget: LOD_NODE_BUDGET,
             nodeCost,
@@ -1436,8 +1446,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         .sort()
         .join(",");
     }
-    return `${fitSignature ?? ""}::${intentSig}`;
-  }, [fitSignature, intent]);
+    // `lodOpenPx` is the LIVE refine-gate (a Settings control, NOT part of fitSignature). It
+    // changes the cut WITHOUT a graph/filter/layout change, so fold it into the gate here —
+    // otherwise a new detail level only takes effect on the next unrelated wheel/pan gesture
+    // (the recut reads l.lodOpenPx from the ref, but nothing re-fires the recut on the change).
+    return `${fitSignature ?? ""}::${intentSig}::lod=${lodOpenPx ?? ""}`;
+  }, [fitSignature, intent, lodOpenPx]);
 
   const lastCutInputSig = useRef<string | null>(null);
   useEffect(() => {

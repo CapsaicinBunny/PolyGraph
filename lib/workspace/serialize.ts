@@ -31,6 +31,7 @@ export function captureWorkspace(state: ExplorerWorkspaceState): Workspace {
       direction: state.direction,
       groupBy: state.groupBy,
       density: state.density,
+      lodOpenPx: state.lodOpenPx,
       edgeRouting: state.edgeRouting,
       communityCollapse: state.communityCollapse,
     },
@@ -60,6 +61,8 @@ export function restoreWorkspace(ws: Workspace): ExplorerWorkspaceState {
     direction: ws.layout.direction,
     groupBy: ws.layout.groupBy,
     density: ws.layout.density,
+    // Old workspaces predate the LOD-detail control — restore the shipped 120 default.
+    lodOpenPx: ws.layout.lodOpenPx ?? 120,
     edgeRouting: ws.layout.edgeRouting,
     communityCollapse: ws.layout.communityCollapse,
     ...(ws.camera ? { camera: ws.camera } : {}),
@@ -155,6 +158,10 @@ function validateShape(ws: Partial<Workspace>): void {
     if (typeof l[key] !== "string") throw new Error(`layout.${key} must be a string`);
   }
   if (typeof l.density !== "number") throw new Error("layout.density must be a number");
+  // Optional (added with the LOD-detail control); only a present-but-wrong-typed value is invalid.
+  if (l.lodOpenPx !== undefined && typeof l.lodOpenPx !== "number") {
+    throw new Error("layout.lodOpenPx must be a number");
+  }
   if (typeof l.communityCollapse !== "boolean") {
     throw new Error("layout.communityCollapse must be a boolean");
   }

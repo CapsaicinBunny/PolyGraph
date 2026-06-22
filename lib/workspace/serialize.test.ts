@@ -22,6 +22,7 @@ const sample = (): ExplorerWorkspaceState => ({
   direction: "TB",
   groupBy: "community",
   density: 1.5,
+  lodOpenPx: 80,
   edgeRouting: "orthogonal",
   communityCollapse: true,
   camera: { x: 10, y: 20, scale: 1.2 },
@@ -43,6 +44,7 @@ describe("capture / restore round-trip", () => {
     expect(restored.enabledFacets.get("category")?.mode).toBe("exclude");
     expect(restored.algorithm).toBe(state.algorithm);
     expect(restored.density).toBe(state.density);
+    expect(restored.lodOpenPx).toBe(state.lodOpenPx);
     expect(restored.communityCollapse).toBe(true);
     expect(restored.camera).toEqual(state.camera);
     expect(restored.pinnedNodes).toEqual(state.pinnedNodes);
@@ -162,6 +164,11 @@ describe("back-compat: legacy workspaces (named enabled* arrays) still load", ()
     // structural folder/language still restore as before
     expect([...state.enabledFolders]).toEqual(["src"]);
     expect([...state.enabledLanguages]).toEqual(["TS"]);
+  });
+
+  test("a legacy workspace with no lodOpenPx restores the 120 default", () => {
+    const state = restoreWorkspace(parseWorkspace(JSON.stringify(legacyWorkspace)));
+    expect(state.lodOpenPx).toBe(120);
   });
 
   test("a legacy workspace with a malformed named array is rejected", () => {

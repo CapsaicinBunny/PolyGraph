@@ -40,6 +40,12 @@ export interface WorkspaceLayout {
   direction: LayoutDirection;
   groupBy: GroupBy;
   density: number;
+  /**
+   * The live representation-LOD refine-gate openPx (px). Optional: workspaces saved before the
+   * LOD-detail control predate this field, so a load with it absent restores the shipped 120
+   * default. No WORKSPACE_VERSION bump — an absent value is the back-compat default, not invalid.
+   */
+  lodOpenPx?: number;
   edgeRouting: EdgeRouting;
   communityCollapse: boolean;
 }
@@ -89,6 +95,8 @@ export interface ExplorerWorkspaceState {
   direction: LayoutDirection;
   groupBy: GroupBy;
   density: number;
+  /** Live representation-LOD refine-gate openPx (px); defaults to 120 for old workspaces. */
+  lodOpenPx: number;
   edgeRouting: EdgeRouting;
   communityCollapse: boolean;
   camera?: CameraState;

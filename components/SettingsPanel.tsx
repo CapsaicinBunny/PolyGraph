@@ -30,12 +30,24 @@ const DENSITIES: { value: number; label: string }[] = [
   { value: 0.6, label: "Dense" },
 ];
 
+// LOD detail = the representation-LOD refine-gate openPx, set LIVE (no rebuild). Higher detail =
+// lower openPx = proxies refine at a smaller on-screen size = less combining. Normal=120 matches
+// the Explorer default so the shipped state has an exact level.
+const DETAIL_LEVELS: { value: number; label: string }[] = [
+  { value: 240, label: "Sparse" },
+  { value: 120, label: "Normal" },
+  { value: 80, label: "Detailed" },
+  { value: 50, label: "Max" },
+];
+
 interface SettingsPanelProps {
   level: Level;
   onLevel: (v: Level) => void;
   packageCount: number;
   density: number;
   onDensity: (v: number) => void;
+  lodOpenPx: number;
+  onLodOpenPx: (v: number) => void;
   minimap: boolean;
   onMinimap: (v: boolean) => void;
   edgeRouting: "curved" | "orthogonal";
@@ -135,6 +147,8 @@ export function SettingsPanel({
   packageCount,
   density,
   onDensity,
+  lodOpenPx,
+  onLodOpenPx,
   minimap,
   onMinimap,
   edgeRouting,
@@ -238,6 +252,24 @@ export function SettingsPanel({
         </HStack>
         <Text fontSize="xs" color="fg.muted" mt="2">
           Node spacing for the Smart layout.
+        </Text>
+      </Box>
+
+      <Box>
+        <GroupLabel title="LOD detail" />
+        <HStack gap="2">
+          {DETAIL_LEVELS.map((d) => (
+            <Choice
+              key={d.label}
+              active={lodOpenPx === d.value}
+              onClick={() => onLodOpenPx(d.value)}
+            >
+              {d.label}
+            </Choice>
+          ))}
+        </HStack>
+        <Text fontSize="xs" color="fg.muted" mt="2">
+          How readily groups expand into detail as you zoom.
         </Text>
       </Box>
 

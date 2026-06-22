@@ -154,6 +154,7 @@ export function Explorer() {
   const [direction, setDirection] = useState<LayoutDirection>("LR");
   const [groupBy, setGroupBy] = useState<GroupBy>("directory");
   const [density, setDensity] = useState(1);
+  const [lodOpenPx, setLodOpenPx] = useState(120);
   const [showExternal, setShowExternal] = useState(false);
   const [enabledFolders, setEnabledFolders] = useState<Set<string>>(() => new Set());
   const [enabledLanguages, setEnabledLanguages] = useState<Set<string>>(() => new Set());
@@ -704,9 +705,9 @@ export function Explorer() {
   // looking at — not just the throw site. Cheap; runs only when one of these changes.
   useEffect(() => {
     setDiagnosticContext({
-      view: { level, groupBy, algorithm, direction, density, showExternal, edgeRouting },
+      view: { level, groupBy, algorithm, direction, density, lodOpenPx, showExternal, edgeRouting },
     });
-  }, [level, groupBy, algorithm, direction, density, showExternal, edgeRouting]);
+  }, [level, groupBy, algorithm, direction, density, lodOpenPx, showExternal, edgeRouting]);
 
   // Switching levels clears any focus/selection (ids differ across projections) and,
   // for the file/symbol levels, sets a sensible expand state.
@@ -749,6 +750,8 @@ export function Explorer() {
       setDirection(s.direction);
       setGroupBy(s.groupBy);
       setDensity(s.density);
+      // restoreWorkspace defaults this to 120 for old workspaces that predate the LOD-detail control.
+      setLodOpenPx(s.lodOpenPx);
       setEdgeRouting(s.edgeRouting);
       setCommunityCollapse(s.communityCollapse);
     },
@@ -1074,6 +1077,7 @@ export function Explorer() {
             onSelectEdge={handleSelectEdge}
             minimap={minimap}
             adaptiveLod={adaptiveLod}
+            lodOpenPx={lodOpenPx}
             onCut={handleCut}
             onCommunityOf={handleCommunityOf}
             groupingSnapshot={cutGrouping?.snapshot ?? null}
@@ -1103,6 +1107,8 @@ export function Explorer() {
             packageCount={manifests.length}
             density={density}
             onDensity={setDensity}
+            lodOpenPx={lodOpenPx}
+            onLodOpenPx={setLodOpenPx}
             minimap={minimap}
             onMinimap={setMinimap}
             edgeRouting={edgeRouting}
@@ -1144,6 +1150,7 @@ export function Explorer() {
               direction,
               groupBy,
               density,
+              lodOpenPx,
               edgeRouting,
               communityCollapse,
             }}
