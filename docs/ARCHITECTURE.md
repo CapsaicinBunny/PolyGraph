@@ -69,10 +69,13 @@ A napi-rs addon (`analyze(grammar, query, importStyle, filesJson) → json`). Bu
 committed so the app runs without a Rust toolchain. It's loaded via `process.dlopen` by absolute
 path (`lib/kernel/treesitter/core.ts`) — not `require`, which webpack would try to bundle.
 
-- Runtime: **tree-sitter 0.25** (supports grammar ABI 13–15, so current maintained grammars are
+- Runtime: **tree-sitter 0.26** (supports grammar ABI 13–15, so current maintained grammars are
   drop-in via `LANGUAGE.into()`).
-- A grammar must depend on `tree-sitter-language` (version-agnostic). Grammars with a direct
-  `tree-sitter` dependency conflict with the pinned runtime.
+- A grammar must expose its `LANGUAGE` through `tree-sitter-language` (version-agnostic). Every
+  published grammar crate we use declares `tree-sitter` itself only as a **dev** dependency,
+  which Cargo never builds into our graph — so bumping the runtime here does not require
+  bumping them. A grammar declaring `tree-sitter` as a _normal_ dependency would pull in a
+  second runtime copy and is not usable.
 - WebAssembly text (`.wat`) has no published crate, so the grammar's generated `parser.c` is
   **vendored** in `analyzer-core/vendor/wat/` and compiled by `build.rs` via `cc`.
 
