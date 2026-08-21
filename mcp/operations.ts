@@ -1,4 +1,4 @@
-// The eight PolyGraph operations the MCP tools expose, returning structured data.
+// The ten PolyGraph operations the MCP tools expose, returning structured data.
 // Deliberately free of any MCP/SDK types so they're unit-testable directly against
 // a fixture; mcp/server.ts wraps each one as a tool.
 
@@ -8,9 +8,11 @@ import { type ScanResult, scanRevision, scanTarget, WORKING_TREE } from "../lib/
 import { loadConfigFile } from "../lib/config/load";
 import { diffGraphs } from "../lib/diff/diff";
 import { analyzeInsights, unresolvedToInsights } from "../lib/graph/insights";
+import { blastRadius, whyConnected } from "../lib/graph/query";
 import { runQuery } from "../lib/graph/query-language";
 import type { GraphNode } from "../lib/graph/types";
 import { evaluate } from "../lib/rules/engine";
+import { toSarifString } from "../lib/rules/sarif";
 import type { HistogramSummary } from "../lib/telemetry";
 import { getScan, rootKey } from "./cache";
 import { type BriefNode, briefNode, edgeConfidence, errMsg, histogram } from "./format";
@@ -19,6 +21,11 @@ import { telemetry } from "./telemetry";
 const LIST_CAP = 100;
 const EDGE_CAP = 50;
 const NODE_CAP = 30;
+
+/** One actionable message for every "that id isn't in the graph" case. */
+function unknownNodeMessage(id: string): string {
+  return `No node with id "${id}". Discover ids with polygraph_query — e.g. {"query":"path:**/<file>"} or {"query":"kind:file"} — then use a returned node's id.`;
+}
 
 // Result types below are `type` aliases, not interfaces: the MCP SDK's
 // `structuredContent` requires assignability to `{ [k: string]: unknown }`, which
@@ -68,24 +75,51 @@ export type QueryNodes = {
   query: string;
   matchCount: number;
   returned: number;
+  /** Where this page started, and whether more results follow it. */
+  offset: number;
+  hasMore: boolean;
   empty: boolean;
   error?: string;
   nodes: BriefNode[];
 };
 
-export async function queryNodes(path: string, query: string, limit = 50): Promise<QueryNodes> {
+export async function queryNodes(
+  path: string,
+  query: string,
+  limit = 50,
+  offset = 0,
+): Promise<QueryNodes> {
   const d = await getScan(path);
   const r = runQuery(d.graph, query);
   if (r.error) {
-    return { query, matchCount: 0, returned: 0, empty: r.empty, error: r.error, nodes: [] };
+    return {
+      query,
+      matchCount: 0,
+      returned: 0,
+      offset,
+      hasMore: false,
+      empty: r.empty,
+      error: r.error,
+      nodes: [],
+    };
   }
   const byId = new Map(d.graph.nodes.map((n) => [n.id, n]));
-  const nodes = [...r.nodeIds]
+  // Sorted by id so paging is stable: without a total order, two pages could
+  // overlap or skip nodes as the underlying Set iteration order shifts.
+  const matched = [...r.nodeIds]
     .map((id) => byId.get(id))
     .filter((n): n is GraphNode => n !== undefined)
-    .slice(0, limit)
-    .map(briefNode);
-  return { query, matchCount: r.nodeIds.size, returned: nodes.length, empty: r.empty, nodes };
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const nodes = matched.slice(offset, offset + limit).map(briefNode);
+  return {
+    query,
+    matchCount: r.nodeIds.size,
+    returned: nodes.length,
+    offset,
+    hasMore: offset + nodes.length < matched.length,
+    empty: r.empty,
+    nodes,
+  };
 }
 
 // --- node -------------------------------------------------------------------
@@ -113,11 +147,7 @@ export type NodeDetail = {
 export async function nodeDetail(path: string, id: string): Promise<NodeDetail> {
   const d = await getScan(path);
   const node = d.graph.nodes.find((n) => n.id === id);
-  if (!node) {
-    throw new Error(
-      `No node with id "${id}". Discover ids with polygraph_query — e.g. {"query":"path:**/<file>"} or {"query":"kind:file"} — then use a returned node's id.`,
-    );
-  }
+  if (!node) throw new Error(unknownNodeMessage(id));
   const labelById = new Map(d.graph.nodes.map((n) => [n.id, n.label]));
   const out = d.graph.edges.filter((e) => e.source === id);
   const inc = d.graph.edges.filter((e) => e.target === id);
@@ -185,9 +215,15 @@ export type CheckResult = {
     filePath: string;
     line: number;
   }[];
+  /** SARIF 2.1.0 log, only when `format: "sarif"` was requested (for CI upload). */
+  sarif?: string;
 };
 
-export async function checkRules(path: string, configPath?: string): Promise<CheckResult> {
+export async function checkRules(
+  path: string,
+  configPath?: string,
+  format: "json" | "sarif" = "json",
+): Promise<CheckResult> {
   const cfg = configPath ?? join(rootKey(path), ".polygraph.yml");
   const config = await loadConfigFile(cfg).catch((err: unknown) => {
     throw new Error(
@@ -209,6 +245,7 @@ export async function checkRules(path: string, configPath?: string): Promise<Che
       filePath: v.location.filePath,
       line: v.location.line,
     })),
+    ...(format === "sarif" ? { sarif: toSarifString(violations) } : {}),
   };
 }
 
@@ -383,4 +420,64 @@ export function logs(action: LogsAction = "tail", limit = 50): LogsResult {
     return { ...base, action, events };
   }
   return { ...base, action }; // status / enable / disable / clear
+}
+
+// --- impact (blast radius) ---------------------------------------------------
+
+export type ImpactResult = {
+  id: string;
+  label: string;
+  /** Transitive dependents — everything that could break if `id` changes. */
+  total: number;
+  byPackage: Record<string, number>;
+  byKind: Record<string, number>;
+  topFiles: { file: string; affected: number }[];
+};
+
+/** "What breaks if I change this?" — the transitive dependent set, grouped. */
+export async function impactOf(path: string, id: string): Promise<ImpactResult> {
+  const d = await getScan(path);
+  const node = d.graph.nodes.find((n) => n.id === id);
+  if (!node) throw new Error(unknownNodeMessage(id));
+  const b = blastRadius(d.graph, id);
+  return {
+    id,
+    label: node.label,
+    total: b.total,
+    byPackage: b.byPackage,
+    byKind: b.byKind,
+    topFiles: Object.entries(b.byFile)
+      .sort((a, z) => z[1] - a[1] || (a[0] < z[0] ? -1 : 1))
+      .slice(0, NODE_CAP)
+      .map(([file, affected]) => ({ file, affected })),
+  };
+}
+
+// --- path (how does A reach B?) ----------------------------------------------
+
+export type PathResult = {
+  from: string;
+  to: string;
+  connected: boolean;
+  /** Number of edges traversed; 0 when `from` === `to` or unconnected. */
+  hops: number;
+  path: { id: string; label: string }[];
+  edges: { source: string; target: string; kind: string }[];
+};
+
+/** Explain the shortest dependency path from one node to another. */
+export async function pathBetween(path: string, from: string, to: string): Promise<PathResult> {
+  const d = await getScan(path);
+  const byId = new Map(d.graph.nodes.map((n) => [n.id, n]));
+  for (const id of [from, to]) if (!byId.has(id)) throw new Error(unknownNodeMessage(id));
+  const c = whyConnected(d.graph, from, to);
+  if (!c) return { from, to, connected: false, hops: 0, path: [], edges: [] };
+  return {
+    from,
+    to,
+    connected: true,
+    hops: Math.max(0, c.path.length - 1),
+    path: c.path.map((id) => ({ id, label: byId.get(id)?.label ?? id })),
+    edges: c.edges,
+  };
 }

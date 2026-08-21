@@ -11,16 +11,18 @@ first `polygraph_scan` does the work and follow-up tools are fast.
 
 ## Tools
 
-| Tool                 | What it does                                                                                                                                                                |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `polygraph_scan`     | Analyze a project directory → graph summary (file/node/edge counts, kind histograms, edge-confidence mix, packages). Run this first.                                        |
-| `polygraph_query`    | Run a [PolyGraph query](../lib/graph/query-language) (`kind:class`, `path:**/hooks/*.ts`, `incoming > 10`, `environment:client -> environment:server`, …) → matching nodes. |
-| `polygraph_node`     | A node's attributes + its dependencies (outgoing) and dependents (incoming), with edge kind, count, and confidence.                                                         |
-| `polygraph_insights` | Architectural findings: cycles, fan-in/out outliers, bottlenecks, orphans, client→server imports, undeclared deps, deep chains, instability, ambiguous/unresolved refs.     |
-| `polygraph_check`    | Evaluate `.polygraph.yml` architecture rules → violations.                                                                                                                  |
-| `polygraph_diff`     | Structural diff of the graph between two git revisions (or a revision vs. the working tree).                                                                                |
-| `polygraph_read`     | Read the source of a scanned file (optional line range). Restricted to files under the scanned root — see Safety below.                                                     |
-| `polygraph_logs`     | Read & control the live telemetry bus: `tail` events, `metrics` (per-tool timing), `status`, and `enable` / `disable` / `clear`.                                            |
+| Tool                 | What it does                                                                                                                                                                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `polygraph_scan`     | Analyze a project directory → graph summary (file/node/edge counts, kind histograms, edge-confidence mix, packages). Run this first.                                                                                                                 |
+| `polygraph_query`    | Run a [PolyGraph query](../lib/graph/query-language) (`kind:class`, `path:**/hooks/*.ts`, `incoming > 10`, `environment:client -> environment:server`, …) → matching nodes. Paginated via `limit`/`offset` (`hasMore` tells you when to keep going). |
+| `polygraph_impact`   | "What breaks if I change this?" — the transitive dependent set of a node, grouped by area, relationship kind, and most-affected files.                                                                                                               |
+| `polygraph_path`     | How one node reaches another: the shortest directed dependency path plus each connecting edge — or `connected: false` if there is none.                                                                                                              |
+| `polygraph_node`     | A node's attributes + its dependencies (outgoing) and dependents (incoming), with edge kind, count, and confidence.                                                                                                                                  |
+| `polygraph_insights` | Architectural findings: cycles, fan-in/out outliers, bottlenecks, orphans, client→server imports, undeclared deps, deep chains, instability, ambiguous/unresolved refs.                                                                              |
+| `polygraph_check`    | Evaluate `.polygraph.yml` architecture rules → violations. `format: "sarif"` also returns a SARIF 2.1.0 log for CI upload.                                                                                                                           |
+| `polygraph_diff`     | Structural diff of the graph between two git revisions (or a revision vs. the working tree).                                                                                                                                                         |
+| `polygraph_read`     | Read the source of a scanned file (optional line range). Restricted to files under the scanned root — see Safety below.                                                                                                                              |
+| `polygraph_logs`     | Read & control the live telemetry bus: `tail` events, `metrics` (per-tool timing), `status`, and `enable` / `disable` / `clear`.                                                                                                                     |
 
 All tools return a text summary plus `structuredContent`. All are `readOnlyHint`
 except `polygraph_logs`, whose `enable` / `disable` / `clear` actions mutate the
@@ -84,7 +86,7 @@ bun test mcp                                   # unit tests (operations)
 npx @modelcontextprotocol/inspector bun run mcp/server.ts   # interactive tool inspector
 ```
 
-Architecture: `operations.ts` holds the eight analysis functions (unit-tested
+Architecture: `operations.ts` holds the ten analysis functions (unit-tested
 directly); `server.ts` is a thin layer that registers each as an MCP tool;
 `cache.ts` memoizes scans per project path; `telemetry.ts` is the stderr-pinned
 telemetry bus the `polygraph_logs` tool reads.

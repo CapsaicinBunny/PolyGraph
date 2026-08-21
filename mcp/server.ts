@@ -133,21 +133,29 @@ export function createServer(): McpServer {
           .max(200)
           .optional()
           .describe("Max nodes to return (default 50)."),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Skip this many matches — page with offset += limit while hasMore is true."),
       },
       outputSchema: {
         query: z.string(),
         matchCount: z.number(),
         returned: z.number(),
+        offset: z.number(),
+        hasMore: z.boolean(),
         empty: z.boolean(),
         error: z.string().optional(),
         nodes: z.array(z.object(briefNode)),
       },
       annotations: READ_ONLY,
     },
-    async ({ path, query, limit }) => {
+    async ({ path, query, limit, offset }) => {
       const r = await instrument(
         "query",
-        () => ops.queryNodes(path, query, limit),
+        () => ops.queryNodes(path, query, limit, offset),
         (res) => ({
           query: res.query,
           matches: res.matchCount,
@@ -155,7 +163,7 @@ export function createServer(): McpServer {
       );
       const text = r.error
         ? `Query error: ${r.error}`
-        : `${r.matchCount} node(s) match "${r.query}"${r.empty ? " (empty query — no constraints)" : ""}; showing ${r.returned}.`;
+        : `${r.matchCount} node(s) match "${r.query}"${r.empty ? " (empty query — no constraints)" : ""}; showing ${r.returned} from offset ${r.offset}${r.hasMore ? " (more available)" : ""}.`;
       return { content: [{ type: "text", text }], structuredContent: r };
     },
   );
@@ -264,12 +272,17 @@ export function createServer(): McpServer {
           .string()
           .optional()
           .describe("Path to a .polygraph.yml (defaults to <path>/.polygraph.yml)."),
+        format: z
+          .enum(["json", "sarif"])
+          .optional()
+          .describe("'sarif' also returns a SARIF 2.1.0 log for CI upload (default json)."),
       },
       outputSchema: {
         config: z.string(),
         total: z.number(),
         errors: z.number(),
         warnings: z.number(),
+        sarif: z.string().optional(),
         violations: z.array(
           z.object({
             ruleName: z.string(),
@@ -283,10 +296,10 @@ export function createServer(): McpServer {
       },
       annotations: READ_ONLY,
     },
-    async ({ path, config }) => {
+    async ({ path, config, format }) => {
       const r = await instrument(
         "check",
-        () => ops.checkRules(path, config),
+        () => ops.checkRules(path, config, format),
         (res) => ({
           violations: res.total,
           errors: res.errors,
@@ -452,6 +465,73 @@ export function createServer(): McpServer {
           : r.action === "metrics"
             ? `${state}; ${Object.keys(r.metrics.histograms).length} metric series, ${Object.keys(r.metrics.counters).length} counter(s).`
             : `${state}, ${r.eventCount} event(s) (action: ${r.action}).`;
+      return { content: [{ type: "text", text }], structuredContent: r };
+    },
+  );
+
+  server.registerTool(
+    "polygraph_impact",
+    {
+      title: "Impact of changing a node",
+      description:
+        'Answer "what breaks if I change this?" — the full set of transitive dependents of a node, grouped by package, by relationship kind, and the files with the most affected symbols. Use before editing or deleting something to size the blast radius.',
+      inputSchema: {
+        path: pathArg,
+        id: z.string().describe('Node id to assess, e.g. "src/db.ts" or "src/db.ts#connect".'),
+      },
+      outputSchema: {
+        id: z.string(),
+        label: z.string(),
+        total: z.number(),
+        byPackage: z.record(z.string(), z.number()),
+        byKind: z.record(z.string(), z.number()),
+        topFiles: z.array(z.object({ file: z.string(), affected: z.number() })),
+      },
+      annotations: READ_ONLY,
+    },
+    async ({ path, id }) => {
+      const r = await instrument(
+        "impact",
+        () => ops.impactOf(path, id),
+        (res) => ({ id: res.id, total: res.total }),
+      );
+      const text =
+        `Changing ${r.label} affects ${r.total} node(s) transitively. ` +
+        `By area: ${histText(r.byPackage)}. Via: ${histText(r.byKind)}.`;
+      return { content: [{ type: "text", text }], structuredContent: r };
+    },
+  );
+
+  server.registerTool(
+    "polygraph_path",
+    {
+      title: "Path between two nodes",
+      description:
+        "Explain how one node reaches another: the shortest directed dependency path plus each connecting edge and its kind. Use to understand why two parts of a codebase are coupled, or to confirm they are not (connected: false).",
+      inputSchema: {
+        path: pathArg,
+        from: z.string().describe("Starting node id."),
+        to: z.string().describe("Target node id."),
+      },
+      outputSchema: {
+        from: z.string(),
+        to: z.string(),
+        connected: z.boolean(),
+        hops: z.number(),
+        path: z.array(z.object({ id: z.string(), label: z.string() })),
+        edges: z.array(z.object({ source: z.string(), target: z.string(), kind: z.string() })),
+      },
+      annotations: READ_ONLY,
+    },
+    async ({ path, from, to }) => {
+      const r = await instrument(
+        "path",
+        () => ops.pathBetween(path, from, to),
+        (res) => ({ from: res.from, to: res.to, connected: res.connected, hops: res.hops }),
+      );
+      const text = r.connected
+        ? `${r.from} → ${r.to} in ${r.hops} hop(s): ${r.path.map((p) => p.label).join(" → ")}.`
+        : `${r.from} does not reach ${r.to} (no directed dependency path).`;
       return { content: [{ type: "text", text }], structuredContent: r };
     },
   );
