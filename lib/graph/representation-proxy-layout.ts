@@ -129,8 +129,9 @@ export function computeStableProxyBounds(
   // whole canvas; an empty forest (no visible roots) leaves every box at zero.
   layoutChildrenOf(cols, leafWeight, h.roots, 0, 0, worldSize, worldSize, padding, minSide);
 
-  // Snapshot the geometry so the runtime can keep it after a recut overwrites the columns from
-  // the live scene boxes (the engine-independent fallback — design Gap 3).
+  // Snapshot the geometry so the runtime keeps a pristine copy: every recut REWRITES the columns
+  // as `stable × boundsScale`, and reading back from this snapshot (rather than compounding the
+  // columns in place) is what keeps repeated recuts idempotent — design Gap 3.
   return {
     x: Float32Array.from(cols.boundsX),
     y: Float32Array.from(cols.boundsY),

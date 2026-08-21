@@ -13,13 +13,12 @@
 // This is layout ORCHESTRATION: it composes cached local layouts into a world scene and
 // swaps one group's local layout atomically. No layout ALGORITHM runs here.
 //
-// INTEGRATION STATUS (Phase C1c): staged, unit-tested primitive — NOT yet wired into the
-// scene pipeline or the layout worker (the canvas still renders via sceneBoxes). Until
-// wiring lands, the byte-identical-siblings invariant is guarded only at the unit level
-// (local-refine.test.ts), and the live relayout-on-material-change behavior is actually
-// provided by scene.signature (scene.ts) + fitSignature (Explorer.tsx). When wiring this
-// path, add a scene-level test that drives a real camera refinement through scene.ts and
-// asserts non-refined groups' world positions + boxes are byte-identical end-to-end.
+// INTEGRATION STATUS: WIRED. useScene's `stitchThroughHierarchy` routes every layout result
+// through scene-hierarchical-layout.ts's `reconcileHierarchicalLayout` → `worldScene`, and commits
+// the result as the rendered positions — so the byte-identical-siblings invariant is now a live
+// property, not just a unit-level one. It is exercised end-to-end by the reconcile suite in
+// scene-hierarchical-layout.test.ts, which drives real refine / fold / reorder transitions and
+// asserts untouched groups stay byte-identical while changed ones re-decompose.
 
 import {
   type CachedLocalLayout,

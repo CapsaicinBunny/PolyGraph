@@ -264,11 +264,11 @@ export interface RepresentationRuntime {
   /**
    * STABLE, layout-INDEPENDENT proxy box geometry (design Gap 3 / P2 "stable-proxy-geometry").
    * A deterministic hierarchical layout over the hierarchy STRUCTURE — computed ONCE here,
-   * independent of the visual node-layout engine. The cut overwrites the hierarchy's live
-   * `bounds*` columns from the engine's scene boxes each recut; when an engine emits NO box for a
-   * rep (Grid, the classic engines, None), the cut falls back to THIS geometry so it still has
-   * bounds to measure. That fallback is what makes the cut OPERATE with every engine — not merely
-   * ignore the engine name. A function of the material signature, so it is cached on the runtime
+   * independent of the visual node-layout engine. EVERY recut rewrites the hierarchy's live
+   * `bounds*` columns from this geometry (rescaled by `boundsScale`) — the engine's scene boxes
+   * are never read. Engine-independence is therefore total rather than a fallback for engines that
+   * emit no boxes (Grid, the classic engines, None): there is no engine-box path left to fall back
+   * FROM. That is also what makes a recut of the same material at the same camera idempotent. A function of the material signature, so it is cached on the runtime
    * and reused across camera recuts; a material change rebuilds it with the hierarchy.
    */
   stableBounds: StableProxyBounds;
@@ -303,6 +303,53 @@ export interface RepresentationRuntime {
 
 /** The opaque material-signature string keying a {@link RepresentationRuntime}. */
 export type RepresentationMaterialSignature = string;
+
+/**
+ * Normalize a caller-supplied live world extent: a usable positive finite number, or undefined for
+ * "no calibration". Takes the FIELD, not the whole input, so the capture site
+ * (`acquireRepresentationRuntime`) and the replay site (`buildSceneRepresentationCut`, via
+ * `boundsScaleOf(runtime.liveExtent)`) share one definition instead of each re-testing
+ * `!== undefined && > 0` — which is what they were doing, under a comment claiming they did not.
+ * The finiteness test also stops an Infinity extent from poisoning every bounds column with NaN.
+ */
+function liveExtentOf(v: number | undefined): number | undefined {
+  return v !== undefined && Number.isFinite(v) && v > 0 ? v : undefined;
+}
+
+/**
+ * The SCALE-CALIBRATION factor: how much to grow the fixed-{@link PROXY_WORLD_SIZE} stable proxy
+ * geometry so it lands in the same world the camera was fit to. 1 (identity) when uncalibrated.
+ * Single source of truth — the runtime build and every recut MUST apply the same factor, or the
+ * reservation tiers and the boxes they gate end up in different coordinate spaces.
+ */
+function boundsScaleOf(liveExtent: number | undefined): number {
+  const v = liveExtentOf(liveExtent);
+  return v === undefined ? 1 : v / PROXY_WORLD_SIZE;
+}
+
+/** Write `stable * scale` into the hierarchy's live geometry columns (in place, all reps). */
+function scaleBoundsColumns(
+  hierarchy: RepresentationHierarchy,
+  stable: StableProxyBounds,
+  scale: number,
+): void {
+  const cols = hierarchy.columns;
+  // A short `stable` would read `undefined` out of the Float32Array, and `undefined * scale` is
+  // NaN — which would propagate silently into the refine gate and the arbitration tiebreak rather
+  // than failing. Both call sites pass a matched pair from one runtime, so this is a guard, not a
+  // recovery path.
+  if (stable.x.length < hierarchy.repCount) {
+    throw new Error(
+      `stable proxy bounds (${stable.x.length}) shorter than hierarchy repCount (${hierarchy.repCount})`,
+    );
+  }
+  for (let rep = 0; rep < hierarchy.repCount; rep++) {
+    cols.boundsX[rep] = stable.x[rep] * scale;
+    cols.boundsY[rep] = stable.y[rep] * scale;
+    cols.boundsW[rep] = stable.w[rep] * scale;
+    cols.boundsH[rep] = stable.h[rep] * scale;
+  }
+}
 
 /**
  * Compute the MATERIAL signature for the cached runtime (Gap 4): the conjunction of inputs
@@ -368,17 +415,29 @@ export function acquireRepresentationRuntime(
     intermediateTiers: true,
   });
   // STABLE proxy geometry (design Gap 3 / P2). Computed ONCE here from the hierarchy structure —
-  // engine-independent — and kept as the cut's fallback bounds for every recut. This also seeds
-  // the hierarchy's `bounds*` columns; a recut overwrites them per-rep from the live scene boxes
-  // when the engine produces them, but reuses the stable box for any rep the engine left out.
+  // engine-independent — and kept as the cut's authoritative bounds for every recut. This also
+  // seeds the hierarchy's `bounds*` columns; every recut rewrites them from THIS geometry (scaled
+  // by boundsScale), never from the engine's live boxes — see the decoupling note in
+  // buildSceneRepresentationCut for why tracking the engine's drifting boxes reopens the loop.
   const stableBounds = computeStableProxyBounds(hierarchy);
+  // Put the geometry columns into the LIVE camera's world BEFORE deriving the reservation tiers
+  // below. `computeRepresentationBounds` reads `bounds*` and writes `reserved*`/`envelope*` from
+  // it, so running it against the raw fixed-4096 proxy geometry — which the recut then overwrites
+  // with `stableBounds * boundsScale` — would leave the tiers in a DIFFERENT coordinate space from
+  // the boxes they gate. `resolveBatchOverflow` compares the two directly, so at a typical
+  // liveExtent (30000 -> boundsScale ~7.3, against an envelope capped at sqrt(8) ~2.83x) the
+  // required extent would always look smaller than the current box, every refined root would
+  // resolve at the trivial "scale" rung, and `envelopeExhausted` could never fire.
+  const boundsScale = boundsScaleOf(input.liveExtent);
+  scaleBoundsColumns(hierarchy, stableBounds, boundsScale);
   // Tiered reservation (design Appendix A §C / P3 overflow). Fill `reserved*` / `envelope*` /
   // `minScale` from the just-computed stable `bounds*` ONCE per runtime (structural, on the
   // material signature — never per camera recut). These are the bounds the overflow ladder
   // (overflow-ladder.ts, wired in transition.ts) measures a refined group against, and the
   // capped `growthEnvelope` is what bounds envelope growth (the Space Paradox fix). A camera
-  // recut overwrites the live `bounds*` columns from the engine boxes but leaves these
-  // structural reservation tiers intact (the cut never grows the envelope).
+  // recut rewrites the live `bounds*` columns from stableBounds × boundsScale (the same write
+  // performed just above) but leaves these structural reservation tiers intact (the cut never
+  // grows the envelope).
   computeRepresentationBounds(hierarchy);
   const repOfGroupId = new Map<GroupId, number>();
   for (let g = 0; g < input.snapshot.groupIds.length; g++) {
@@ -404,8 +463,7 @@ export function acquireRepresentationRuntime(
     // Capture the live extent ONCE here (on the material signature). A camera recut reuses this
     // runtime verbatim, so this is never recomputed per frame — exactly the "cache it on the
     // persistent runtime, do NOT recompute per frame" requirement of the calibration fix.
-    liveExtent:
-      input.liveExtent !== undefined && input.liveExtent > 0 ? input.liveExtent : undefined,
+    liveExtent: liveExtentOf(input.liveExtent),
   };
 }
 
@@ -494,10 +552,7 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   // NOT the per-frame drifting live box, so idempotency (the recut-loop fix) is preserved.
   // Worked example: liveExtent=30000 → boundsScale ≈ 7.32 → a 580-unit stable group → ~4250 units
   // → ×0.05 ≈ 212px, comparable to the ~hundreds-of-px the live box gave (see the calibration test).
-  const boundsScale =
-    runtime.liveExtent !== undefined && runtime.liveExtent > 0
-      ? runtime.liveExtent / PROXY_WORLD_SIZE
-      : 1;
+  const boundsScale = boundsScaleOf(runtime.liveExtent);
 
   // A group rep detached by the post-filter mask (no visible members) is skipped throughout:
   // it gets no bounds, no intent constraint, and no place in the cut.
@@ -524,12 +579,9 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   //    visibility/arbitration, the eviction onScreen test — measures the proxies in the SAME
   //    coordinate space the camera was fit to. Multiplying a CONSTANT (per material) factor keeps
   //    the seeding idempotent across recuts (the recut-loop fix); it only re-projects, never drifts.
-  for (let rep = 0; rep < hierarchy.repCount; rep++) {
-    cols.boundsX[rep] = stableBounds.x[rep] * boundsScale;
-    cols.boundsY[rep] = stableBounds.y[rep] * boundsScale;
-    cols.boundsW[rep] = stableBounds.w[rep] * boundsScale;
-    cols.boundsH[rep] = stableBounds.h[rep] * boundsScale;
-  }
+  // Same write the runtime build performed before deriving the reservation tiers, so the live
+  // boxes and the tiers that gate them stay in ONE coordinate space (see scaleBoundsColumns).
+  scaleBoundsColumns(hierarchy, stableBounds, boundsScale);
 
   // 3a. Intent → constraints (rep ids from the cached group-id map). A group id with no rep
   //     (stale id from another mode) is ignored.
@@ -551,17 +603,14 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
   // reaches a fixed point (the layout↔cut feedback loop). Stable bounds are non-zero under every
   // engine, so the gate OPERATES everywhere instead of short-circuiting to "can't refine".
   const stableBoxOf = (rep: number): Box | undefined => {
-    const w = stableBounds.w[rep];
-    const h = stableBounds.h[rep];
+    // Read the geometry COLUMNS, which `scaleBoundsColumns` above already filled with exactly
+    // `stable × boundsScale`. Recomputing the product here would make two writers of one number
+    // and invite them to drift — the columns are the single source the solver's visibility
+    // weighting and the eviction onScreen test read, so the gate must measure the same values.
+    const w = cols.boundsW[rep];
+    const h = cols.boundsH[rep];
     if (w <= 0 || h <= 0) return undefined; // detached / empty — genuinely no geometry
-    // Rescale into the live camera's world (SCALE CALIBRATION) so worldToScreen(box, cam) yields
-    // the on-screen size the user actually sees. boundsScale is constant per material → idempotent.
-    return {
-      x: stableBounds.x[rep] * boundsScale,
-      y: stableBounds.y[rep] * boundsScale,
-      w: w * boundsScale,
-      h: h * boundsScale,
-    };
+    return { x: cols.boundsX[rep], y: cols.boundsY[rep], w, h };
   };
 
   // HYSTERESIS (the residual collapse↔refine damping). A rep that was OPEN in the PREVIOUS
@@ -701,8 +750,14 @@ export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
       for (const rep of retainOpen) nextOpen.add(rep);
       const nextClosed = new Set<number>(forceClosed);
       for (const rep of outcome.evicted) nextClosed.add(rep);
-      // Re-solve from a clean limit sink so limitedDetails reflects only the FINAL cut.
+      // Re-solve from a CLEAN sink so every diagnostic reflects only the FINAL cut. All three
+      // fields must be reset, not just `limited`: `refinements` is a running += (leaving it would
+      // report roughly double the real count) and `whyNotRefined` is a Map that is only ever
+      // `set` (leaving it would keep rows for reps this second solve refined PAST, so the overlay
+      // would attribute "screen-gate"/"soft-budget" to reps that are not in the committed cut).
       limitSink.limited.length = 0;
+      limitSink.whyNotRefined.clear();
+      limitSink.refinements = 0;
       cut = solveLodCut(
         hierarchy,
         bootstrapCut(hierarchy),

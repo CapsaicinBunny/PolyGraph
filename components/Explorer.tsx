@@ -845,6 +845,12 @@ export function Explorer() {
   // Phase C1b — receive each representation cut and summarize it for the dev overlay
   // (Appendix A §I). The canvas collects the solver diagnostics for us, so we just fold in
   // the budget + timing it measured.
+  // Drop the last cut's stats when the overlay is switched OFF, so re-enabling it cannot flash
+  // the previous session's numbers for the frame before the fresh recut lands.
+  useEffect(() => {
+    if (!lodOverlay) setRepLodStats(null);
+  }, [lodOverlay]);
+
   const handleRepLod = useCallback((res: RepLodResult) => {
     setRepLodStats(
       summarizeRepLod(res, {
@@ -1082,7 +1088,13 @@ export function Explorer() {
             onCommunityOf={handleCommunityOf}
             groupingSnapshot={cutGrouping?.snapshot ?? null}
             intent={activeIntent}
-            onRepLod={handleRepLod}
+            // Gated on the overlay: `onRepLod` fires on every committed recut and this handler
+            // calls setRepLodStats, re-rendering Explorer — for output only `lodOverlay` below
+            // ever reads. It does NOT save the solver any work: `collectDiagnostics: !!onRepLod`
+            // only decides whether the sink is EXPOSED on the result, and the cut always hands the
+            // solver a sink anyway so "Detail limited" is captured, so whyNotRefined is populated
+            // either way.
+            onRepLod={lodOverlay ? handleRepLod : undefined}
             fitSignature={fitSignature}
           />
           {lodOverlay && repLodStats && <RepLodOverlay stats={repLodStats} />}

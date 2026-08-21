@@ -426,7 +426,15 @@ export function solveLodCut(
     constraints.arbitration,
   );
   for (const rep of orderedOpens) {
-    const limited = forceOpenRep(cols, selected, rep, cur, budget, gate?.edgeIndex);
+    const limited = forceOpenRep(
+      cols,
+      selected,
+      rep,
+      cur,
+      budget,
+      gate?.edgeIndex,
+      gate?.diagnostics,
+    );
     if (limited && gate?.diagnostics) gate.diagnostics.limited.push(limited);
   }
 
@@ -485,18 +493,16 @@ function forceOpenRep(
   cur: CostVec,
   budget: LodBudget,
   edgeIndex: RepresentationEdgeIndex | undefined,
+  diagnostics: SolveDiagnostics | undefined,
 ): LimitedDetail | null {
   if (cols.firstChildByRep[rep] === -1) return null; // a leaf can't be opened further
   let guard = cols.parentByRep.length + 1;
   while (guard-- > 0) {
-    // Find the selected rep on `rep`'s path (rep itself or an ancestor). At most one
-    // (antichain). If none is selected, rep is already strictly below the cut → done.
+    // Find the selected rep on `rep`'s path. `coveringSelected` walks UPWARD, so this is always
+    // `rep` itself or one of its ancestors — never a descendant. At most one exists (antichain).
+    // If none is selected, `rep` is already strictly below the cut → it is open; done.
     const covering = coveringSelected(cols, selected, rep);
     if (covering === -1) return null;
-    if (covering !== rep && isStrictAncestor(cols, rep, covering)) {
-      // covering is a descendant of rep — already open past rep; done.
-      return null;
-    }
     // Refine `covering` (replace with its children), within the FINITE HARD ceiling. If it
     // can't be refined safely, STOP and surface "Detail limited": retain the nearest legal
     // proxy (`covering`) and name the finite ceiling that blocked the descent — rather than
@@ -508,6 +514,13 @@ function forceOpenRep(
         limitingBudget: limitingBudgetOf(cols, selected, covering, cur, budget, edgeIndex),
       };
     }
+    // A forced open descends by committing REAL atomic refinements, so they belong in the
+    // `refinements` count exactly as `refineUnderBudget`'s do. Counting only the latter made the
+    // stat structurally wrong for the scene bridge's eviction re-solve, where retained opens are
+    // replayed as forceOpen constraints and are therefore satisfied HERE — the re-solve's
+    // `refineUnderBudget` then finds nothing left to do and the overlay read ~0 refinements for a
+    // cut that had plainly refined.
+    if (diagnostics) diagnostics.refinements += 1;
     // Loop: after refining, a child may again cover rep — keep descending until rep is
     // below the cut (covering becomes rep's descendant or disappears).
     if (covering === rep) return null; // we refined rep itself → its children now cover; done
@@ -591,8 +604,15 @@ function refineUnderBudget(
   // rep is skipped as a candidate so the loop tries the NEXT-best smaller refinement
   // instead of stopping — a too-large candidate must not strand the remaining budget.
   const blocked = new Set<number>();
-  // Bound the number of refinements to the rep count (each rep is refined at most once).
-  let guard = h.repCount + 1;
+  // A rep consumes at most ONE iteration over the whole loop: refining removes it from `selected`
+  // (and nothing re-adds it — refinement only ever descends, so no ancestor of it is selected to
+  // be refined again), while blocking makes it permanently skipped as a candidate. Refined and
+  // blocked are therefore DISJOINT, which makes `repCount + 1` — repCount productive iterations
+  // plus the one that finds no candidate and breaks — exactly tight, not short.
+  // The bound is doubled deliberately as defence-in-depth: tightness rests on that disjointness
+  // argument, which a future change to the candidate filter (e.g. clearing `blocked` mid-solve, or
+  // allowing coarsening here) would silently invalidate. This guard is a safety net, not a budget.
+  let guard = 2 * h.repCount + 2;
   while (guard-- > 0) {
     const remaining: CostVec = {
       cards: Math.max(0, budget.targetCards - cur.cards),

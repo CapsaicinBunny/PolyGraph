@@ -15,11 +15,11 @@
 //
 // Pure data structures; no React, no GPU, no layout ALGORITHM (this is orchestration).
 //
-// INTEGRATION STATUS (Phase C1c): staged, unit-tested primitive — NOT yet wired. No live
-// path constructs a ProxyCacheKey from real scene inputs yet (only local-refine.ts and
-// tests reference this), so the cache-invalidation guarantee is proven only against
-// hand-built keys. When wiring lands, add a test that builds a ProxyCacheKey from the
-// real scene-signature inputs so this key's field set and scene.signature cannot drift.
+// INTEGRATION STATUS: WIRED. components/useScene.ts builds a real ProxyCacheKey per group via
+// scene-hierarchical-layout.ts's `groupKeyFromMaterial`, so the cache-invalidation guarantee now
+// governs the rendered scene. STILL OUTSTANDING: `SceneMaterialKey` and `KEY_FIELDS` below are two
+// hand-maintained field lists that must stay in lockstep, and nothing asserts that — a field added
+// to one and forgotten in the other silently weakens invalidation. Worth a drift test.
 
 import type { ClusterBox, LayoutDirection, XYPosition } from "../layout";
 
@@ -27,8 +27,11 @@ import type { ClusterBox, LayoutDirection, XYPosition } from "../layout";
  * Everything a cached local layout depends on (Appendix A §H "ProxyCacheKeyParts"). A
  * cached layout/proxy is reusable ONLY when every part matches — so a direction flip,
  * a node-style metrics bump, an edge-filter change, or a grouping-semantics change all
- * invalidate it. `representationId` ties the entry to a specific rep in the hierarchy;
- * the rest are graph/analysis-wide signatures the caller already computes for the scene.
+ * invalidate it. The rest are graph/analysis-wide signatures the caller already computes for the
+ * scene. `representationId` has TWO producers with disjoint domains: hand-built keys use a rep id
+ * from the representation hierarchy, while the live scene path (scene-hierarchical-layout.ts's
+ * `representationIdOf`) stores a 32-bit hash of (group box key + membership digest). Nothing in
+ * the type separates them, so do not interpret a serialized value as a rep id.
  */
 export interface ProxyCacheKey {
   graphVersion: string;

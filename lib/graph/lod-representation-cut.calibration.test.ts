@@ -103,6 +103,74 @@ function recut(
   return buildSceneRepresentationCut(input);
 }
 
+describe("reservation tiers share the live coordinate space of the bounds they gate", () => {
+  // REGRESSION: `computeRepresentationBounds` derives reserved*/envelope* from whatever is in the
+  // `bounds*` columns when it runs. It used to run BEFORE the columns were scaled by boundsScale,
+  // so the tiers stayed in the fixed-4096 proxy world while the boxes they bound were rescaled
+  // into the live camera's world. `resolveBatchOverflow` compares the two directly, so at any
+  // liveExtent above ~11.6k (boundsScale > sqrt(8)) the "growth envelope" came out SMALLER than
+  // the box it is supposed to contain, every refined root resolved at the trivial `scale` rung,
+  // and `envelopeExhausted` — the only thing that requests a global relayout — became unreachable.
+  //
+  // Deleting the `scaleBoundsColumns` call left the entire suite green before these tests existed.
+
+  test("the growth envelope contains the box it bounds, at a large live extent", () => {
+    const liveExtent = 30_000;
+    const runtime = freshRuntime(liveExtent);
+    // The recut is what REWRITES bounds* into the live world; the tiers were filled during
+    // acquire. Inspecting the runtime without recutting would leave both sides in the unscaled
+    // proxy world and hide exactly the mismatch this test exists to catch.
+    recut(runtime, { x: 0, y: 0, scale: 0.05 }, liveExtent);
+    const cols = runtime.hierarchy.columns;
+    let checked = 0;
+    for (let rep = 0; rep < runtime.hierarchy.repCount; rep++) {
+      if (cols.firstChildByRep[rep] === -1) continue; // leaves: every tier == current by definition
+      if (cols.boundsW[rep] <= 0) continue; // detached / empty — no geometry
+      expect(cols.envelopeW[rep]).toBeGreaterThanOrEqual(cols.boundsW[rep]);
+      expect(cols.envelopeH[rep]).toBeGreaterThanOrEqual(cols.boundsH[rep]);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0); // the loop must actually assert something
+  });
+
+  test("envelope/bounds ratio is SCALE-INVARIANT (the tiers track the same space as the boxes)", () => {
+    // This is the invariant rather than a magic number: the ratio is a pure function of the
+    // hierarchy's shape, so it must not move with liveExtent. It still catches the regression
+    // (pre-fix the uncalibrated and calibrated runs disagreed) and survives retuning
+    // `maxEnvelopeFactor`, which a hard-coded sqrt(8) assertion would not.
+    const ratios = (liveExtent?: number): number[] => {
+      const runtime = freshRuntime(liveExtent);
+      recut(runtime, { x: 0, y: 0, scale: 0.05 }, liveExtent);
+      const cols = runtime.hierarchy.columns;
+      const out: number[] = [];
+      for (let rep = 0; rep < runtime.hierarchy.repCount; rep++) {
+        if (cols.firstChildByRep[rep] === -1 || cols.boundsW[rep] <= 0) continue;
+        out.push(cols.envelopeW[rep] / cols.boundsW[rep]);
+      }
+      return out;
+    };
+    const uncalibrated = ratios(undefined);
+    const calibrated = ratios(30_000);
+    const huge = ratios(250_000);
+    expect(calibrated.length).toBe(uncalibrated.length);
+    for (let i = 0; i < uncalibrated.length; i++) {
+      expect(calibrated[i]).toBeCloseTo(uncalibrated[i], 5);
+      expect(huge[i]).toBeCloseTo(uncalibrated[i], 5);
+    }
+  });
+
+  test("a non-finite live extent is rejected rather than poisoning the columns with NaN", () => {
+    const runtime = freshRuntime(Number.POSITIVE_INFINITY);
+    recut(runtime, { x: 0, y: 0, scale: 0.05 }, Number.POSITIVE_INFINITY);
+    const cols = runtime.hierarchy.columns;
+    expect(runtime.liveExtent).toBeUndefined(); // normalized away by liveExtentOf
+    for (let rep = 0; rep < runtime.hierarchy.repCount; rep++) {
+      expect(Number.isNaN(cols.boundsW[rep])).toBe(false);
+      expect(Number.isFinite(cols.boundsW[rep])).toBe(true);
+    }
+  });
+});
+
 describe("scale calibration: the fitted camera clears openPx the way the live boxes did", () => {
   test("boundsScale is exactly liveExtent / PROXY_WORLD_SIZE and is reported", () => {
     const liveExtent = 30_000;

@@ -324,6 +324,68 @@ describe("buildSceneRepresentationCut — committed-generation gating via runtim
   });
 });
 
+describe("buildSceneRepresentationCut — diagnostics describe the FINAL cut only", () => {
+  // The eviction/retention pass re-solves from a clean bootstrap, so anything the FIRST solve
+  // recorded describes a cut that was thrown away. Two failure modes are pinned here:
+  //   (1) stale `whyNotRefined` rows — the map is only ever `.set`, never cleared, so a rep the
+  //       second solve refined PAST kept its "screen-gate"/"soft-budget" row and the overlay
+  //       attributed a reason to a rep that is not in the committed cut;
+  //   (2) a `refinements` count that does not describe the committed cut. Resetting the counter
+  //       alone is not enough: the re-solve replays retained opens as forceOpen CONSTRAINTS, which
+  //       descend through `forceOpenRep` — so unless that path counts its atomic refinements too,
+  //       the stat reads ~0 for a cut that plainly refined.
+  const dirs = ["a", "b", "c", "d"];
+  const g: GraphModel = {
+    nodes: dirs.flatMap((d) => [file(`${d}/x/f1.c`), file(`${d}/x/f2.c`)]),
+    edges: [],
+  };
+  const ids = g.nodes.map((n) => n.id);
+  const s2 = buildGroupingSnapshot(directoryGrouping(g), "directory", ids);
+  const bigBoxes = (): Map<string, Box> => {
+    const m = new Map<string, Box>();
+    dirs.forEach((d, i) => {
+      m.set(d, { x: i * 10, y: 0, w: 700, h: 700 });
+      m.set(`${d}/x`, { x: i * 10, y: 0, w: 600, h: 600 });
+    });
+    return m;
+  };
+
+  test("every why-not-refined rep is actually in the committed cut, and refinements are honest", () => {
+    // A budget high enough that opens are RETAINED rather than evicted, so the re-solve path runs
+    // (retainOpen.size > 0) with evictions === 0 — the common case on any frame with a group open.
+    const ctrl = makeEvictionController(s2.groupIds.length + ids.length, 64);
+    const run = (cam: { x: number; y: number; scale: number }) =>
+      buildSceneRepresentationCut({
+        snapshot: s2,
+        nodeIds: ids,
+        boxes: bigBoxes(),
+        liveExtent: 4096,
+        cam,
+        vp,
+        intent: noIntent,
+        options: opts,
+        collectDiagnostics: true,
+        eviction: ctrl,
+      });
+
+    const r = run({ x: 0, y: 0, scale: 1 });
+    const selected = new Set(r.cut.selectedRepresentations);
+    expect(r.diagnostics).not.toBeNull();
+
+    // (1) No row may describe a rep the final cut does not contain.
+    for (const rep of r.diagnostics!.whyNotRefined.keys()) {
+      expect(selected.has(rep)).toBe(true);
+    }
+
+    // (2) A cut that refined past the bootstrap must report a non-zero refinement count. The
+    //     bootstrap is a single super-root card, so more than one card means refinement happened —
+    //     by whichever path (auto or forced-open replay) the solver took to get there.
+    if (r.cut.selectedRepresentations.length > 1) {
+      expect(r.diagnostics!.refinements).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe("buildSceneRepresentationCut — bounded offscreen eviction + in-place roll (bug b)", () => {
   test("over-budget offscreen auto-opens are evicted (re-collapsed) and counted", () => {
     // A graph with several independent top dirs, all huge ON-SCREEN so the cut auto-opens

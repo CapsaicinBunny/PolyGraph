@@ -8,8 +8,13 @@
 // one group never perturbs a sibling's or ancestor's reservation. Pure; fills the columnar
 // geometry C1b stubbed (`reserved*` / `envelope*` / `minScale`).
 //
-// INTEGRATION STATUS (Phase C1c): staged, unit-tested primitive — NOT yet wired into the
-// scene pipeline (consumed only by overflow-ladder/local-refine reasoning and tests).
+// INTEGRATION STATUS: WIRED. `computeRepresentationBounds` is called unconditionally from
+// `acquireRepresentationRuntime` (lod-representation-cut.ts), which the canvas invokes on every
+// cut — so the tiers it fills are live data, computed once per material signature from bounds
+// ALREADY scaled into the live camera's world. The CONSUMER of those tiers (resolveOverflow, via
+// transition.ts's resolveBatchOverflow) is still only reached through commitTransitionBatches,
+// which the canvas does not currently call — it uses IncrementalSceneSession.recut. So the tiers
+// are produced live and consumed only by tests/bench for now.
 
 import type { RepresentationColumns, RepresentationHierarchy, Rect } from "./representation";
 

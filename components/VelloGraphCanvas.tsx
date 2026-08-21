@@ -1450,8 +1450,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     // changes the cut WITHOUT a graph/filter/layout change, so fold it into the gate here —
     // otherwise a new detail level only takes effect on the next unrelated wheel/pan gesture
     // (the recut reads l.lodOpenPx from the ref, but nothing re-fires the recut on the change).
-    return `${fitSignature ?? ""}::${intentSig}::lod=${lodOpenPx ?? ""}`;
-  }, [fitSignature, intent, lodOpenPx]);
+    // `onRepLod` presence flips with the dev overlay (Explorer passes it only while the overlay is
+    // shown), and it is what turns `collectDiagnostics` on below. Fold it in so switching the
+    // overlay ON fires one recut that actually populates its stats — otherwise the overlay would
+    // sit empty until the next unrelated wheel/pan gesture. Same reasoning as `lodOpenPx`.
+    return `${fitSignature ?? ""}::${intentSig}::lod=${lodOpenPx ?? ""}::diag=${onRepLod ? 1 : 0}`;
+  }, [fitSignature, intent, lodOpenPx, onRepLod]);
 
   const lastCutInputSig = useRef<string | null>(null);
   useEffect(() => {
