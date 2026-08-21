@@ -74,7 +74,7 @@ path (`lib/kernel/treesitter/core.ts`) — not `require`, which webpack would tr
 - A grammar must expose its `LANGUAGE` through `tree-sitter-language` (version-agnostic). Every
   published grammar crate we use declares `tree-sitter` itself only as a **dev** dependency,
   which Cargo never builds into our graph — so bumping the runtime here does not require
-  bumping them. A grammar declaring `tree-sitter` as a *normal* dependency would pull in a
+  bumping them. A grammar declaring `tree-sitter` as a _normal_ dependency would pull in a
   second runtime copy and is not usable.
 - WebAssembly text (`.wat`) has no published crate, so the grammar's generated `parser.c` is
   **vendored** in `analyzer-core/vendor/wat/` and compiled by `build.rs` via `cc`.
