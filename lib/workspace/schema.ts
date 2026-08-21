@@ -4,8 +4,10 @@
 // and "Load workspace" reads. Sets are stored as arrays so it's plain JSON.
 
 import type { ViewEdgeKind } from "../aggregate";
-import type { Environment, NodeCategory, NodeKind, Runtime } from "../graph/types";
+import type { FacetKey } from "../graph/dimensions";
+import type { FacetSelection } from "../graph/facet-selection";
 import type { GroupBy, LayoutAlgorithm, LayoutDirection } from "../layout";
+import type { FacetSelectionState } from "./facet-migrate";
 
 export type EdgeRouting = "curved" | "orthogonal";
 
@@ -13,12 +15,24 @@ export interface WorkspaceFilters {
   showExternal: boolean;
   search: string;
   enabledEdgeKinds: string[];
-  enabledNodeKinds: string[];
-  enabledCategories: string[];
-  enabledEnvironments: string[];
-  enabledRuntimes: string[];
+  /**
+   * Generic, sparse facet selections (kind/category/env/runtime/role + provider
+   * facets) — the durable replacement for the old enabledNodeKinds/Categories/
+   * Environments/Runtimes arrays. Keyed by facet key; only constraining entries
+   * are stored. Old workspaces with the named arrays migrate on load
+   * (facet-migrate.ts), so they still restore identically.
+   */
+  enabledFacets: Record<FacetKey, FacetSelectionState>;
   enabledFolders: string[];
   enabledLanguages: string[];
+  /** @deprecated legacy named arrays — read on load for back-compat, never written. */
+  enabledNodeKinds?: string[];
+  /** @deprecated */
+  enabledCategories?: string[];
+  /** @deprecated */
+  enabledEnvironments?: string[];
+  /** @deprecated */
+  enabledRuntimes?: string[];
 }
 
 export interface WorkspaceLayout {
@@ -26,6 +40,12 @@ export interface WorkspaceLayout {
   direction: LayoutDirection;
   groupBy: GroupBy;
   density: number;
+  /**
+   * The live representation-LOD refine-gate openPx (px). Optional: workspaces saved before the
+   * LOD-detail control predate this field, so a load with it absent restores the shipped 120
+   * default. No WORKSPACE_VERSION bump — an absent value is the back-compat default, not invalid.
+   */
+  lodOpenPx?: number;
   edgeRouting: EdgeRouting;
   communityCollapse: boolean;
 }
@@ -67,16 +87,16 @@ export interface ExplorerWorkspaceState {
   showExternal: boolean;
   search: string;
   enabledEdgeKinds: Set<ViewEdgeKind>;
-  enabledNodeKinds: Set<NodeKind>;
-  enabledCategories: Set<NodeCategory>;
-  enabledEnvironments: Set<Environment>;
-  enabledRuntimes: Set<Runtime>;
+  /** Sparse, registry-driven facet selections (runtime Set form). */
+  enabledFacets: Map<FacetKey, FacetSelection>;
   enabledFolders: Set<string>;
   enabledLanguages: Set<string>;
   algorithm: LayoutAlgorithm;
   direction: LayoutDirection;
   groupBy: GroupBy;
   density: number;
+  /** Live representation-LOD refine-gate openPx (px); defaults to 120 for old workspaces. */
+  lodOpenPx: number;
   edgeRouting: EdgeRouting;
   communityCollapse: boolean;
   camera?: CameraState;

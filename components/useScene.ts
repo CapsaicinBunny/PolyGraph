@@ -1,12 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyPositions,
   buildSceneStructure,
+  buildSceneStructureFromModel,
+  graphKeyFor,
   type Scene,
   type SceneFilters,
 } from "@/lib/graph/scene";
+import type { HierarchicalLayout } from "@/lib/graph/local-refine";
+import {
+  groupKeyFromMaterial,
+  reconcileHierarchicalLayout,
+  type SceneMaterialKey,
+  worldScene,
+} from "@/lib/graph/scene-hierarchical-layout";
+import type { DimensionCatalog } from "@/lib/graph/dimensions";
+import type { PackageManifest } from "@/lib/graph/levels/types";
 import type { GraphModel } from "@/lib/graph/types";
 import {
   type ClusterBox,
@@ -23,6 +34,49 @@ import { telemetry } from "@/lib/telemetry";
 
 const EMPTY_POS: Map<string, XYPosition> = new Map();
 const EMPTY_CLUSTERS: ClusterBox[] = [];
+
+/**
+ * Strip the per-cut GENERATION suffix from a scene structure signature, yielding a string that is
+ * STABLE across recuts of the same material (so the C1c reconcile reuses unchanged groups'
+ * cached local layouts byte-identically instead of relaying out the world every recut).
+ *
+ * The cut term embedded in the structure signature is `rep:${materialSignature}#${generation}`
+ * (VelloGraphCanvas builds the salt as `${sig}#${gen}`). `materialSignature`
+ * (lib/graph/lod-representation-cut.ts) is itself a `|`-joined string and contains NO `#`, so a
+ * naive `\|rep:[^|]*` strip removes only its first `g=…` part and LEAVES the trailing
+ * `#${generation}` behind — which changes every recut and defeats the whole byte-identical layer.
+ * The generation is the only per-recut-variable content, so strip exactly the `#${digits}` suffix
+ * at the end of the rep term (immediately before the next `|`-delimited term, or end of string).
+ *
+ * Exported + pure so the format contract with `materialSignature` can be locked by a test
+ * (useScene.test.ts) and cannot silently drift.
+ */
+export function materialSignatureFromStructureSignature(structureSignature: string): string {
+  return structureSignature.replace(/(\|rep:[^|]*(?:\|[^|#]*)*)#\d+/, "$1");
+}
+
+// Canonical fixed-order serialization of a SceneMaterialKey (every field except the per-group
+// representationId, which is not part of the shared material). Used only to detect a material
+// change between recuts so the persistent local-layout cache can be dropped (no stale-entry leak)
+// rather than carried across a flip where none of its entries can ever be hit again.
+// The separator MUST stay NUL: these fields are free-form strings (filterSignature,
+// layoutOptionsHash, edgeKindsSignature all embed "|" and ":"), so any printable delimiter lets
+// two different field tuples serialize identically and a real material flip read as "unchanged".
+// NUL is the one byte the field values cannot contain. Do not "tidy" it to "" or "|".
+function serializeMaterialKey(m: SceneMaterialKey): string {
+  return [
+    m.graphVersion,
+    m.filterSignature,
+    m.groupingMode,
+    m.groupingVersion,
+    m.layoutEngine,
+    m.layoutDirection,
+    m.layoutOptionsHash,
+    m.nodeStyleMetricsVersion,
+    m.edgeKindsSignature,
+    m.representationBuilderVersion,
+  ].join("\u0000");
+}
 
 /**
  * Build a positioned scene, running layout off the main thread (Web Worker) so the UI
@@ -42,8 +96,32 @@ export function useScene(
   focusedIds: Set<string> | null,
   queryIds: Set<string> | null = null,
   projected = false,
-): { scene: Scene; layingOut: boolean; ready: boolean } {
-  const structure = useMemo(
+  catalog?: DimensionCatalog,
+  manifests: PackageManifest[] = [],
+  /**
+   * The AUTHORITATIVE rep-cut scene (design "Retire compose()" / impl point 5). When present, the
+   * production render structure is built DIRECTLY from this folded proxy GraphModel (the rep-cut
+   * materializer's output) — NOT from `collapsedClusters` / `collapseClusters()`. The
+   * `collapsedClusters` arg then only seeds the C1a base structure that supplies `communityOf` +
+   * `visibleNodeIds` + the bootstrap boxes the cut refines from; it never folds the rendered scene.
+   * Omitted/null → the legacy C1a path (collapseClusters builds the scene), unchanged.
+   */
+  repScene: { scene: GraphModel; cutSignature: string } | null = null,
+): {
+  scene: Scene;
+  layingOut: boolean;
+  ready: boolean;
+  /** The community assignment this scene laid out (filtered-graph detection), or undefined. */
+  communityOf: Map<string, string> | undefined;
+  /** Post-filter visible base-node ids (pre-collapse) — feeds the rep cut's Gap 7 mask. */
+  visibleNodeIds: Set<string>;
+} {
+  // The C1a base structure. It is the FALLBACK render scene (when there is no rep scene yet) AND,
+  // when the rep cut is authoritative, the source of `communityOf` (the filtered-graph community
+  // labels the Smart layout needs) + `visibleNodeIds` (the post-filter projection the rep cut is
+  // built over) + the bootstrap boxes the cut refines from. It is NOT the rendered structure once a
+  // `repScene` arrives — `collapseClusters` no longer folds the production scene then.
+  const baseStructure = useMemo(
     () =>
       buildSceneStructure(
         graph,
@@ -58,6 +136,8 @@ export function useScene(
         focusedIds,
         queryIds,
         projected,
+        catalog,
+        manifests,
       ),
     [
       graph,
@@ -72,8 +152,95 @@ export function useScene(
       focusedIds,
       queryIds,
       projected,
+      catalog,
+      manifests,
     ],
   );
+
+  // The AUTHORITATIVE structure (design impl point 5). When a `repScene` is present, build the
+  // rendered structure DIRECTLY from the materializer's folded proxy graph — bypassing
+  // `compose()` / `collapsedClusters` / `collapseClusters()` entirely. The base structure's
+  // `communityOf` + `visibleNodeIds` carry through (both are pure functions of the post-filter
+  // graph, which the materializer also folded over, so they agree). Otherwise the base structure
+  // IS the render structure (the unchanged C1a path).
+  const structure = useMemo(() => {
+    if (!repScene) return baseStructure;
+    return buildSceneStructureFromModel(
+      repScene.scene,
+      graph,
+      expanded,
+      filters,
+      algorithm,
+      direction,
+      groupBy,
+      density,
+      baseStructure.visibleNodeIds,
+      repScene.cutSignature,
+      baseStructure.options.communityOf,
+      focusedIds,
+      queryIds,
+      projected,
+      catalog,
+      manifests,
+    );
+  }, [
+    repScene,
+    baseStructure,
+    graph,
+    expanded,
+    filters,
+    algorithm,
+    direction,
+    groupBy,
+    density,
+    focusedIds,
+    queryIds,
+    projected,
+    catalog,
+    manifests,
+  ]);
+
+  // The MATERIAL signature for the C1c HierarchicalLayout reconcile (spec P3 / Work item 1): the
+  // structure signature with the per-cut GENERATION term stripped (see
+  // materialSignatureFromStructureSignature), so it is STABLE across recuts of the same material.
+  // Two committed cuts that differ only in which proxies are open share this signature → reconcile
+  // reuses every unchanged group's cached local layout byte-identically, instead of the old
+  // global-relayout-per-recut. Camera/LOD is never folded in.
+  const materialKey = useMemo<SceneMaterialKey>(() => {
+    const materialSig = materialSignatureFromStructureSignature(structure.signature);
+    return {
+      graphVersion: graphKeyFor(graph),
+      filterSignature: materialSig,
+      groupingMode: groupBy,
+      groupingVersion: structure.options.communityOf ? "c" : "n",
+      layoutEngine: algorithm,
+      layoutDirection: direction,
+      layoutOptionsHash: `d${density}`,
+      nodeStyleMetricsVersion: "v1",
+      edgeKindsSignature: materialSig,
+      representationBuilderVersion: "v1",
+    };
+  }, [
+    structure.signature,
+    structure.options.communityOf,
+    graph,
+    groupBy,
+    algorithm,
+    direction,
+    density,
+  ]);
+
+  // The persistent per-group HierarchicalLayout (stable reserved box origins + cached local
+  // layouts keyed by ProxyCacheKey). Carried across recuts so an unchanged group is reused
+  // byte-identically; only present on the rep-cut (authoritative) path.
+  const hierLayoutRef = useRef<HierarchicalLayout | undefined>(undefined);
+  // The serialized SceneMaterialKey the persistent layout's cache is keyed under. On a real
+  // material change (filter / grouping / engine / direction) EVERY group's ProxyCacheKey changes,
+  // so no prior cache entry can ever be hit again — carrying the old cache forward would only leak
+  // its entries unbounded across material flips (there is no LRU on this path yet; P3 cache
+  // eviction). When the material differs, reconcile starts from a fresh cache (prev = undefined),
+  // which also IS the correct "material flip re-decomposes all groups" semantics.
+  const materialSigRef = useRef<string>("");
 
   const initial = layoutCacheGet(structure.signature);
   const [positions, setPositions] = useState<Map<string, XYPosition>>(
@@ -88,6 +255,37 @@ export function useScene(
   const [layingOut, setLayingOut] = useState(false);
   const ready = positionedSig === structure.signature;
   const reqId = useRef(0);
+
+  // Project a global worker layout result through the persistent HierarchicalLayout: decompose
+  // into per-group stable boxes + cached local layouts (reusing unchanged groups byte-identically)
+  // and re-stitch via worldScene. Only on the rep-cut path; the legacy C1a path commits the raw
+  // worker output verbatim (no per-group reservation). Returns the world positions + clusters to
+  // commit. Mutates hierLayoutRef so the next recut reconciles against this layout.
+  const stitchThroughHierarchy = useCallback(
+    (
+      pos: Map<string, XYPosition>,
+      cl: ClusterBox[],
+    ): { positions: Map<string, XYPosition>; clusters: ClusterBox[] } => {
+      if (!repScene) {
+        hierLayoutRef.current = undefined; // not on the rep path → no reservation to preserve
+        materialSigRef.current = "";
+        return { positions: pos, clusters: cl };
+      }
+      const keyFor = groupKeyFromMaterial(materialKey);
+      // A material change invalidates every cached local layout (all keys change). Drop the prior
+      // layout + its cache so reconcile re-decomposes from scratch and the cache cannot leak stale
+      // entries across material flips. A pure recut (same material) keeps the prior layout so its
+      // unchanged groups stay byte-identical.
+      const materialSig = serializeMaterialKey(materialKey);
+      const prev = materialSig === materialSigRef.current ? hierLayoutRef.current : undefined;
+      materialSigRef.current = materialSig;
+      const layout = reconcileHierarchicalLayout(prev, { positions: pos, clusters: cl }, keyFor);
+      hierLayoutRef.current = layout;
+      const world = worldScene(layout);
+      return { positions: world.positions, clusters: world.clusters };
+    },
+    [repScene, materialKey],
+  );
 
   // Always-current positions, read as the seed for the NEXT layout. On a structure
   // change this still holds the prior layout's positions, so engines continue from
@@ -109,8 +307,12 @@ export function useScene(
         { nodes: structure.layoutInput.nodes.length, clusters: cached.clusters.length },
         "debug",
       );
-      setPositions(cached.positions);
-      setClusters(cached.clusters);
+      // Even on a layout-cache hit, route through the HierarchicalLayout so a rep-cut recut keeps
+      // every unchanged group byte-identical (the cache stores the raw global layout; reconcile
+      // re-stitches it through the persistent per-group reservations). No-op on the C1a path.
+      const stitched = stitchThroughHierarchy(cached.positions, cached.clusters);
+      setPositions(stitched.positions);
+      setClusters(stitched.clusters);
       setPositionedSig(structure.signature);
       setLayingOut(false);
       return;
@@ -141,8 +343,12 @@ export function useScene(
         const simplified = layoutFallbackSummary(cl);
         if (simplified) telemetry.event("layout", "simplified", { summary: simplified }, "warn");
         layoutCacheSet(structure.signature, { positions: pos, clusters: cl });
-        setPositions(pos);
-        setClusters(cl);
+        // Stitch the fresh global layout through the persistent HierarchicalLayout (rep-cut path):
+        // unchanged groups reuse their cached local layout byte-identically, so this recut moves
+        // ONLY the groups whose material changed — replacing the old global-relayout-per-recut.
+        const stitched = stitchThroughHierarchy(pos, cl);
+        setPositions(stitched.positions);
+        setClusters(stitched.clusters);
         setPositionedSig(structure.signature);
         setLayingOut(false);
       })
@@ -157,11 +363,17 @@ export function useScene(
         );
         if (myReq === reqId.current) setLayingOut(false);
       });
-  }, [structure]);
+  }, [structure, stitchThroughHierarchy]);
 
   const scene = useMemo(
     () => applyPositions(structure, positions, clusters),
     [structure, positions, clusters],
   );
-  return { scene, layingOut, ready };
+  return {
+    scene,
+    layingOut,
+    ready,
+    communityOf: structure.options.communityOf,
+    visibleNodeIds: structure.visibleNodeIds,
+  };
 }

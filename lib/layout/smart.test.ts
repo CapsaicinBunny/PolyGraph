@@ -208,9 +208,10 @@ describe("grouped Smart runs the shape planner per leaf cluster", () => {
     expect(engineOf(dir({ nodes: ids.map((id) => N(id)), edges }).clusters, "s")).toBe("stress");
   });
 
-  test("oversized leaf cluster → guarded grid fallback (records requested + reason)", () => {
+  test("oversized leaf cluster → guarded backbone fallback (records requested + reason)", () => {
     // A multi-parent DAG of >1200 nodes: the planner asks for layered; the budget guard
-    // downgrades it to grid deterministically and records why.
+    // downgrades it to the STRUCTURAL backbone (still within backbone's 2500 cap), not the
+    // meaningless alphabetical grid, and records why.
     const n = 1250;
     const nodes = Array.from({ length: n }, (_, i) => N(`big/n${i}.ts`));
     const edges: { source: string; target: string }[] = [];
@@ -220,7 +221,7 @@ describe("grouped Smart runs the shape planner per leaf cluster", () => {
     }
     const box = dir({ nodes, edges }).clusters.find((c) => c.id === "big")!;
     expect(box.requestedEngine).toBe("layered");
-    expect(box.engine).toBe("grid");
+    expect(box.engine).toBe("backbone");
     expect(box.fallbackReason).toBe("node-cap");
   });
 
@@ -359,8 +360,14 @@ describe("resolveEngineForBudget (budget guard, separate from chooseEngine)", ()
       fallbackReason: null,
     });
   });
-  test("downgrades to grid over the node cap", () => {
+  test("downgrades to backbone over the node cap; grid only when too big for backbone", () => {
+    // Just over layered's 1200 cap but within backbone's 2500 → structural backbone.
     expect(resolveEngineForBudget("layered", 1201, 10)).toEqual({
+      engine: "backbone",
+      fallbackReason: "node-cap",
+    });
+    // Over backbone's own cap → the cheap grid.
+    expect(resolveEngineForBudget("layered", 2501, 10)).toEqual({
       engine: "grid",
       fallbackReason: "node-cap",
     });

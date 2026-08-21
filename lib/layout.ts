@@ -10,6 +10,7 @@ import {
 import { stratify, tree as d3tree } from "d3-hierarchy";
 import { Layout as ColaLayout } from "webcola";
 import type { ViewEdgeKind } from "./aggregate";
+import type { CompactGroupingSnapshot } from "./graph/grouping-snapshot";
 import { coreness } from "./layout/backbone";
 import { detectCommunities } from "./layout/community";
 import {
@@ -72,8 +73,17 @@ export type LayoutAlgorithm =
 /** Algorithms for which the direction selector is meaningful. */
 export const DIRECTIONAL_ALGORITHMS: LayoutAlgorithm[] = ["smart", "layered", "tree"];
 
-/** How the Smart layout groups nodes into clusters. */
-export type GroupBy = "directory" | "community" | "none";
+/**
+ * How the Smart layout groups nodes into clusters — a grouping-mode KEY (Phase C1a).
+ * The well-known built-ins are "directory" / "community" / "none"; provider-eligible
+ * modes add "package" and "facet:<key>" (e.g. "facet:env"). A `string` because the set
+ * is open (eligible groupable facets are discovered per graph); consumers branch only on
+ * the built-ins and otherwise drive the layout from the injected grouping snapshot.
+ */
+export type GroupBy = string;
+
+/** The always-available built-in grouping modes (no provider/manifest needed). */
+export const BUILTIN_GROUP_BY = ["directory", "community", "none"] as const;
 
 export interface LayoutOptions {
   algorithm?: LayoutAlgorithm;
@@ -92,6 +102,13 @@ export interface LayoutOptions {
    * reshuffling. Nodes without a prior position fall back to the engine default.
    */
   previousPositions?: Map<string, XYPosition>;
+  /**
+   * The injected grouping snapshot (Phase C1a). When present, the Smart layout builds
+   * its cluster tree from it (the new grouping INPUT contract) rather than deriving
+   * directory ancestry from node ids. Built once on the main thread; its typed arrays
+   * transfer to the worker. See lib/graph/grouping-snapshot.ts.
+   */
+  groupingSnapshot?: CompactGroupingSnapshot;
 }
 
 /** Why the budget guard downgraded a leaf cluster's planner choice to grid (null = it didn't). */
@@ -1240,6 +1257,7 @@ function smartOptions(options: LayoutOptions) {
     density: options.density,
     communityOf: options.communityOf,
     previousPositions: options.previousPositions,
+    groupingSnapshot: options.groupingSnapshot,
   };
 }
 
@@ -1283,8 +1301,12 @@ export function runLayout(input: LayoutInput, options: LayoutOptions = {}): Layo
 const HEAVY_COMPONENT_CAP = {
   stress: 6000,
   layered: 1200,
+  // backbone is the STRUCTURAL fallback for an over-cap heavy component (below), so its cap
+  // is set above typical "Reveal detail" expanded-graph sizes (~1.5-2.5k nodes) — it shows
+  // the core instead of dropping to a meaningless grid. The 8s worker timeout backstops any
+  // dense outlier that creeps toward the edge cap.
   tree: 2500,
-  backbone: 1500,
+  backbone: 2500,
   force: 1800,
 } as const;
 const HEAVY_EDGE_CAP = 8_000;
@@ -1322,15 +1344,32 @@ export function resolveEngineForBudget(
 ): { engine: LayoutAlgorithm; fallbackReason: FallbackReason } {
   const cap = HEAVY_COMPONENT_CAP[requested as keyof typeof HEAVY_COMPONENT_CAP];
   if (cap === undefined) return { engine: requested, fallbackReason: null };
-  if (nodeCount > cap) return { engine: "grid", fallbackReason: "node-cap" };
+  const overNodes = nodeCount > cap;
   // Stress is near-linear in edges (PivotMDS for large comps), so the dense edge backstop
   // doesn't apply to it; the other heavy engines are ~O(V·E) and keep it.
-  if (requested !== "stress" && edgeCount > HEAVY_EDGE_CAP)
-    return { engine: "grid", fallbackReason: "edge-cap" };
-  // dagre (layered) hangs on dense components even well under the node/edge caps.
-  if (requested === "layered" && tooDenseForDagre(nodeCount, edgeCount))
-    return { engine: "grid", fallbackReason: "edge-cap" };
-  return { engine: requested, fallbackReason: null };
+  const overEdges = requested !== "stress" && edgeCount > HEAVY_EDGE_CAP;
+  // dagre (layered) hangs on DENSE components even well under the node/edge caps: a
+  // 196-node/752-edge component (3.8 edges/node) pins network-simplex for >60s. Density is a
+  // third, independent reason to refuse the requested engine (#75).
+  const overDense = requested === "layered" && tooDenseForDagre(nodeCount, edgeCount);
+  if (!overNodes && !overEdges && !overDense) return { engine: requested, fallbackReason: null };
+  const reason: FallbackReason = overNodes ? "node-cap" : "edge-cap";
+  // Prefer a STRUCTURAL fallback — backbone shows the dependency core, not the meaningless
+  // alphabetical grid users complained about — whenever the component still fits backbone's
+  // budget. Only a component too big even for backbone (or backbone itself overflowing)
+  // falls all the way to the cheap grid.
+  //
+  // Density is safe to route here: backbone lays out via forceLayout, NOT dagre, so it cannot
+  // reproduce the network-simplex hang that makes a dense component unsuitable for layered in
+  // the first place. Grid stays the destination only when backbone's own budget can't take it.
+  if (
+    requested !== "backbone" &&
+    nodeCount <= HEAVY_COMPONENT_CAP.backbone &&
+    edgeCount <= HEAVY_EDGE_CAP
+  ) {
+    return { engine: "backbone", fallbackReason: reason };
+  }
+  return { engine: "grid", fallbackReason: reason };
 }
 
 /**
@@ -1375,6 +1414,7 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
         density: options.density,
         communityOf: options.communityOf,
         previousPositions: options.previousPositions,
+        groupingSnapshot: options.groupingSnapshot,
       }).nodes;
     case "tree":
       return cappedComponents(view, HEAVY_COMPONENT_CAP.tree, (sub) => treeLayout(sub, direction));

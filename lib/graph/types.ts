@@ -1,5 +1,9 @@
 // Shared graph model — used by both the server-side analyzer and the client UI.
 
+// Type-only import: dimensions.ts never imports types.ts at runtime, so a
+// type-only reference here introduces no import cycle.
+import type { CatalogWarning, DimensionCatalog } from "./dimensions";
+
 // Universal, language-neutral node taxonomy. Each language parser emits the
 // subset that fits its constructs (a Rust parser uses struct/trait/macro, a
 // Java parser uses class/interface/method/field/annotation, etc.).
@@ -93,6 +97,14 @@ export interface GraphNode {
   line: number;
   /** Owning file node id, used for collapse/expand. Equals `id` for file nodes. */
   parentFile: string;
+  // Legacy typed facet fields (role/category/environment/runtimes). The spec ends
+  // Phase D with "remove legacy named fields", but removal is intentionally DEFERRED
+  // to Phase E: the matchers (rules/selector.ts, query-language/evaluate.ts) still
+  // read these as a fallback for legacy-only nodes whose `facets` is unset, and only
+  // the TS provider dual-writes `facets` today. Per the spec's own sequencing
+  // ("Legacy fields are removed only after every consumer reads facets"), they stay
+  // until Phase E populates `facets` for non-TS (Rust/Go/…) nodes too. Until then,
+  // every write goes through `writeFacet`, which keeps these in lock-step with `facets`.
   /** Detected architectural role, if any (ECS / React). */
   role?: NodeRole;
   /** UI (renders something) vs feature (logic/data). */
@@ -107,6 +119,14 @@ export interface GraphNode {
   version?: string;
   /** For npm externals: how the package is declared (or "undeclared"). */
   dependencyType?: DependencyType;
+  /**
+   * Generic dimension facets, keyed by facet key (e.g. `env`, `role`). Plain
+   * strings, sparse: a key is present only when informative (a value differing
+   * from the descriptor's default). This is the durable/interchange shape; the
+   * runtime `DimensionIndex` holds the interned columnar form. During the
+   * dimension-spine migration these dual-write alongside the legacy fields above.
+   */
+  facets?: Record<string, string[]>;
 }
 
 export type EdgeConfidence = "exact" | "inferred" | "ambiguous";
@@ -173,6 +193,21 @@ export interface AnalyzeResult {
   errors: AnalyzeError[];
   /** References that resolved to nothing in the scanned set. */
   unresolved: UnresolvedRef[];
+  /**
+   * The merged dimension catalog (structural + provider facets), travelling with
+   * the result as plain JSON. Optional during the dimension-spine migration; the
+   * multi-language kernel populates it, the TS-only path may omit it.
+   */
+  dimensions?: DimensionCatalog;
+  /**
+   * Non-fatal issues raised while merging the providers' descriptors into the
+   * catalog — e.g. a later provider's `defaultValue`/`domain` dropped first-wins,
+   * or a conflicting metadata value ignored. The design treats descriptor
+   * conflicts as observable signal, so they ride alongside the result rather than
+   * being silently discarded at the kernel boundary. Empty when the merge was
+   * clean (the common case: namespaced facet keys collide with nothing).
+   */
+  catalogWarnings?: CatalogWarning[];
 }
 
 /** A map of relative file path to its source text — the upload payload. */

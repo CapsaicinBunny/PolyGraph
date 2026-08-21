@@ -5,17 +5,12 @@ import { analyzeProject } from "../lib/kernel";
 import { buildSceneStructure, type SceneFilters } from "../lib/graph/scene";
 import { layoutInWorker } from "../lib/layout-client";
 import { availableFolders, availableLanguages } from "../lib/graph/filters";
-import { FILTERABLE_EDGE_KINDS, FILTERABLE_NODE_KINDS } from "../lib/graph/visual";
+import { FILTERABLE_EDGE_KINDS } from "../lib/graph/visual";
+import type { FacetKey } from "../lib/graph/dimensions";
+import type { FacetSelection } from "../lib/graph/facet-selection";
 import { buildAdjacency } from "../lib/graph/query";
 import { stronglyConnectedComponents } from "../lib/layout/scc";
-import type {
-  AnalyzeResult,
-  Environment,
-  GraphModel,
-  NodeCategory,
-  NodeKind,
-  Runtime,
-} from "../lib/graph/types";
+import type { AnalyzeResult, GraphModel } from "../lib/graph/types";
 import type { LayoutAlgorithm } from "../lib/layout";
 import type { LoadedFixture } from "./fixtures";
 import { hashString } from "./metrics";
@@ -28,10 +23,8 @@ export function analyze(fx: LoadedFixture): Promise<AnalyzeResult> {
 export function defaultFilters(graph: GraphModel): SceneFilters {
   return {
     showExternal: false,
-    enabledNodeKinds: new Set<NodeKind>(FILTERABLE_NODE_KINDS),
-    enabledCategories: new Set<NodeCategory>(["ui", "feature"]),
-    enabledEnvironments: new Set<Environment>(["client", "server"]),
-    enabledRuntimes: new Set<Runtime>(["node", "deno", "bun"]),
+    // Empty map ⇒ every facet value enabled (kind/category/env/runtime/role).
+    enabledFacets: new Map<FacetKey, FacetSelection>(),
     enabledEdgeKinds: new Set(FILTERABLE_EDGE_KINDS),
     enabledFolders: new Set(availableFolders(graph).map((f) => f.name)),
     enabledLanguages: new Set(availableLanguages(graph).map((l) => l.key)),

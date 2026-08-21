@@ -6,8 +6,9 @@ import type { GraphDiff } from "../diff/diff";
 import { countBySeverity, type Violation } from "../rules/engine";
 
 const CHECK = "✓"; // ✓
-const CROSS = "✗"; // ✗
-const WARN = "⚠"; // ⚠
+/** Status glyphs shared with other CLI renderers (e.g. config-problem prefix in check.ts). */
+export const CROSS = "✗"; // ✗
+export const WARN = "⚠"; // ⚠
 
 function shortLine(v: Violation): string {
   if (v.kind === "dependency") {

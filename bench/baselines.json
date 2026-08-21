@@ -30,19 +30,16 @@
   "scale-1000": {
     "layoutMs": 48.02,
     "hierarchyMs": 0.17,
-    "cutMs": 0.01,
     "autoCollapseMs": 0.01
   },
   "scale-8000": {
     "layoutMs": 15.12,
     "hierarchyMs": 0.57,
-    "cutMs": 0.03,
     "autoCollapseMs": 3.25
   },
   "scale-100000": {
     "layoutMs": 222.72,
     "hierarchyMs": 8.81,
-    "cutMs": 0.04,
     "autoCollapseMs": 53.4
   }
 }

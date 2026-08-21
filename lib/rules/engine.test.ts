@@ -87,6 +87,49 @@ describe("evaluate — dependency rules", () => {
   });
 });
 
+describe("evaluate — legacy selector syntax still matches end-to-end (Phase D)", () => {
+  // matchNode reads ONLY selector.facets; legacy syntax (kind/role/environment/
+  // category) works because the loader mirrors those typed fields INTO facets. This
+  // exercises parse → evaluate over a graph for each mirrored key, so a dropped
+  // mirror mapping would fail here even though selector/load unit tests still pass.
+  const g: GraphModel = {
+    nodes: [
+      file("src/App.tsx#App", {
+        kind: "component",
+        parentFile: "src/App.tsx",
+        role: "react-component",
+        environment: "client",
+        category: "ui",
+      }),
+      file("src/db.ts"),
+    ],
+    edges: [makeEdge("src/App.tsx#App", "src/db.ts", "call")],
+  };
+
+  test.each([
+    ["kind", { kind: "component" }],
+    ["role", { role: "react-component" }],
+    ["environment→env", { environment: "client" }],
+    ["category", { category: "ui" }],
+  ])("legacy `%s` selector fires the dependency rule", (_label, from) => {
+    const cfg = parseConfig({
+      rules: [{ name: "no db from client ui", from, disallow: { path: "src/db.ts" } }],
+    });
+    const v = evaluate(cfg, g);
+    expect(v).toHaveLength(1);
+    expect(v[0].related[0].filePath).toBe("src/db.ts");
+  });
+
+  test("a legacy selector that should NOT match produces no violation", () => {
+    const cfg = parseConfig({
+      rules: [
+        { name: "server only", from: { environment: "server" }, disallow: { path: "src/db.ts" } },
+      ],
+    });
+    expect(evaluate(cfg, g)).toEqual([]);
+  });
+});
+
 describe("evaluate — cycle rules", () => {
   // a → b → c → a is a 3-cycle; d is acyclic.
   const graph: GraphModel = {

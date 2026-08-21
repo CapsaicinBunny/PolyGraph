@@ -1,4 +1,5 @@
 import { Node, type Project, type SourceFile, SyntaxKind } from "ts-morph";
+import { writeFacet } from "../graph/facets-write";
 import {
   fileNodeId,
   FILE_NODE_LINE,
@@ -49,38 +50,42 @@ function collectFromFile(file: SourceFile, index: DeclIndex): void {
   const fileComponentRole = fileRole(framework);
 
   // Environment + runtime are file-level facts shared by every node in the file.
-  const fileFacetFields = {
-    ...(facets.environment ? { environment: facets.environment } : {}),
-    ...(facets.runtimes.length ? { runtimes: facets.runtimes } : {}),
+  // Dual-write them (and category/role) through writeFacet so the legacy fields
+  // and node.facets stay in lock-step with no change to detected values.
+  const writeFileFacets = (node: GraphNode): void => {
+    if (facets.environment) writeFacet(node, "env", [facets.environment]);
+    if (facets.runtimes.length) writeFacet(node, "runtime", facets.runtimes);
   };
 
-  index.nodes.push({
+  const fileNode: GraphNode = {
     id: parentFile,
     kind: "file",
     label: filePath.split("/").pop() ?? filePath,
     filePath,
     line: FILE_NODE_LINE,
     parentFile,
-    category: facets.hasJsx || fileComponentRole ? "ui" : "feature",
-    ...(fileComponentRole ? { role: fileComponentRole } : {}),
-    ...fileFacetFields,
-  });
+  };
+  writeFacet(fileNode, "category", [facets.hasJsx || fileComponentRole ? "ui" : "feature"]);
+  if (fileComponentRole) writeFacet(fileNode, "role", [fileComponentRole]);
+  writeFileFacets(fileNode);
+  index.nodes.push(fileNode);
 
   const add = (decl: Node, name: string, kind: NodeKind, role?: NodeRole) => {
     const id = symbolNodeId(filePath, name);
     const category: NodeCategory =
       kind === "component" || (role?.endsWith("-component") ?? false) ? "ui" : "feature";
-    index.nodes.push({
+    const node: GraphNode = {
       id,
       kind,
       label: name,
       filePath,
       line: decl.getStartLineNumber(),
       parentFile,
-      category,
-      ...(role ? { role } : {}),
-      ...fileFacetFields,
-    });
+    };
+    writeFacet(node, "category", [category]);
+    if (role) writeFacet(node, "role", [role]);
+    writeFileFacets(node);
+    index.nodes.push(node);
     index.declToId.set(decl, id);
   };
 

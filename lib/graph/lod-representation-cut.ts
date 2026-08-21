@@ -1,0 +1,924 @@
+// The scene bridge for the representation-LOD cut (Phase C1b Task 5). Connects the
+// constrained budgeted antichain solver (lod-cut-solver.ts) to the EXISTING collapse-
+// shaped render pipeline (compose() → collapseClusters()), so the rendered scene becomes
+// "the committed cut's selected representations" WITHOUT rewriting the renderer or scene
+// builder — and the C1a collapse path stays the untouched fallback when adaptiveLod is
+// off (the canvas chooses which path to run).
+//
+// Flow (all pure):
+//   1. Build a RepresentationHierarchy from the active mode's grouping snapshot.
+//   2. Populate each group proxy's world bounds from the LIVE scene boxes (by boxKey), so
+//      the solver's visibility weighting and the screen-size refine gate see what the user
+//      sees — the same coordinate space the C1a cut measured.
+//   3. Translate user intent into solver CONSTRAINTS (forceClosed/forceOpen) and the
+//      camera/legibility cutoff into a refine GATE (off-screen or sub-openPx proxies are
+//      not auto-refined — matching "coarse zoom shows proxies").
+//   4. solveLodCut → a valid antichain; commit it through the LOD runtime (only a
+//      materially-different cut bumps the generation).
+//   5. Derive the COLLAPSED box-key set (the box keys of selected proxy reps) so the result
+//      drops into groupLodSelection / compose() exactly like the C1a cut.
+//
+// A selected hidden node maps to its active proxy's box key (for the highlight) via
+// representativeOf.
+
+import type { CompactGroupingSnapshot } from "./grouping-snapshot";
+import { NO_GROUP } from "./grouping-snapshot";
+import type { Box, Camera, Viewport } from "./lod-screen";
+import { intersectsViewport, screenHeight, worldToScreen } from "./lod-screen";
+import {
+  buildRepresentationEdgeIndex,
+  buildRepresentationHierarchy,
+  DETACHED_REP,
+  type EdgeIndexInput,
+  type RepresentationEdgeIndex,
+  type RepresentationHierarchy,
+  representationBuilderVersion,
+  representationEdgeIndexVersion,
+  representativeOf,
+} from "./representation";
+import {
+  computeStableProxyBounds,
+  PROXY_LAYOUT_VERSION,
+  PROXY_WORLD_SIZE,
+  type StableProxyBounds,
+} from "./representation-proxy-layout";
+import { computeRepresentationBounds } from "./representation-bounds";
+import {
+  bootstrapCut,
+  type CameraState,
+  type CutConstraints,
+  cutSignature,
+  type LimitedDetail,
+  type LodBudget,
+  type LodCut,
+  makeRuntimeCut,
+  type RuntimeLodCut,
+  type SolveDiagnostics,
+  solveLodCut,
+} from "./lod-cut-solver";
+import {
+  commitIfMaterial,
+  createLodRuntime,
+  type LodRuntimeState,
+  setPending,
+} from "./lod-runtime";
+import { type EvictionController, makeEvictionController } from "./lod-eviction";
+import type { CollapseIntent, GroupId } from "./collapse-model";
+
+/**
+ * Version of the representation BUILDER (the hierarchy shape: proxy parenting, the bootstrap
+ * super-root / root-bucket tiering, intermediate tiers, fan-out bounds, cost rollup). Folded
+ * into the {@link RepresentationMaterialSignature} so a builder change invalidates every cached
+ * {@link RepresentationRuntime} (and downstream proxy/local-layout caches keyed off the same
+ * version). Re-exports {@link representationBuilderVersion} (the single source of truth defined
+ * alongside the builder) so the two can never drift; bump THAT constant on any change to the
+ * structure `buildRepresentationHierarchy` emits — including the intermediate-tier limits.
+ */
+export const REPRESENTATION_BUILDER_VERSION = representationBuilderVersion;
+
+/**
+ * Version of the persistent CSR edge index (design B2 + impl note (a)). Folded into the
+ * {@link RepresentationMaterialSignature} alongside {@link REPRESENTATION_BUILDER_VERSION} so a
+ * change to the index layout / pairing rule invalidates every cached {@link RepresentationRuntime}
+ * (the index is cached ON the runtime, on the SAME signature). Re-exports the single source of
+ * truth from the edge-index module; it already concatenates the hierarchy builder version.
+ */
+export const REPRESENTATION_EDGE_INDEX_VERSION = representationEdgeIndexVersion;
+
+/**
+ * The ONE finite LOD budget — the single source of truth for every LOD ceiling (P4
+ * budget-consolidation). Every consumer reads these numbers; no module redefines them.
+ * This replaces the duplicated, drifting card constants that used to live in the canvas and
+ * the Explorer (`LOD_MAX_CARDS`, `AUTO_COLLAPSE_MAX_CARDS`, two copies of `LOD_NODE_BUDGET`)
+ * and the example defaults that previously lived in the solver.
+ *
+ * The {@link LodBudget} SHAPE is owned by the solver (it consumes a budget); the NUMBERS are
+ * owned here (the scene bridge), so there is exactly one place to tune them.
+ *
+ * Card-budget rationale (the expand-all / Smart-timeout guard — design "Risks": "budget
+ * reconciliation regressing the expand-all fix"):
+ *  - `targetCards` (800) — the soft antichain width auto-refinement steers toward (was the
+ *    canvas's `LOD_MAX_CARDS`).
+ *  - `hardCards` (1500) — the FINITE ceiling a forced open / expand-all is capped at. This is
+ *    the measured value that keeps the layout input within Smart's reliable range (Smart timed
+ *    out >8s on ~1.5k-node inputs at the old 2500). It is the value the expand-all seed and the
+ *    rep cut's `nodeBudget` resolve to; it MUST stay 1500 so the expand-all fix does not regress.
+ *    (Deliberately NOT 2000 — the old example default — which the rep cut never actually used.)
+ * The remaining dimensions are unchanged from the prior example defaults.
+ */
+export const LOD_BUDGET: LodBudget = {
+  // visible cards (one proxy = one card; the antichain width the user sees)
+  targetCards: 800,
+  hardCards: 1_500,
+  // layout cost (Σ (1 + symbols) over refined reps — the relayout work pressure)
+  targetLayoutCost: 2_500,
+  hardLayoutCost: 6_000,
+  // aggregated edges in the active quotient graph (cut-dependent; via the edge index — B2)
+  targetEdges: 8_000,
+  hardEdges: 25_000,
+  // labels drawn
+  targetLabels: 500,
+  hardLabels: 2_000,
+  // GPU geometry budget
+  maxGpuBytes: 128 * 1024 * 1024,
+};
+
+// Re-export the budget SHAPE so a single import of this module gives a consumer both the
+// type and the one concrete budget (the solver still owns the type definition).
+export type { LodBudget };
+
+/** Tuning for the representation cut, mirroring the C1a GroupCutOptions surface. */
+export interface RepLodOptions {
+  /** Minimum on-screen box height (px) for a proxy to auto-refine into its children. */
+  openPx: number;
+  /** Soft cap on rendered cards (auto refinement stays under this). */
+  maxCards: number;
+  /** Layout-node budget (the hard ceiling on the cut's rendered node cost). */
+  nodeBudget: number;
+  /** Viewport cull margin (px). */
+  margin: number;
+  /** Layout-node cost of one underlying node (default 1 = a card). */
+  nodeCost?: (nodeId: string) => number;
+}
+
+/**
+ * Conservative defaults. The card budgets are sourced from the one finite {@link LOD_BUDGET}
+ * (P4 budget-consolidation) — `maxCards` = soft `targetCards`, `nodeBudget` = finite `hardCards`
+ * — so the canvas no longer carries its own copies. `openPx` is a camera-legibility knob (px),
+ * not a budget, so it stays here.
+ */
+export const DEFAULT_REP_LOD_OPTIONS: RepLodOptions = {
+  openPx: 240,
+  maxCards: LOD_BUDGET.targetCards,
+  nodeBudget: LOD_BUDGET.hardCards,
+  margin: 0,
+};
+
+export interface RepLodInput {
+  snapshot: CompactGroupingSnapshot;
+  nodeIds: readonly string[];
+  /**
+   * POST-FILTER visibility mask over node ordinals (Gap 7 — "Cut is not clearly
+   * post-filter"). Returns false for a node hidden by the active filters (folders,
+   * languages, edge kinds, query filter). When provided, the cut is built from the
+   * post-filter projection: hidden nodes' leaf reps are DETACHED — they add no proxy-subtree
+   * cost, no card-budget pressure, and a group with no visible members produces no proxy.
+   * Omitted → every node visible (the prior raw-graph behavior). The already-filtered
+   * community detection is reused via the snapshot; it is NOT re-run over the full graph.
+   */
+  visibleNode?: (ordinal: number) => boolean;
+  /**
+   * POST-FILTER edges by node ORDINAL (design B2 + impl note (a)). When provided, a persistent
+   * CSR {@link RepresentationEdgeIndex} is built ALONGSIDE the hierarchy and cached on the SAME
+   * material signature ({@link RepresentationRuntime.edgeIndex}) — a camera recut reuses it,
+   * only a material change rebuilds it. The index drives the solver's cut-aware marginal edge
+   * cost and the incremental materializer's boundary-edge retrieval (Gap 9). Hidden endpoints
+   * (per {@link visibleNode}, reflected in the hierarchy's detachment) are dropped. Omitted →
+   * no index is built (the legacy behavior; the additive per-rep edge cost stands in).
+   */
+  edges?: readonly EdgeIndexInput[];
+  /** Live scene boxes per layout box key (open ClusterBoxes + collapsed aggregate cards). */
+  boxes: Map<string, Box>;
+  /**
+   * SCALE CALIBRATION (the collapse↔refine limit-cycle fix). The overall world-space extent of
+   * the LIVE rendered scene — max(width, height) of the union of every node/cluster box the visual
+   * engine placed. The `cam.scale` the canvas hands in is FIT to this live world (so a ~2000-node
+   * Stress cloud spanning ~10k–50k units fits at scale ≈ 0.05), but the stable proxy bounds the
+   * gate measures live in a FIXED {@link PROXY_WORLD_SIZE}=4096 canvas — a different scale entirely.
+   * The cut therefore rescales the stable bounds by `liveExtent / PROXY_WORLD_SIZE` so a top-level
+   * group projects to the same on-screen size at the fitted camera that the live boxes did before
+   * the stable-bounds gate landed (623dce2) — WITHOUT tracking the per-frame drift of individual
+   * boxes. Captured ONCE per material signature and cached on the runtime (it is stable across
+   * relayouts of the same material — the overall cloud size barely moves even as nodes drift), so
+   * it is NOT recomputed per recut. Omitted (or ≤ 0) → no calibration (the legacy 1:1 behavior:
+   * `boundsScale` = 1), which is correct for box-less engines / tests where the camera is already
+   * in proxy-world units.
+   */
+  liveExtent?: number;
+  cam: Camera;
+  vp: Viewport;
+  /** User collapse intent for the active mode (group id → open/closed). */
+  intent: CollapseIntent;
+  options: RepLodOptions;
+  /** The previous committed runtime (to gate the generation); omitted on the first solve. */
+  previous?: LodRuntimeState;
+  /** Filter signature folded into the CutSignature (a filter change forces a commit). */
+  filterSignature?: string;
+  /**
+   * Identity of the FILTERED graph this cut is built over (graph version + filter
+   * signature, or any caller token that changes iff the post-filter node/edge SET changes).
+   * Folded into the {@link RepresentationMaterialSignature}: when it (and the grouping /
+   * node-cost inputs) are unchanged, a recut REUSES the cached hierarchy rather than
+   * rebuilding it (Gap 4). Omitted → derived from `filterSignature` alone (no graph-version
+   * component — adequate for tests, but a production caller should pass the real identity).
+   */
+  filteredGraphId?: string;
+  /**
+   * Monotonic version of the active grouping (bumps when the grouping is recomputed, even
+   * if the mode string is unchanged — e.g. a re-run community detection relabels). Folded
+   * into the material signature so a regrouping rebuilds the hierarchy. Omitted → 0.
+   */
+  groupingVersion?: number;
+  /**
+   * Signature of the per-node COST inputs (the `nodeCost` closure's domain — e.g. the
+   * expanded-files set + symbol counts). When the costs change the hierarchy's rolled-up
+   * subtree costs change, so this is folded into the material signature. Omitted → "" (the
+   * caller asserts the cost function is stable for the cached runtime's lifetime).
+   */
+  nodeCostSignature?: string;
+  /** Collect the solver's why-not-refined diagnostics (Appendix A §I observability). */
+  collectDiagnostics?: boolean;
+  /**
+   * The persistent eviction + runtime-cut controller (Phase C1c bug b). When provided, the
+   * cut's auto-opened (non-forced) group proxies are tracked across recuts; offscreen ones
+   * over the controller's budget are EVICTED — re-collapsed via an extra forceClosed pass —
+   * so a long exploration of many regions can't grow auto-opens without bound. The
+   * controller also rolls the runtime cut in place (no fresh array per recut). Omitted →
+   * the legacy behavior (a fresh runtime cut each call, no eviction).
+   */
+  eviction?: EvictionController;
+  /**
+   * A pre-acquired persistent runtime (Gap 4). When provided, the cut is computed AGAINST
+   * this runtime's cached hierarchy / node ordinals / group-id map rather than rebuilding
+   * them — a camera recut UPDATES bounds/priorities/cut but does NOT reconstruct the
+   * hierarchy. The caller obtains it via {@link acquireRepresentationRuntime}, which reuses
+   * the prior runtime when the material signature is unchanged and rebuilds it when it
+   * changes. Omitted → the legacy behavior (a fresh hierarchy + group-id map every call).
+   */
+  runtime?: RepresentationRuntime;
+}
+
+/**
+ * The PERSISTENT representation runtime (design Gap 4 — "Hierarchy rebuilt on every recut").
+ * Everything whose shape is a function of the MATERIAL signature (filtered-graph identity +
+ * grouping mode/version + node-cost inputs + builder version) — NOT of the camera — lives
+ * here and is reused across camera recuts. A recut updates per-rep bounds / priorities and
+ * re-solves the cut; it never rebuilds these O(N) structures. The runtime is rebuilt only
+ * when {@link materialSignature} changes (see {@link acquireRepresentationRuntime}).
+ */
+export interface RepresentationRuntime {
+  /** The material signature this runtime was built under (the reuse/rebuild key). */
+  signature: RepresentationMaterialSignature;
+  /** The proxy hierarchy (arrays, subtree-cost rollups, DFS intervals) — built ONCE. */
+  hierarchy: RepresentationHierarchy;
+  /**
+   * STABLE, layout-INDEPENDENT proxy box geometry (design Gap 3 / P2 "stable-proxy-geometry").
+   * A deterministic hierarchical layout over the hierarchy STRUCTURE — computed ONCE here,
+   * independent of the visual node-layout engine. EVERY recut rewrites the hierarchy's live
+   * `bounds*` columns from this geometry (rescaled by `boundsScale`) — the engine's scene boxes
+   * are never read. Engine-independence is therefore total rather than a fallback for engines that
+   * emit no boxes (Grid, the classic engines, None): there is no engine-box path left to fall back
+   * FROM. That is also what makes a recut of the same material at the same camera idempotent. A function of the material signature, so it is cached on the runtime
+   * and reused across camera recuts; a material change rebuilds it with the hierarchy.
+   */
+  stableBounds: StableProxyBounds;
+  /**
+   * The persistent CSR edge index (design B2 + impl note (a)), built ONCE alongside the
+   * hierarchy from the post-filter edges, or `undefined` when the caller supplied no `edges`.
+   * Reused across camera recuts (it is a function of the material signature, not the camera);
+   * a material change rebuilds it together with the hierarchy.
+   */
+  edgeIndex: RepresentationEdgeIndex | undefined;
+  /** The canonical node-id order the hierarchy was built from (reused, not re-mapped). */
+  nodeIds: readonly string[];
+  /** namespaced group id → rep id, built once with the hierarchy (used for intent → constraints). */
+  repOfGroupId: Map<GroupId, number>;
+  /** The persistent eviction + runtime-cut controller (bounds offscreen auto-opens; rolls the cut). */
+  eviction: EvictionController;
+  /** The committed-generation runtime (pending/committed cut + generation), persisted across recuts. */
+  lodRuntime: LodRuntimeState | undefined;
+  /**
+   * SCALE-CALIBRATION cache (the collapse↔refine limit-cycle fix). The LIVE layout's world extent
+   * (max width/height of the rendered cloud) captured ONCE when this runtime was built, from
+   * `input.liveExtent`. The refine gate rescales the fixed-4096 stable bounds by
+   * `liveExtent / PROXY_WORLD_SIZE` so they project at the same on-screen size the camera (fit to
+   * the live world) expects. Cached HERE — on the material signature — precisely so it is NOT
+   * recomputed per camera recut: it is stable across relayouts of the same material (the overall
+   * cloud size barely moves while individual nodes drift), and recomputing it per frame would
+   * re-introduce a drifting, camera-coupled gate. `undefined` when the caller passed no extent
+   * (→ `boundsScale` = 1, the legacy uncalibrated behavior).
+   */
+  liveExtent: number | undefined;
+}
+
+/** The opaque material-signature string keying a {@link RepresentationRuntime}. */
+export type RepresentationMaterialSignature = string;
+
+/**
+ * Normalize a caller-supplied live world extent: a usable positive finite number, or undefined for
+ * "no calibration". Takes the FIELD, not the whole input, so the capture site
+ * (`acquireRepresentationRuntime`) and the replay site (`buildSceneRepresentationCut`, via
+ * `boundsScaleOf(runtime.liveExtent)`) share one definition instead of each re-testing
+ * `!== undefined && > 0` — which is what they were doing, under a comment claiming they did not.
+ * The finiteness test also stops an Infinity extent from poisoning every bounds column with NaN.
+ */
+function liveExtentOf(v: number | undefined): number | undefined {
+  return v !== undefined && Number.isFinite(v) && v > 0 ? v : undefined;
+}
+
+/**
+ * The SCALE-CALIBRATION factor: how much to grow the fixed-{@link PROXY_WORLD_SIZE} stable proxy
+ * geometry so it lands in the same world the camera was fit to. 1 (identity) when uncalibrated.
+ * Single source of truth — the runtime build and every recut MUST apply the same factor, or the
+ * reservation tiers and the boxes they gate end up in different coordinate spaces.
+ */
+function boundsScaleOf(liveExtent: number | undefined): number {
+  const v = liveExtentOf(liveExtent);
+  return v === undefined ? 1 : v / PROXY_WORLD_SIZE;
+}
+
+/** Write `stable * scale` into the hierarchy's live geometry columns (in place, all reps). */
+function scaleBoundsColumns(
+  hierarchy: RepresentationHierarchy,
+  stable: StableProxyBounds,
+  scale: number,
+): void {
+  const cols = hierarchy.columns;
+  // A short `stable` would read `undefined` out of the Float32Array, and `undefined * scale` is
+  // NaN — which would propagate silently into the refine gate and the arbitration tiebreak rather
+  // than failing. Both call sites pass a matched pair from one runtime, so this is a guard, not a
+  // recovery path.
+  if (stable.x.length < hierarchy.repCount) {
+    throw new Error(
+      `stable proxy bounds (${stable.x.length}) shorter than hierarchy repCount (${hierarchy.repCount})`,
+    );
+  }
+  for (let rep = 0; rep < hierarchy.repCount; rep++) {
+    cols.boundsX[rep] = stable.x[rep] * scale;
+    cols.boundsY[rep] = stable.y[rep] * scale;
+    cols.boundsW[rep] = stable.w[rep] * scale;
+    cols.boundsH[rep] = stable.h[rep] * scale;
+  }
+}
+
+/**
+ * Compute the MATERIAL signature for the cached runtime (Gap 4): the conjunction of inputs
+ * whose change requires REBUILDING the hierarchy — the filtered-graph identity, the grouping
+ * mode + version, the node-cost inputs, and the builder version. The camera, intent, and
+ * live boxes are DELIBERATELY excluded — they drive a recut, not a rebuild.
+ */
+export function materialSignature(input: RepLodInput): RepresentationMaterialSignature {
+  const graphId = input.filteredGraphId ?? input.filterSignature ?? "";
+  const mode = input.snapshot.modeKey;
+  const groupingVersion = input.groupingVersion ?? 0;
+  const nodeCostSig = input.nodeCostSignature ?? "";
+  // Stable, FIXED-order parts so the signature never drifts with object key order.
+  return [
+    `g=${graphId}`,
+    `m=${mode}`,
+    `gv=${groupingVersion}`,
+    `nc=${nodeCostSig}`,
+    `b=${REPRESENTATION_BUILDER_VERSION}`,
+    `e=${REPRESENTATION_EDGE_INDEX_VERSION}`,
+    `pl=${PROXY_LAYOUT_VERSION}`,
+  ].join("|");
+}
+
+/**
+ * Acquire the persistent runtime for `input` (Gap 4). When `previous` exists and its
+ * signature MATCHES the input's material signature, it is REUSED verbatim — the same
+ * hierarchy object, node ordinals, group-id map and eviction controller (a camera recut
+ * never reconstructs them). Otherwise a fresh runtime is built: the hierarchy + group-id
+ * map are constructed once here, a right-sized eviction controller is created, and the
+ * committed-generation runtime is carried over only when `previous` exists for the same
+ * grouping mode (else a fresh generation chain starts).
+ *
+ * The returned runtime is passed to {@link buildSceneRepresentationCut} on `input.runtime`.
+ */
+export function acquireRepresentationRuntime(
+  input: RepLodInput,
+  previous?: RepresentationRuntime,
+  offscreenOpenBudget = DEFAULT_OFFSCREEN_OPEN_BUDGET,
+): RepresentationRuntime {
+  const signature = materialSignature(input);
+  if (previous && previous.signature === signature) {
+    // MATERIAL match → reuse the cached hierarchy / ordinals / group-id map / eviction /
+    // generation runtime unchanged. This is the hot path of a camera recut.
+    return previous;
+  }
+
+  // Material change (or first build) → reconstruct the O(N) structures ONCE.
+  const nodeCost = input.options.nodeCost ?? (() => 1);
+  // P0.5 normalization (design B1): ALWAYS build with the synthetic super-root / root-bucket
+  // tier and the render-only intermediate tiers. This is what makes the bootstrap (coarsest)
+  // cut budget-feasible regardless of orphan count and gives every oversized group bounded
+  // intermediate antichains to refine through — the precondition for "every group can
+  // progressively refine" in EVERY mode, including synthetic-None (spec Gap 2): None's
+  // components→communities hierarchy can have huge flat communities + many orphan/isolated
+  // nodes, so without normalization its bootstrap antichain starts over budget and can never
+  // become feasible. The deterministic balanced-chunk fallback (no edges/paths supplied)
+  // guarantees the invariants for None; the smarter strategies are wired in P1.
+  const hierarchy = buildRepresentationHierarchy(input.snapshot, input.nodeIds, {
+    nodeCost,
+    visibleNode: input.visibleNode,
+    bootstrapRoots: true,
+    intermediateTiers: true,
+  });
+  // STABLE proxy geometry (design Gap 3 / P2). Computed ONCE here from the hierarchy structure —
+  // engine-independent — and kept as the cut's authoritative bounds for every recut. This also
+  // seeds the hierarchy's `bounds*` columns; every recut rewrites them from THIS geometry (scaled
+  // by boundsScale), never from the engine's live boxes — see the decoupling note in
+  // buildSceneRepresentationCut for why tracking the engine's drifting boxes reopens the loop.
+  const stableBounds = computeStableProxyBounds(hierarchy);
+  // Put the geometry columns into the LIVE camera's world BEFORE deriving the reservation tiers
+  // below. `computeRepresentationBounds` reads `bounds*` and writes `reserved*`/`envelope*` from
+  // it, so running it against the raw fixed-4096 proxy geometry — which the recut then overwrites
+  // with `stableBounds * boundsScale` — would leave the tiers in a DIFFERENT coordinate space from
+  // the boxes they gate. `resolveBatchOverflow` compares the two directly, so at a typical
+  // liveExtent (30000 -> boundsScale ~7.3, against an envelope capped at sqrt(8) ~2.83x) the
+  // required extent would always look smaller than the current box, every refined root would
+  // resolve at the trivial "scale" rung, and `envelopeExhausted` could never fire.
+  const boundsScale = boundsScaleOf(input.liveExtent);
+  scaleBoundsColumns(hierarchy, stableBounds, boundsScale);
+  // Tiered reservation (design Appendix A §C / P3 overflow). Fill `reserved*` / `envelope*` /
+  // `minScale` from the just-computed stable `bounds*` ONCE per runtime (structural, on the
+  // material signature — never per camera recut). These are the bounds the overflow ladder
+  // (overflow-ladder.ts, wired in transition.ts) measures a refined group against, and the
+  // capped `growthEnvelope` is what bounds envelope growth (the Space Paradox fix). A camera
+  // recut rewrites the live `bounds*` columns from stableBounds × boundsScale (the same write
+  // performed just above) but leaves these structural reservation tiers intact (the cut never
+  // grows the envelope).
+  computeRepresentationBounds(hierarchy);
+  const repOfGroupId = new Map<GroupId, number>();
+  for (let g = 0; g < input.snapshot.groupIds.length; g++) {
+    repOfGroupId.set(input.snapshot.groupIds[g], hierarchy.repOfGroup[g]);
+  }
+  // Build the persistent CSR edge index ALONGSIDE the hierarchy (design B2 + impl note (a)),
+  // from the post-filter edges — cached on this same material signature, reused across recuts.
+  // Hidden endpoints are dropped by the index itself (a leaf rep under DETACHED_REP).
+  const edgeIndex = input.edges ? buildRepresentationEdgeIndex(hierarchy, input.edges) : undefined;
+  // The eviction controller's key space is the rep count; rebuild it when the rep count
+  // changes (a new hierarchy), else reuse the prior controller (its tracking is stale only
+  // when the rep id domain moved, which a material change implies — so a fresh one is correct).
+  const eviction = makeEvictionController(hierarchy.repCount, offscreenOpenBudget);
+  return {
+    signature,
+    hierarchy,
+    stableBounds,
+    edgeIndex,
+    nodeIds: input.nodeIds,
+    repOfGroupId,
+    eviction,
+    lodRuntime: undefined,
+    // Capture the live extent ONCE here (on the material signature). A camera recut reuses this
+    // runtime verbatim, so this is never recomputed per frame — exactly the "cache it on the
+    // persistent runtime, do NOT recompute per frame" requirement of the calibration fix.
+    liveExtent: liveExtentOf(input.liveExtent),
+  };
+}
+
+/** Default offscreen auto-open budget for a runtime's eviction controller (mirrors the canvas). */
+const DEFAULT_OFFSCREEN_OPEN_BUDGET = 64;
+
+export interface RepLodResult {
+  hierarchy: RepresentationHierarchy;
+  cut: LodCut;
+  runtime: LodRuntimeState;
+  /**
+   * The persistent runtime this solve used (Gap 4). Hand it back to
+   * {@link acquireRepresentationRuntime} on the next recut: when the material signature is
+   * unchanged the SAME hierarchy/ordinals/group-id map are reused (no O(N) rebuild). Present
+   * whenever the solve ran against a runtime (always, since the entry point acquires one).
+   */
+  repRuntime: RepresentationRuntime;
+  /** True iff this solve materially changed the committed cut (a generation fired). */
+  committed: boolean;
+  /** The box keys of selected proxy reps — the collapsed set the render path consumes. */
+  collapsedBoxKeys: Set<string>;
+  /** The OPEN namespaced group ids (groupLodSelection over collapsedBoxKeys). */
+  openSelection: Set<GroupId>;
+  /** O(1) membership over the cut (for representativeOf / highlight). */
+  runtimeCut: RuntimeLodCut;
+  /** The budget used for the solve (for the overlay's vs-budget readouts). */
+  budget: LodBudget;
+  /** Wall-clock of the solve (ms). */
+  cutSolveMs: number;
+  /** The solver's diagnostics when requested (why-not-refined + refinements), else null. */
+  diagnostics: SolveDiagnostics | null;
+  /**
+   * Explicit opens that hit a FINITE hard ceiling and were retained at the nearest proxy
+   * ("Detail limited" — design "Finite budget model"). Always populated (independent of
+   * `collectDiagnostics`); empty when every forced open was honored within hard. The UI
+   * surfaces an honest message naming each `limitingBudget` rather than silently expanding.
+   */
+  limitedDetails: LimitedDetail[];
+  /** Auto-opens evicted THIS solve (offscreen-over-budget); 0 without an eviction controller. */
+  evictions: number;
+  /** Cumulative evictions since the controller was created; 0 without one. */
+  totalEvictions: number;
+  /**
+   * The live layout extent the gate was calibrated against (cached on the runtime), or undefined
+   * when the caller passed none. Surfaced for the recut telemetry so the log records the exact
+   * coordinate-space calibration that produced this cut (debugging the collapse↔refine cycle).
+   */
+  liveExtent: number | undefined;
+  /** The applied calibration factor (liveExtent / PROXY_WORLD_SIZE), or 1 when uncalibrated. */
+  boundsScale: number;
+}
+
+/**
+ * Build the representation cut for the current camera and derive the collapse-shaped
+ * selection the existing render path consumes. Pure; the heavy downstream work runs only
+ * when `committed` is true (the caller gates the scene rebuild on it).
+ */
+export function buildSceneRepresentationCut(input: RepLodInput): RepLodResult {
+  // `boxes` (live scene boxes) is intentionally NOT consumed here: the cut is layout-independent
+  // (it reads only the STABLE bounds + camera). It remains on the input type for callers and for
+  // the material signature, but the cut's geometry must never depend on the drifting live boxes.
+  const { cam, vp, intent, options } = input;
+
+  // 0. Acquire the PERSISTENT runtime (Gap 4). When the caller passes a runtime whose
+  //    material signature already matches the input, the cached hierarchy / node ordinals /
+  //    group-id map are REUSED — a camera recut never rebuilds them. Otherwise (no runtime
+  //    passed, or a stale one) a fresh runtime is constructed once here. The hierarchy,
+  //    repOfGroupId and eviction controller all come FROM the runtime from this point on.
+  const runtime = acquireRepresentationRuntime(input, input.runtime);
+  const hierarchy = runtime.hierarchy;
+  const cols = hierarchy.columns;
+  const repOfGroupId = runtime.repOfGroupId;
+  const stableBounds = runtime.stableBounds;
+
+  // SCALE CALIBRATION (the collapse↔refine limit-cycle fix). The stable bounds live in a FIXED
+  // PROXY_WORLD_SIZE (4096) canvas, but `cam.scale` is fit to the LIVE layout's world extent
+  // (~10k–50k units for a few-thousand-node Stress cloud → cam.scale ≈ 0.05 when fit). At that
+  // scale an un-rescaled top-level stable box (~580 units) projects to ~27px ≪ openPx(240), so
+  // NOTHING clears the gate, the cut collapses to the super-root (1 card), the 1-node scene refits
+  // the camera to a tiny extent (cam.scale ≈ 7), the same stable boxes now project huge, everything
+  // refines (~1100 cards), the camera refits to the large extent, cam.scale goes tiny — and the
+  // cycle repeats. Rescaling every stable box by (liveExtent / PROXY_WORLD_SIZE) puts the gate's
+  // geometry into the SAME world the camera was fit to, so a top-level group clears openPx at the
+  // fitted camera the way the live boxes did before 623dce2. `liveExtent` is cached on the runtime
+  // (per material signature) so this factor is CONSTANT across recuts of the same material — it is
+  // NOT the per-frame drifting live box, so idempotency (the recut-loop fix) is preserved.
+  // Worked example: liveExtent=30000 → boundsScale ≈ 7.32 → a 580-unit stable group → ~4250 units
+  // → ×0.05 ≈ 212px, comparable to the ~hundreds-of-px the live box gave (see the calibration test).
+  const boundsScale = boundsScaleOf(runtime.liveExtent);
+
+  // A group rep detached by the post-filter mask (no visible members) is skipped throughout:
+  // it gets no bounds, no intent constraint, and no place in the cut.
+  const isDetachedGroup = (rep: number): boolean =>
+    cols.parentByRep[rep] === DETACHED_REP && cols.firstChildByRep[rep] === -1;
+
+  // 2. UPDATE proxy bounds for every rep from the STABLE, layout-independent bounds ONLY — the
+  //    per-recut camera update mutates the cached hierarchy's geometry columns IN PLACE (never
+  //    reconstructing them). The cut is DELIBERATELY decoupled from the visual engine's live
+  //    boxes here: Stress/Smart are non-deterministic (seeded from the previous frame's
+  //    positions) so their cluster boxes DRIFT every layout run and never converge. If the cut's
+  //    geometry columns tracked those drifting boxes, every geometry consumer downstream — the
+  //    refine gate (`canRefine`), the solver's `visibilityWeight` / `viewportCentreDistance`
+  //    arbitration tiebreak, and the eviction `onScreen` test — would read a different geometry
+  //    each recut, commit a DIFFERENT selection, bump the generation, trigger another recut, and
+  //    loop unbounded (the "constantly cutting" / "Laying out…" never clears bug). Seeding from
+  //    the stable bounds makes a recut of the same material at the same camera IDEMPOTENT
+  //    (committed=false), which is exactly what the canvas's scene-ready effect relies on. Stable
+  //    bounds are also non-zero under every engine (Grid / classic / None emit no cluster boxes),
+  //    so the cut OPERATES with every engine, not merely ignores its name. Zoom still refines:
+  //    the gate scales the STABLE screen height by cam.scale.
+  //    The stable bounds are rescaled by `boundsScale` (= liveExtent / PROXY_WORLD_SIZE, captured
+  //    once on the runtime) so EVERY geometry consumer below — the refine gate, the solver's
+  //    visibility/arbitration, the eviction onScreen test — measures the proxies in the SAME
+  //    coordinate space the camera was fit to. Multiplying a CONSTANT (per material) factor keeps
+  //    the seeding idempotent across recuts (the recut-loop fix); it only re-projects, never drifts.
+  // Same write the runtime build performed before deriving the reservation tiers, so the live
+  // boxes and the tiers that gate them stay in ONE coordinate space (see scaleBoundsColumns).
+  scaleBoundsColumns(hierarchy, stableBounds, boundsScale);
+
+  // 3a. Intent → constraints (rep ids from the cached group-id map). A group id with no rep
+  //     (stale id from another mode) is ignored.
+  const forceClosed = new Set<number>();
+  const forceOpen = new Set<number>();
+  for (const [gid, state] of intent) {
+    const rep = repOfGroupId.get(gid);
+    if (rep === undefined) continue;
+    if (isDetachedGroup(rep)) continue; // intent on a fully filtered-out group is inert
+    if (state === "closed") forceClosed.add(rep);
+    else if (state === "open") forceOpen.add(rep);
+  }
+  const constraints: CutConstraints = { forceClosed, forceOpen };
+
+  // The STABLE, layout-independent box of a rep, or undefined when it has no geometry (detached /
+  // empty). DELIBERATELY independent of the visual engine's live boxes: the gate and every other
+  // geometry consumer must read identical geometry across recuts of the same material, or the
+  // committed selection drifts with Stress/Smart's non-deterministic boxes and the recut never
+  // reaches a fixed point (the layout↔cut feedback loop). Stable bounds are non-zero under every
+  // engine, so the gate OPERATES everywhere instead of short-circuiting to "can't refine".
+  const stableBoxOf = (rep: number): Box | undefined => {
+    // Read the geometry COLUMNS, which `scaleBoundsColumns` above already filled with exactly
+    // `stable × boundsScale`. Recomputing the product here would make two writers of one number
+    // and invite them to drift — the columns are the single source the solver's visibility
+    // weighting and the eviction onScreen test read, so the gate must measure the same values.
+    const w = cols.boundsW[rep];
+    const h = cols.boundsH[rep];
+    if (w <= 0 || h <= 0) return undefined; // detached / empty — genuinely no geometry
+    return { x: cols.boundsX[rep], y: cols.boundsY[rep], w, h };
+  };
+
+  // HYSTERESIS (the residual collapse↔refine damping). A rep that was OPEN in the PREVIOUS
+  // committed cut stays refine-eligible until its on-screen height falls well below openPx; a rep
+  // that was CLOSED becomes eligible only once it clears openPx. This deadband stops a proxy from
+  // flip-flopping at the exact openPx boundary (where calibration leaves it marginal): without it,
+  // a group whose calibrated height sits at ~openPx ± ε would open one recut and close the next,
+  // re-seeding the limit cycle. `wasOpen(rep)` reads the prior committed cut off the persistent
+  // runtime (runtime.lodRuntime.committedCut): a rep is OPEN there iff neither it nor any ancestor
+  // was selected (the cut refined past it into its children). On the very first solve there is no
+  // prior cut → every rep is treated as CLOSED (the strict openPx threshold), which is the correct
+  // conservative bootstrap.
+  const OPEN_RETAIN_FRACTION = 0.6; // an open rep stays open down to 0.6×openPx (the deadband)
+  const priorCut = runtime.lodRuntime?.committedCut;
+  const priorSelected = priorCut ? new Set(priorCut.selectedRepresentations) : undefined;
+  const wasOpen = (rep: number): boolean => {
+    if (!priorSelected) return false; // no prior cut → treat as closed (strict threshold)
+    let cur = rep;
+    let guard = hierarchy.repCount + 1;
+    while (cur >= 0 && guard-- > 0) {
+      if (priorSelected.has(cur)) return false; // selected on the chain → was collapsed, not open
+      cur = cols.parentByRep[cur];
+    }
+    return true; // no selected ancestor-or-self → the prior cut refined past it (was open)
+  };
+
+  // 3b. Refine gate: a proxy auto-refines only when its STABLE box is on-screen AND clears the
+  //     hysteresis threshold (legible). Gating on the stable box (never the drifting live box)
+  //     makes a recut of the same material at the same camera IDEMPOTENT — the property the
+  //     canvas's scene-ready effect relies on to avoid the layout↔cut feedback loop. The group and
+  //     no-group paths are identical: both read the rep's stable box. Zoom still refines (cam.scale
+  //     grows the calibrated stable screen height past the threshold). Forced opens ignore this
+  //     gate (handled in the solver). The threshold is `openPx` for a previously-CLOSED rep and a
+  //     lower `OPEN_RETAIN_FRACTION × openPx` for a previously-OPEN rep — the deadband that damps
+  //     the residual boundary oscillation.
+  const canRefine = (rep: number): boolean => {
+    // Leaf reps (no children) never reach the solver's refine path.
+    if (cols.firstChildByRep[rep] === -1) return false;
+    const box = stableBoxOf(rep);
+    if (!box) return false;
+    if (!intersectsViewport(worldToScreen(box, cam), vp, options.margin)) return false;
+    const threshold = wasOpen(rep) ? options.openPx * OPEN_RETAIN_FRACTION : options.openPx;
+    return screenHeight(box, cam.scale) >= threshold;
+  };
+
+  // 4. Budget — the FINITE split model (design "Finite budget model"; Gap 6). Soft targets
+  //    steer AUTO refinement; FINITE hard ceilings cap forced opens. Every ceiling is finite
+  //    by construction — a forced open is capped at `hardCards`/`hardLayoutCost`, NOT expanded
+  //    to the whole graph. Cards (visible antichain width) and layout cost (Σ 1 + symbols) are
+  //    DISTINCT dimensions. Card budgets derive from the caller's options; the remaining
+  //    finite ceilings come from the shared production defaults (LOD_BUDGET).
+  //
+  //    When intent can't be honored within the hard ceiling the solver retains the nearest
+  //    proxy and surfaces "Detail limited" (LimitedDetail) rather than silently expanding.
+  const targetCards = Math.min(options.maxCards, options.nodeBudget);
+  const hardCards = options.nodeBudget;
+  const budget: LodBudget = {
+    targetCards,
+    hardCards: Math.max(hardCards, targetCards),
+    targetLayoutCost: LOD_BUDGET.targetLayoutCost,
+    hardLayoutCost: LOD_BUDGET.hardLayoutCost,
+    targetEdges: LOD_BUDGET.targetEdges,
+    hardEdges: LOD_BUDGET.hardEdges,
+    targetLabels: LOD_BUDGET.targetLabels,
+    hardLabels: LOD_BUDGET.hardLabels,
+    maxGpuBytes: LOD_BUDGET.maxGpuBytes,
+  };
+
+  const camState: CameraState = { x: cam.x, y: cam.y, scale: cam.scale, viewport: vp };
+  const diagnostics: SolveDiagnostics | null = input.collectDiagnostics
+    ? { whyNotRefined: new Map(), refinements: 0, limited: [] }
+    : null;
+  // "Detail limited" is surfaced ALWAYS (not gated on collectDiagnostics): when no full
+  // diagnostics sink is requested, a minimal sink still captures the forced-open limits.
+  const limitSink: SolveDiagnostics = diagnostics ?? {
+    whyNotRefined: new Map(),
+    refinements: 0,
+    limited: [],
+  };
+  // The persistent cut-aware edge index (design B2) drives the solver's marginal edge gate:
+  // a refine is priced by its ACTUAL quotient-graph Δedges, not the inert additive per-rep
+  // edgeCost. Present only when the caller supplied `edges` (the index is built on the runtime).
+  const edgeIndex = runtime.edgeIndex;
+  const t0 = nowMs();
+  let cut = solveLodCut(hierarchy, bootstrapCut(hierarchy), constraints, camState, budget, {
+    canRefine,
+    diagnostics: limitSink,
+    edgeIndex,
+  });
+
+  // 4b. Deadband retention + bounded offscreen-auto-open eviction (Phase C1c bug b). The
+  //     first solve above only opens proxies whose box is on-screen (the canRefine gate), so
+  //     a group re-collapses the instant it leaves the viewport — there's no deadband, and
+  //     nothing to evict. With an eviction controller, we RETAIN previously-auto-opened
+  //     groups across recuts (they stay open through a small pan/zoom-out — the spec's
+  //     deadband), and the IntrusiveLru BOUNDS how many such retained opens persist: when the
+  //     tracked set exceeds the offscreen-open budget, the oldest are evicted (re-collapsed).
+  //     A second solve folds the retention into forceOpen and the evictions into forceClosed.
+  //     Forced (user-intent) opens/closes are untouched — eviction never fights user intent.
+  // The eviction controller is the ACQUIRED runtime's own (Gap 4) when the caller opted into
+  // the persistent runtime — read from `runtime`, NOT `input.runtime`: when the passed runtime
+  // was stale (signature mismatch) `acquire` rebuilt it with a controller sized to the NEW rep
+  // count, and the old controller's key space would be wrong. A legacy per-call `input.eviction`
+  // override still wins for callers that haven't adopted the persistent runtime. When the caller
+  // passes neither `runtime` nor `eviction`, the legacy no-eviction path runs (a fresh runtime
+  // cut, evictions = 0) — so guard on `input.runtime` having been supplied.
+  const eviction = input.eviction ?? (input.runtime ? runtime.eviction : undefined);
+  let evictions = 0;
+  let totalEvictions = 0;
+  if (eviction) {
+    const onScreen = (rep: number): boolean => {
+      // The STABLE box (never the drifting live box), matching the refine gate — so the eviction
+      // LRU's visibility decision is layout-independent and the retained-open set can't oscillate
+      // with Stress/Smart's non-deterministic boxes. Box-less engines (Grid / classic / None)
+      // still get non-zero stable bounds, so visibility tracking OPERATES under every engine.
+      const box = stableBoxOf(rep);
+      if (!box) return false;
+      return intersectsViewport(worldToScreen(box, cam), vp, options.margin);
+    };
+    // Candidate open set = groups freshly auto-opened on-screen this frame ∪ those retained
+    // from prior frames (the deadband). User-forced opens are excluded (tracked separately).
+    const freshOpens = autoOpenGroupReps(hierarchy, cut, forceOpen);
+    const candidates = new Set<number>(eviction.retained());
+    for (const rep of freshOpens) candidates.add(rep);
+    for (const rep of forceOpen) candidates.delete(rep);
+
+    const outcome = eviction.recordOpen(candidates, onScreen);
+    evictions = outcome.count;
+    totalEvictions = eviction.totalEvictions;
+
+    // Retained-open after eviction → forceOpen (stay open even offscreen); evicted → closed.
+    const retainOpen = new Set<number>(candidates);
+    for (const rep of outcome.evicted) retainOpen.delete(rep);
+
+    if (retainOpen.size > 0 || outcome.evicted.size > 0) {
+      const nextOpen = new Set<number>(forceOpen);
+      for (const rep of retainOpen) nextOpen.add(rep);
+      const nextClosed = new Set<number>(forceClosed);
+      for (const rep of outcome.evicted) nextClosed.add(rep);
+      // Re-solve from a CLEAN sink so every diagnostic reflects only the FINAL cut. All three
+      // fields must be reset, not just `limited`: `refinements` is a running += (leaving it would
+      // report roughly double the real count) and `whyNotRefined` is a Map that is only ever
+      // `set` (leaving it would keep rows for reps this second solve refined PAST, so the overlay
+      // would attribute "screen-gate"/"soft-budget" to reps that are not in the committed cut).
+      limitSink.limited.length = 0;
+      limitSink.whyNotRefined.clear();
+      limitSink.refinements = 0;
+      cut = solveLodCut(
+        hierarchy,
+        bootstrapCut(hierarchy),
+        { forceClosed: nextClosed, forceOpen: nextOpen },
+        camState,
+        budget,
+        { canRefine, diagnostics: limitSink, edgeIndex },
+      );
+    }
+  }
+  const cutSolveMs = nowMs() - t0;
+
+  // 5. Commit through the committed-generation runtime (only a material change bumps the
+  //    generation). When the caller adopted the persistent runtime, ITS own `lodRuntime`
+  //    (Gap 4) is authoritative — carried across recuts, and `undefined` after a rebuild so a
+  //    material change starts a fresh chain (committed=true). A legacy `previous` override is
+  //    used ONLY when no runtime was supplied, so it can never hijack a live runtime's chain.
+  //    The committed result is written back onto the persistent runtime so the NEXT recut
+  //    continues the same generation chain without rebuilding anything.
+  const filterSignature = input.filterSignature ?? "";
+  const sig = cutSignature(cut, 0, 0, filterSignature);
+  let lodRuntime = input.runtime ? runtime.lodRuntime : input.previous;
+  let committed: boolean;
+  if (!lodRuntime) {
+    lodRuntime = createLodRuntime(cut, sig);
+    committed = true; // the first cut is the initial committed generation
+  } else {
+    setPending(lodRuntime, cut, sig);
+    committed = commitIfMaterial(lodRuntime);
+  }
+  runtime.lodRuntime = lodRuntime;
+
+  // Derive the collapsed box-key set from the SELECTED proxy reps. (Use the committed cut
+  // so the derived scene matches what the renderer will draw.)
+  const effective = lodRuntime.committedCut;
+  const collapsedBoxKeys = collapsedBoxKeysOf(hierarchy, effective);
+  const openSelection = openSelectionOf(hierarchy, effective);
+  // Roll the runtime cut IN PLACE via the controller (reuses the epoch array when the rep
+  // count is unchanged — no fresh Uint32Array per recut); else a one-off fresh cut.
+  const runtimeCut = eviction
+    ? eviction.advanceCut(effective, hierarchy.repCount)
+    : makeRuntimeCut(effective, hierarchy.repCount);
+
+  return {
+    hierarchy,
+    cut: effective,
+    runtime: lodRuntime,
+    repRuntime: runtime,
+    committed,
+    collapsedBoxKeys,
+    openSelection,
+    runtimeCut,
+    budget,
+    cutSolveMs,
+    diagnostics,
+    limitedDetails: limitSink.limited,
+    evictions,
+    totalEvictions,
+    liveExtent: runtime.liveExtent,
+    boundsScale,
+  };
+}
+
+/** Monotonic clock in ms (performance.now when available, else Date.now). */
+function nowMs(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+/**
+ * The active proxy's box key for an underlying node, or null when the node's OWN leaf rep
+ * is selected (it's drawn as itself, no proxy stands in). The selected-hidden-node →
+ * highlight-its-proxy mapping (spec). Walks the leaf's ancestors to the selected rep.
+ */
+export function activeProxyBoxKeyOfNode(result: RepLodResult, nodeOrdinal: number): string | null {
+  const { hierarchy, runtimeCut } = result;
+  const rep = representativeOf(hierarchy, nodeOrdinal, runtimeCut.isSelected);
+  if (rep === -1) return null;
+  // A leaf rep represents the node itself → no proxy.
+  if (hierarchy.columns.firstChildByRep[rep] === -1) return null;
+  const g = hierarchy.columns.groupByRep[rep];
+  if (g === NO_GROUP) return null;
+  return hierarchy.snapshot.boxKeyByGroup[g];
+}
+
+// ── derivations ──────────────────────────────────────────────────────────────
+
+/**
+ * The AUTO-opened group reps in a cut (Phase C1c bug b eviction input): group reps that are
+ * OPEN (no selected ancestor-or-self group rep on their chain), have children (a real
+ * proxy), and are NOT user-forced-open (so eviction never fights a user expansion). These
+ * are the proxies the camera opened; the controller bounds how many offscreen ones persist.
+ */
+function autoOpenGroupReps(
+  h: RepresentationHierarchy,
+  cut: LodCut,
+  forceOpen: ReadonlySet<number>,
+): number[] {
+  const selected = new Set(cut.selectedRepresentations);
+  const groupCount = h.snapshot.groupIds.length;
+  const out: number[] = [];
+  for (let g = 0; g < groupCount; g++) {
+    if (h.columns.firstChildByRep[g] === -1) continue; // no children → nothing to re-collapse
+    if (forceOpen.has(g)) continue; // user-forced open — never evicted
+    // Open iff no selected group rep on the chain from g up to the root.
+    let cur = g;
+    let open = true;
+    let guard = h.repCount + 1;
+    while (cur >= 0 && guard-- > 0) {
+      if (selected.has(cur)) {
+        open = false;
+        break;
+      }
+      cur = h.columns.parentByRep[cur];
+    }
+    if (open) out.push(g);
+  }
+  return out;
+}
+
+/** The box keys of every SELECTED GROUP rep (proxies the scene collapses). */
+function collapsedBoxKeysOf(h: RepresentationHierarchy, cut: LodCut): Set<string> {
+  const out = new Set<string>();
+  const groupCount = h.snapshot.groupIds.length;
+  for (const rep of cut.selectedRepresentations) {
+    // Only group reps (id < groupCount) collapse a group; selected leaf reps are open nodes.
+    if (rep < groupCount) out.add(h.snapshot.boxKeyByGroup[h.columns.groupByRep[rep]]);
+  }
+  return out;
+}
+
+/**
+ * The OPEN namespaced group ids: a group is open iff neither its rep nor any ancestor
+ * group's rep is selected. Identical semantics to group-cut's groupLodSelection, computed
+ * here directly from the rep tree (so a caller need not re-derive it).
+ */
+function openSelectionOf(h: RepresentationHierarchy, cut: LodCut): Set<GroupId> {
+  const selected = new Set(cut.selectedRepresentations);
+  const groupCount = h.snapshot.groupIds.length;
+  const out = new Set<GroupId>();
+  for (let g = 0; g < groupCount; g++) {
+    const rep = h.repOfGroup[g];
+    // A DETACHED group (fully hidden under the post-filter mask — parent -2, no children)
+    // has no visible members: it is neither open nor part of the rendered selection. Skip
+    // it so a filtered-out group never leaks into the open set (Gap 7).
+    if (h.columns.parentByRep[rep] === DETACHED_REP && h.columns.firstChildByRep[rep] === -1) {
+      continue;
+    }
+    // Walk up the GROUP rep chain; open iff no selected group rep on the path.
+    let cur = rep;
+    let collapsed = false;
+    let guard = h.repCount + 1;
+    while (cur >= 0 && guard-- > 0) {
+      if (selected.has(cur)) {
+        collapsed = true;
+        break;
+      }
+      cur = h.columns.parentByRep[cur];
+    }
+    if (!collapsed) out.add(h.snapshot.groupIds[g]);
+  }
+  return out;
+}

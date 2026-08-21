@@ -33,6 +33,71 @@ export function fileLanguage(filePath: string): FileLanguage {
   return { key: badge.code, label: LANG_LABELS[badge.code] ?? badge.code, color: badge.color };
 }
 
+/**
+ * Human language names → the badge code returned by `fileLanguage().key`. Shared by
+ * every subsystem that accepts a `language` value from a user (the query language and
+ * the rules selector) so `language:rust` and `facets: { language: ['rust'] }` resolve
+ * identically. Codes (e.g. "RS") and unknown values pass through unchanged.
+ */
+const LANG_ALIASES: Record<string, string> = {
+  rust: "RS",
+  typescript: "TS",
+  ts: "TS",
+  tsx: "TX",
+  javascript: "JS",
+  js: "JS",
+  python: "PY",
+  py: "PY",
+  go: "GO",
+  golang: "GO",
+  java: "JV",
+  kotlin: "KT",
+  scala: "SC",
+  csharp: "C#",
+  "c#": "C#",
+  fsharp: "F#",
+  "f#": "F#",
+  cpp: "C+",
+  "c++": "C+",
+  c: "C",
+  objc: "OC",
+  "objective-c": "OC",
+  swift: "SW",
+  zig: "ZG",
+  haskell: "HS",
+  ruby: "RB",
+  rb: "RB",
+  php: "PH",
+  bash: "SH",
+  shell: "SH",
+  sh: "SH",
+  lua: "LU",
+  dart: "DT",
+  julia: "JL",
+  jl: "JL",
+  ocaml: "ML",
+  ml: "ML",
+  nix: "NX",
+  r: "R",
+  sql: "SQ",
+  json: "{}",
+  wasm: "WA",
+  wat: "WA",
+  vue: "VU",
+  svelte: "SV",
+};
+
+/**
+ * Canonicalize a user-supplied language value to the lowercased badge code used for
+ * comparison. Maps a human name ("rust") to its badge code ("RS"), then lowercases;
+ * a value already equal to a code ("RS") or unknown passes through (lowercased). Pair
+ * with `fileLanguage(path).key.toLowerCase()` for a value-space-agnostic match.
+ */
+export function canonicalLanguageKey(value: string): string {
+  const v = value.toLowerCase();
+  return (LANG_ALIASES[v] ?? value).toLowerCase();
+}
+
 /** Languages that start hidden in the panel (re-enableable). JSON/JSONC. */
 export const DEFAULT_HIDDEN_LANGUAGES: ReadonlySet<string> = new Set(["{}"]);
 

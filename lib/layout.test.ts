@@ -11,6 +11,36 @@ import {
 } from "./layout";
 import { edgeWeight } from "./layout/weight";
 
+describe("resolveEngineForBudget — structural backbone fallback", () => {
+  test("an over-cap heavy component falls back to backbone, not the alphabetical grid", () => {
+    // layered cap 1200; the 1628-node 'Reveal detail + group None' case → backbone (core).
+    expect(resolveEngineForBudget("layered", 1628, 3000)).toEqual({
+      engine: "backbone",
+      fallbackReason: "node-cap",
+    });
+    // Too big even for backbone (cap 2500) → grid.
+    expect(resolveEngineForBudget("layered", 3000, 3000)).toEqual({
+      engine: "grid",
+      fallbackReason: "node-cap",
+    });
+    // Backbone over its own cap → grid (it can't fall back to itself).
+    expect(resolveEngineForBudget("backbone", 3000, 3000)).toEqual({
+      engine: "grid",
+      fallbackReason: "node-cap",
+    });
+    // Over the dense-edge cap → grid (backbone is ~O(V·E) too, so it can't help).
+    expect(resolveEngineForBudget("force", 1000, 9000)).toEqual({
+      engine: "grid",
+      fallbackReason: "edge-cap",
+    });
+    // Within budget AND under the dagre density cap (2.0 edges/node < 2.5) → unchanged.
+    expect(resolveEngineForBudget("layered", 1000, 2000)).toEqual({
+      engine: "layered",
+      fallbackReason: null,
+    });
+  });
+});
+
 // A → B, so the layout should place B "after" A along the flow axis.
 const view: GraphView = {
   nodes: [
@@ -653,11 +683,20 @@ describe("heavy-engine safety caps (no engine pins a core)", () => {
 });
 
 describe("resolveEngineForBudget (density guard for the Smart per-cluster path)", () => {
-  test("layered downgrades a dense cluster to grid (the 196n/752e CI hang)", () => {
-    expect(resolveEngineForBudget("layered", 196, 752)).toEqual({
-      engine: "grid",
-      fallbackReason: "edge-cap",
-    });
+  test("layered never keeps a dense cluster on dagre (the 196n/752e CI hang)", () => {
+    // THE invariant: whatever we pick, it must not be layered — network-simplex pinned for >60s
+    // on this input. The destination is backbone rather than grid because backbone lays out via
+    // forceLayout, not dagre, so it cannot reproduce the hang (measured: 374ms on this exact
+    // input) while still showing the dependency core instead of an alphabetical grid.
+    const resolved = resolveEngineForBudget("layered", 196, 752);
+    expect(resolved.engine).not.toBe("layered");
+    expect(resolved).toEqual({ engine: "backbone", fallbackReason: "edge-cap" });
+  });
+
+  test("a dense cluster too big for backbone still falls all the way to grid", () => {
+    // Backbone is preferred only while the component fits ITS budget; past that the cheap grid
+    // is the only safe destination. 9000 edges is over HEAVY_EDGE_CAP.
+    expect(resolveEngineForBudget("layered", 3000, 9000).engine).toBe("grid");
   });
 
   test("layered keeps a sparse cluster of the same node count", () => {

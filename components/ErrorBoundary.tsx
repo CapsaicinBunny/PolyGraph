@@ -11,6 +11,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { isTauri } from "@/lib/client/env";
 import { telemetry } from "@/lib/telemetry";
+import { diagnosticContext } from "@/lib/telemetry/diagnostic-context";
 import { installGlobalErrorHandlers } from "@/lib/telemetry/global-errors";
 import { flushSessionLog } from "@/lib/telemetry/persist";
 
@@ -40,6 +41,8 @@ export class ErrorBoundary extends Component<Props, State> {
         message: error.message,
         stack: error.stack?.slice(0, 2000),
         componentStack: info.componentStack?.slice(0, 2000),
+        // What was on screen when the render threw (scan size, level, group-by, filters).
+        context: diagnosticContext(),
       },
       "error",
     );

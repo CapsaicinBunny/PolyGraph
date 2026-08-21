@@ -10,15 +10,20 @@ import { join } from "node:path";
 
 export interface AnalyzerCore {
   /**
-   * Returns a Promise resolving to JSON `{ nodes, edges, errors }` for a bucket
-   * of same-language files. The native binding runs the parse on napi's libuv
-   * threadpool (off the JS thread), so callers must await the result.
+   * Returns a Promise resolving to JSON `{ nodes, edges, errors, facetSchema? }`
+   * for a bucket of same-language files. `facetSchemaJson` is the pack's facet
+   * catalog (a JSON array of flat `DimensionDescriptor`s from pack.yaml, or `""`
+   * for a facet-less pack); the core attaches the per-node facet values its
+   * `@facet` captures matched and echoes the schema back out. The native binding
+   * runs the parse on napi's libuv threadpool (off the JS thread), so callers
+   * must await the result.
    */
   analyze(
     grammar: string,
     querySrc: string,
     importStyle: string,
     filesJson: string,
+    facetSchemaJson: string,
   ): Promise<string>;
 }
 

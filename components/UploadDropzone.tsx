@@ -262,7 +262,15 @@ export function UploadDropzone({ onResult }: UploadDropzoneProps) {
           /* never break the result flow */
         }
         onResult(
-          { graph: data.graph, errors: data.errors, unresolved: data.unresolved },
+          {
+            graph: data.graph,
+            errors: data.errors,
+            unresolved: data.unresolved,
+            // Carry the merged multi-language catalog so the Sidebar/groups render the
+            // real per-language facets instead of falling back to the TS-only set.
+            dimensions: data.dimensions,
+            catalogWarnings: data.catalogWarnings,
+          },
           { fileCount: data.fileCount || data.graph.nodes.length, skipped: data.skipped },
           data.manifests,
           // The server scan returns the resolved root; fall back to the typed path.

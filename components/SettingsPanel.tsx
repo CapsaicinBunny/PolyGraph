@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Box, Button, Flex, HStack, Stack, Text, chakra } from "@chakra-ui/react";
 import { saveTextFile } from "@/lib/client/download";
 import { type Level, LEVELS } from "@/lib/graph/levels/types";
@@ -30,20 +31,48 @@ const DENSITIES: { value: number; label: string }[] = [
   { value: 0.6, label: "Dense" },
 ];
 
+// LOD detail = the representation-LOD refine-gate openPx, set LIVE (no rebuild). Higher detail =
+// lower openPx = proxies refine at a smaller on-screen size = less combining. Normal=120 matches
+// the Explorer default so the shipped state has an exact level.
+const DETAIL_LEVELS: { value: number; label: string }[] = [
+  { value: 240, label: "Sparse" },
+  { value: 120, label: "Normal" },
+  { value: 80, label: "Detailed" },
+  { value: 50, label: "Max" },
+];
+// The LOD-detail slider spans openPx [LOD_PX_MAX, LOD_PX_SPARSE]. Its 0..100 "detail" scale maps
+// INVERSELY — 0 = Sparse (high openPx, left), 100 = Max detail (low openPx, right) — so dragging
+// right shows more. The two maps are shared so the displayed value and the committed openPx can't
+// drift apart.
+const LOD_PX_SPARSE = 240;
+const LOD_PX_MAX = 50;
+const detailFromOpenPx = (px: number): number =>
+  Math.round(((LOD_PX_SPARSE - px) / (LOD_PX_SPARSE - LOD_PX_MAX)) * 100);
+const openPxFromDetail = (d: number): number =>
+  Math.round(LOD_PX_SPARSE - (d / 100) * (LOD_PX_SPARSE - LOD_PX_MAX));
+// Nearest named level, for the live caption.
+function lodDetailLabel(openPx: number): string {
+  return DETAIL_LEVELS.reduce((best, d) =>
+    Math.abs(d.value - openPx) < Math.abs(best.value - openPx) ? d : best,
+  ).label;
+}
+
 interface SettingsPanelProps {
   level: Level;
   onLevel: (v: Level) => void;
   packageCount: number;
   density: number;
   onDensity: (v: number) => void;
+  lodOpenPx: number;
+  onLodOpenPx: (v: number) => void;
   minimap: boolean;
   onMinimap: (v: boolean) => void;
   edgeRouting: "curved" | "orthogonal";
   onEdgeRouting: (v: "curved" | "orthogonal") => void;
-  communityCollapse: boolean;
-  onCommunityCollapse: (v: boolean) => void;
   telemetryOn: boolean;
   onTelemetry: (v: boolean) => void;
+  lodOverlay: boolean;
+  onLodOverlay: (v: boolean) => void;
   onClose: () => void;
 }
 
@@ -135,16 +164,29 @@ export function SettingsPanel({
   packageCount,
   density,
   onDensity,
+  lodOpenPx,
+  onLodOpenPx,
   minimap,
   onMinimap,
   edgeRouting,
   onEdgeRouting,
-  communityCollapse,
-  onCommunityCollapse,
   telemetryOn,
   onTelemetry,
+  lodOverlay,
+  onLodOverlay,
   onClose,
 }: SettingsPanelProps) {
+  // Local drag state so the slider thumb tracks smoothly, but the openPx commit (which re-cuts +
+  // re-lays-out the scene) fires only on release — committing on every drag step would relayout
+  // per step. null ⇒ not dragging ⇒ derive the thumb position from the live prop.
+  const [dragDetail, setDragDetail] = useState<number | null>(null);
+  const detail = dragDetail ?? detailFromOpenPx(lodOpenPx);
+  const commitDetail = () => {
+    if (dragDetail != null) {
+      onLodOpenPx(openPxFromDetail(dragDetail));
+      setDragDetail(null);
+    }
+  };
   return (
     <Stack
       w="260px"
@@ -184,6 +226,11 @@ export function SettingsPanel({
             checked={telemetryOn}
             onClick={() => onTelemetry(!telemetryOn)}
             label="Local logs"
+          />
+          <CheckRow
+            checked={lodOverlay}
+            onClick={() => onLodOverlay(!lodOverlay)}
+            label="Show LOD diagnostics"
           />
         </Stack>
         <HStack gap="2" mt="3">
@@ -237,6 +284,36 @@ export function SettingsPanel({
       </Box>
 
       <Box>
+        <GroupLabel title="LOD detail" />
+        <Flex align="center" gap="3">
+          <Text fontSize="11px" color="fg.muted" flexShrink="0">
+            Sparse
+          </Text>
+          <chakra.input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            aria-label="LOD detail"
+            value={detail}
+            onChange={(e) => setDragDetail(Number(e.currentTarget.value))}
+            onPointerUp={commitDetail}
+            onKeyUp={commitDetail}
+            onBlur={commitDetail}
+            flex="1"
+            cursor="pointer"
+            style={{ accentColor: "#4f8ff7" }}
+          />
+          <Text fontSize="11px" color="fg.muted" flexShrink="0">
+            Max
+          </Text>
+        </Flex>
+        <Text fontSize="xs" color="fg.muted" mt="2">
+          How readily groups expand into detail as you zoom — currently {lodDetailLabel(lodOpenPx)}.
+        </Text>
+      </Box>
+
+      <Box>
         <GroupLabel title="Edge routing" />
         <HStack gap="2">
           <Choice active={edgeRouting === "curved"} onClick={() => onEdgeRouting("curved")}>
@@ -246,16 +323,6 @@ export function SettingsPanel({
             Orthogonal
           </Choice>
         </HStack>
-      </Box>
-
-      <Box>
-        <GroupLabel title="Collapse community groups" />
-        <Choice active={communityCollapse} onClick={() => onCommunityCollapse(!communityCollapse)}>
-          {communityCollapse ? "On" : "Off"}
-        </Choice>
-        <Text fontSize="xs" color="fg.muted" mt="2">
-          Folds every detected community into one card. Smart layout, Community grouping only.
-        </Text>
       </Box>
     </Stack>
   );

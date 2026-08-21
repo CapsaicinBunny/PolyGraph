@@ -21,8 +21,14 @@ import {
   resolveEngineForBudget,
   type XYPosition,
 } from "../layout";
-import { buildClusterTree, type ClusterTreeNode } from "./clusters";
+import {
+  buildClusterTree,
+  buildClusterTreeFromSnapshot,
+  type ClusterTreeNode,
+  snapshotFromClusterTree,
+} from "./clusters";
 import { detectCommunities } from "./community";
+import type { CompactGroupingSnapshot } from "../graph/grouping-snapshot";
 import { edgeKey, fiedlerOrder } from "./ordering";
 import { candidateEngines, chooseEngine } from "./planner";
 import { stronglyConnectedComponents } from "./scc";
@@ -660,27 +666,22 @@ function layoutCluster(
   };
 }
 
-/** Smart (semanticMultilevel) layout: group by directory / community / none, lay out by dependency flow. */
-export function smartLayout(
+/**
+ * Legacy (snapshot-free) node-id → group-segments derivation, used when no
+ * CompactGroupingSnapshot is injected (direct callers / tests). Directory leaves it
+ * undefined → buildClusterTree's default directory logic. Community/None reproduce
+ * the prior behavior. New call sites inject a snapshot instead (the C1a contract).
+ */
+function deriveGroupOf(
   view: LayoutInput,
-  options: {
-    direction?: LayoutDirection;
-    groupBy?: GroupBy;
-    density?: number;
-    communityOf?: Map<string, string>;
-    previousPositions?: Map<string, XYPosition>;
-  } = {},
-): LayoutResult {
-  const direction = options.direction ?? "TB";
-  const groupBy = options.groupBy ?? "directory";
-  const spacing = options.density ?? 1;
-
-  let groupOf: ((node: { id: string; kind: string }) => string[]) | undefined;
+  groupBy: GroupBy,
+  communityOf: Map<string, string> | undefined,
+): ((node: { id: string; kind: string }) => string[]) | undefined {
   if (groupBy === "community") {
     // Prefer the injected map (shared with the collapse transform) so rendered
     // boxes and collapse targets stay consistent; else detect on the view.
     const community =
-      options.communityOf ??
+      communityOf ??
       detectCommunities(
         view.nodes.map((n) => n.id),
         view.edges,
@@ -692,17 +693,66 @@ export function smartLayout(
       const c = community.get(n.id);
       if (c) sizes.set(c, (sizes.get(c) ?? 0) + 1);
     }
-    groupOf = (n) => {
+    return (n) => {
       const c = community.get(n.id);
       // Leave singleton communities at the root — avoids a sea of one-node boxes.
       return c && (sizes.get(c) ?? 0) > 1 ? [c] : [];
     };
-  } else if (groupBy === "none") {
-    groupOf = () => []; // everything at the root — no containers
   }
-  // "directory" leaves groupOf undefined → buildClusterTree's default dir logic.
+  if (groupBy === "none") return () => []; // everything at the root — no containers
+  return undefined; // "directory" → buildClusterTree's default dir logic
+}
 
-  const { root, ancestry } = buildClusterTree(view.nodes, groupOf);
+/**
+ * Build the CompactGroupingSnapshot for the Smart layout over a set of layout nodes
+ * (Phase C1a). This is the snapshot the scene injects and threads to the worker: it is
+ * the SAME cluster tree Smart would have derived from node ids, serialized into typed
+ * arrays — so Directory layout output is byte-identical and the worker no longer needs
+ * the node-path logic. Built on the main thread from the post-filter/post-collapse
+ * layout node set. None is NOT routed here at all: scene.ts excludes groupBy==="none"
+ * from the layout grouping snapshot (its deriveGroupOf returns `() => []` — a flat,
+ * all-at-root tree with no containers), so None lays out boxless. Its synthetic safety
+ * hierarchy (syntheticNoneGrouping) feeds the cut/budget path, not this layout snapshot.
+ */
+export function buildSmartGroupingSnapshot(
+  view: LayoutInput,
+  groupBy: GroupBy,
+  communityOf: Map<string, string> | undefined,
+  modeKey: string,
+): CompactGroupingSnapshot {
+  const built = buildClusterTree(view.nodes, deriveGroupOf(view, groupBy, communityOf));
+  return snapshotFromClusterTree(built, view.nodes, modeKey);
+}
+
+/** Smart (semanticMultilevel) layout: group by directory / community / none, lay out by dependency flow. */
+export function smartLayout(
+  view: LayoutInput,
+  options: {
+    direction?: LayoutDirection;
+    groupBy?: GroupBy;
+    density?: number;
+    communityOf?: Map<string, string>;
+    previousPositions?: Map<string, XYPosition>;
+    /**
+     * The injected grouping snapshot (Phase C1a). When present, Smart builds its
+     * cluster tree from it (directGroupByNode + parentByGroup + boxKeyByGroup)
+     * instead of deriving the tree from node ids — the new layout INPUT contract.
+     * The snapshot is built once on the main thread and its typed arrays transfer
+     * to the worker. Absent (direct callers / tests) → the legacy node-id path,
+     * which produces a byte-identical tree for Directory.
+     */
+    groupingSnapshot?: CompactGroupingSnapshot;
+  } = {},
+): LayoutResult {
+  const direction = options.direction ?? "TB";
+  const groupBy = options.groupBy ?? "directory";
+  const spacing = options.density ?? 1;
+
+  // Build the cluster tree. The injected snapshot is authoritative (the C1a input
+  // contract); otherwise fall back to deriving it from node ids (legacy callers).
+  const { root, ancestry } = options.groupingSnapshot
+    ? buildClusterTreeFromSnapshot(view.nodes, options.groupingSnapshot)
+    : buildClusterTree(view.nodes, deriveGroupOf(view, groupBy, options.communityOf));
   const kindOf = new Map(view.nodes.map((n) => [n.id, n.kind]));
   const out = layoutCluster(
     root,

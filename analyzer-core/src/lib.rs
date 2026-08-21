@@ -12,7 +12,8 @@ use std::sync::Arc;
 use napi::bindgen_prelude::{AsyncTask, Task};
 use napi::{Env, Result as NapiResult};
 use napi_derive::napi;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use streaming_iterator::StreamingIterator;
 use rayon::prelude::*;
 use tree_sitter::{Node, Parser, Query, QueryCursor};
@@ -29,6 +30,12 @@ struct OutNode {
     #[serde(rename = "parentFile")]
     parent_file: String,
     category: String,
+    // Generic dimension facets (the model shape: `Record<string, string[]>`),
+    // contributed by the pack's `@facet.<key>[.<value>]` captures. Sparse — the
+    // map is omitted from JSON when empty so file nodes and facet-less symbols
+    // stay byte-identical to before this field existed.
+    #[serde(rename = "facets", skip_serializing_if = "Option::is_none")]
+    facets: Option<HashMap<String, Vec<String>>>,
 }
 
 #[derive(Serialize)]
@@ -52,11 +59,32 @@ struct OutError {
     message: String,
 }
 
+/// A pack-declared facet dimension, deserialized from the `facet_schema` JSON the
+/// kernel passes in (built from pack.yaml). Only `key` is read structurally — it
+/// names which `@facet.<key>` captures are valid facets for this pack; every
+/// other field (label/values/colors/…) is carried opaquely in `rest` so the
+/// descriptor round-trips losslessly and stays a flat `DimensionDescriptor`
+/// (matching lib/graph/dimensions.ts). The core re-emits these unchanged in
+/// `Output.facet_schema`, so pack.yaml stays the single source of truth.
+#[derive(Serialize, Deserialize)]
+struct DimensionDescriptorJson {
+    key: String,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, JsonValue>,
+}
+
 #[derive(Serialize)]
 struct Output {
     nodes: Vec<OutNode>,
     edges: Vec<OutEdge>,
     errors: Vec<OutError>,
+    // The pack's facet catalog, echoed from the schema the kernel passed in. The
+    // core attaches facet *values* to nodes (via @facet captures); this carries
+    // the *descriptors* (labels/colors) back out so ProviderResult.facetSchema is
+    // populated without the kernel re-loading the pack. Omitted when the pack
+    // declares no facets, keeping facet-less languages byte-identical.
+    #[serde(rename = "facetSchema", skip_serializing_if = "Vec::is_empty")]
+    facet_schema: Vec<DimensionDescriptorJson>,
 }
 
 fn file_node_id(p: &str) -> String {
@@ -199,6 +227,9 @@ struct RawSymbol {
     name: String,
     kind: String,
     line: u32,
+    // Facet key -> values, from the pack's @facet captures on this definition.
+    // Empty for symbols (and packs) with no facet captures.
+    facets: HashMap<String, Vec<String>>,
 }
 struct RawRef {
     relation: String,
@@ -244,11 +275,56 @@ fn text_of<'a>(node: Node, src: &'a [u8]) -> &'a str {
     node.utf8_text(src).unwrap_or("")
 }
 
+/// Collapse all runs of ASCII whitespace in a captured facet value to nothing,
+/// so a text-valued facet is stable across formatting (`pub ( crate )` and
+/// `pub(crate)` both yield `pub(crate)`). Language-agnostic — the pack picks the
+/// node whose text is the value; the extractor only normalizes whitespace.
+fn collapse_ws(s: &str) -> String {
+    s.split_ascii_whitespace().collect::<String>()
+}
+
+/// Parse a `@facet.*` capture name against the pack's declared facet keys.
+/// Returns `(key, literal_value)` where `literal_value` is `Some` for the
+/// `@facet.<key>.<value>` form (value is literal in the capture name) and `None`
+/// for the `@facet.<key>` form (value is the captured node's text). Because a key
+/// may itself contain dots (`rust.visibility`), disambiguation is by the declared
+/// keys: the capture matches key `K` when the suffix is exactly `K` (text form)
+/// or `K` followed by `.` and a non-empty literal. Longest matching key wins, so
+/// a literal value can't be mistaken for a longer key. `None` if no declared key
+/// matches (the capture is ignored — not a facet).
+fn parse_facet_capture<'a>(
+    cname: &'a str,
+    facet_keys: &HashSet<String>,
+) -> Option<(&'a str, Option<&'a str>)> {
+    let rest = cname.strip_prefix("facet.")?;
+    // Exact key (text-valued form). Checked first/independently of length so a key
+    // that is also a prefix of another still resolves to its own text form.
+    if facet_keys.contains(rest) {
+        return Some((&cname[6..6 + rest.len()], None));
+    }
+    // `<key>.<value>` literal form — prefer the longest declared key prefix so
+    // `rust.visibility.pub` resolves to key `rust.visibility`, value `pub`.
+    let mut best: Option<(&str, &str)> = None;
+    for key in facet_keys {
+        if let Some(value) = rest.strip_prefix(key.as_str()).and_then(|r| r.strip_prefix('.')) {
+            if !value.is_empty() && best.map_or(true, |(k, _)| key.len() > k.len()) {
+                // Borrow the slices out of `cname` so the returned refs live as long
+                // as the input, not the transient `key`/`value` locals.
+                let key_slice = &rest[..key.len()];
+                let value_slice = &rest[key.len() + 1..];
+                best = Some((key_slice, value_slice));
+            }
+        }
+    }
+    best.map(|(k, v)| (k, Some(v)))
+}
+
 fn extract_file(
     file_path: &str,
     source: &str,
     parser: &mut Parser,
     query: &Query,
+    facet_keys: &HashSet<String>,
 ) -> Result<FileExtract, String> {
     let Some(tree) = parser.parse(source, None) else {
         // A `None` parse means tree-sitter bailed out entirely (e.g. timeout or
@@ -266,6 +342,10 @@ fn extract_file(
     // relation, name, node
     let mut ref_raw: Vec<(String, String, Node)> = Vec::new();
     let mut imports: Vec<RawImport> = Vec::new();
+    // def node id -> (facet key -> values). A facet capture attaches to the
+    // @definition.* node in the SAME match; values accumulate across matches so a
+    // pack may contribute facets from several patterns onto one definition.
+    let mut def_facets: HashMap<usize, HashMap<String, Vec<String>>> = HashMap::new();
 
     let mut cursor = QueryCursor::new();
     let mut query_matches = cursor.matches(query, root, src);
@@ -278,6 +358,10 @@ fn extract_file(
         let mut module_node: Option<Node> = None;
         let mut import_name: Option<String> = None;
         let mut is_import = false;
+        // (key, value) facet pairs captured in this match, applied once we know
+        // the match's definition node. `facet_keys` is empty for packs with no
+        // facets, so `parse_facet_capture` short-circuits and this stays unused.
+        let mut match_facets: Vec<(String, String)> = Vec::new();
 
         for cap in m.captures {
             let cname = capture_names[cap.index as usize];
@@ -290,12 +374,39 @@ fn extract_file(
                 import_name = Some(text_of(node, src).to_string());
             } else if cname == "import" {
                 is_import = true;
+            } else if let Some((key, literal)) = parse_facet_capture(cname, facet_keys) {
+                // Literal form carries the value in the capture name; text form
+                // uses the captured node's (whitespace-collapsed) text.
+                let value = match literal {
+                    Some(v) => v.to_string(),
+                    None => collapse_ws(text_of(node, src)),
+                };
+                if !value.is_empty() {
+                    match_facets.push((key.to_string(), value));
+                }
             } else if let Some(rest) = cname.strip_prefix("definition.") {
                 def_kind = Some(rest.to_string());
                 def_node = Some(node);
             } else if let Some(rest) = cname.strip_prefix("reference.") {
                 ref_rel = Some(rest.to_string());
                 ref_node = Some(node);
+            }
+        }
+
+        // Facets attach to this match's definition node (if any). A facet capture
+        // in a non-definition match (e.g. a bare reference) has nowhere to land
+        // and is dropped — packs put @facet captures in definition patterns.
+        if let Some(dn) = def_node {
+            if !match_facets.is_empty() {
+                let entry = def_facets.entry(dn.id()).or_default();
+                for (key, value) in match_facets.drain(..) {
+                    let values = entry.entry(key).or_default();
+                    // De-dup: the same facet value captured twice on one def
+                    // (e.g. overlapping patterns) is stored once.
+                    if !values.contains(&value) {
+                        values.push(value);
+                    }
+                }
             }
         }
 
@@ -353,11 +464,15 @@ fn extract_file(
         let id = symbol_node_id(file_path, name);
         emitted_own.insert(node.id(), id.clone());
         if seen.insert(id.clone()) {
+            // Take this definition's accumulated facets (if any). `remove` is safe
+            // because each def node is emitted at most once (guarded by `seen`).
+            let facets = def_facets.remove(&node.id()).unwrap_or_default();
             symbols.push(RawSymbol {
                 id,
                 name: name.clone(),
                 kind: kind.clone(),
                 line: *line,
+                facets,
             });
         }
     }
@@ -440,6 +555,7 @@ fn build_graph(
     per_file: &HashMap<String, FileExtract>,
     import_style: &str,
     errors: Vec<OutError>,
+    facet_schema: Vec<DimensionDescriptorJson>,
 ) -> Output {
     let files: Vec<&String> = per_file.keys().collect();
     let file_set: HashSet<&str> = files.iter().map(|s| s.as_str()).collect();
@@ -457,10 +573,18 @@ fn build_graph(
             line: 0,
             parent_file: fid.clone(),
             category: "feature".into(),
+            facets: None,
         });
         let fx = &per_file[*file];
         let mut name_to_id: HashMap<&str, &str> = HashMap::new();
         for s in &fx.symbols {
+            // Sparse: omit the map entirely when this symbol carries no facets, so
+            // facet-less nodes serialize exactly as before this field existed.
+            let facets = if s.facets.is_empty() {
+                None
+            } else {
+                Some(s.facets.clone())
+            };
             nodes.push(OutNode {
                 id: s.id.clone(),
                 kind: map_node_kind(&s.kind).into(),
@@ -469,6 +593,7 @@ fn build_graph(
                 line: s.line,
                 parent_file: fid.clone(),
                 category: "feature".into(),
+                facets,
             });
             name_to_id.entry(s.name.as_str()).or_insert(s.id.as_str());
         }
@@ -594,6 +719,7 @@ fn build_graph(
         nodes,
         edges,
         errors,
+        facet_schema,
     }
 }
 
@@ -607,9 +733,22 @@ fn run_analyze(
     query_src: &str,
     import_style: &str,
     files_json: &str,
+    facet_schema_json: &str,
 ) -> napi::Result<String> {
     let language = language_for(grammar)
         .ok_or_else(|| napi::Error::from_reason(format!("unknown grammar: {grammar}")))?;
+
+    // The pack's facet catalog (from pack.yaml, via the kernel). An empty/whitespace
+    // string means the pack declares no facets. The descriptor `key`s tell the
+    // extractor which `@facet.<key>` captures are real facets; the descriptors are
+    // echoed back unchanged in the output so pack.yaml stays the single source.
+    let facet_schema: Vec<DimensionDescriptorJson> = if facet_schema_json.trim().is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(facet_schema_json)
+            .map_err(|e| napi::Error::from_reason(format!("bad facet schema json: {e}")))?
+    };
+    let facet_keys: HashSet<String> = facet_schema.iter().map(|d| d.key.clone()).collect();
     // Validate the grammar once so a malformed pack returns a clean error rather
     // than panicking inside a worker thread below.
     Parser::new()
@@ -659,7 +798,7 @@ fn run_analyze(
                             Err(e) => return Err(e.clone()),
                         };
                         let norm = norm_path(path);
-                        let fx = extract_file(&norm, source, parser, &query_for_workers);
+                        let fx = extract_file(&norm, source, parser, &query_for_workers, &facet_keys);
                         Ok((norm, fx))
                     },
                 )
@@ -683,7 +822,7 @@ fn run_analyze(
         }
     }
 
-    let output = build_graph(&per_file, import_style, errors);
+    let output = build_graph(&per_file, import_style, errors, facet_schema);
     serde_json::to_string(&output).map_err(|e| napi::Error::from_reason(e.to_string()))
 }
 
@@ -697,6 +836,7 @@ pub struct AnalyzeTask {
     query_src: String,
     import_style: String,
     files_json: String,
+    facet_schema_json: String,
 }
 
 impl Task for AnalyzeTask {
@@ -709,6 +849,7 @@ impl Task for AnalyzeTask {
             &self.query_src,
             &self.import_style,
             &self.files_json,
+            &self.facet_schema_json,
         )
     }
 
@@ -718,21 +859,26 @@ impl Task for AnalyzeTask {
 }
 
 /// Analyze a bucket of same-language files. `files_json` is a JSON object of
-/// relative path -> source text. Returns a `Promise` that resolves to a JSON
-/// `{ nodes, edges, errors }` string. The heavy work runs off the JS thread on
-/// napi's libuv threadpool (see [`AnalyzeTask`]); the inputs and the resolved
-/// JSON shape are identical to the previous synchronous binding.
+/// relative path -> source text. `facet_schema_json` is the pack's facet catalog
+/// as a JSON array of flat `DimensionDescriptor`s (from pack.yaml) — pass `""`
+/// for a pack with no facets. Returns a `Promise` that resolves to a JSON
+/// `{ nodes, edges, errors, facetSchema? }` string. The heavy work runs off the
+/// JS thread on napi's libuv threadpool (see [`AnalyzeTask`]); nodes gain an
+/// optional `facets` map from the pack's `@facet` captures, and `facetSchema`
+/// echoes the descriptors so the kernel needn't re-load the pack.
 #[napi(ts_return_type = "Promise<string>")]
 pub fn analyze(
     grammar: String,
     query_src: String,
     import_style: String,
     files_json: String,
+    facet_schema_json: String,
 ) -> AsyncTask<AnalyzeTask> {
     AsyncTask::new(AnalyzeTask {
         grammar,
         query_src,
         import_style,
         files_json,
+        facet_schema_json,
     })
 }

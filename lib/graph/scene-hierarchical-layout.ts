@@ -1,0 +1,423 @@
+// Scene wiring for the C1c HierarchicalLayout (spec P3 / Work item 1 / B3 / impl notes
+// b, d). This is the LIVE-path glue that turns ONE global worker layout result (positions +
+// nested clusters, in world space) into a {@link HierarchicalLayout}: every committed group
+// gets a STABLE reserved box origin (its top-level cluster's world top-left) and a CACHED
+// LOCAL LAYOUT (its nodes/sub-boxes re-expressed in that box's local frame), keyed by a
+// {@link ProxyCacheKey} carrying MATERIAL inputs plus that group's own MEMBERSHIP digest — but
+// never camera / LOD / cut generation. The membership half is what makes a cache hit mean "this
+// group's contents are unchanged"; see {@link GroupKeyFn}. Material-only keying looks like the
+// stricter contract but is the weaker one: it cannot tell a refined group from an untouched one.
+//
+// The point of routing the live scene through this layer is the byte-identical-siblings
+// invariant: when a recut re-runs layout, groups whose ProxyCacheKey is unchanged REUSE
+// their prior cached local layout verbatim, so {@link worldScene} re-emits their world
+// positions + boxes byte-identically — only the groups that actually changed move. That
+// replaces the old "global relayout per recut", where every recut produced a brand-new
+// world layout and every group could shift.
+//
+// Decomposition is purely GEOMETRIC (a node/sub-box belongs to the deepest top-level group
+// box that contains it), so it needs no per-node grouping metadata threaded out of the
+// worker — it reassembles exactly what `worldScene` will re-project. Nodes outside every
+// group box (flat / None modes, orphans) collect into a single stable ungrouped pseudo-group
+// whose origin is the world origin, so its local == world (an identity projection).
+//
+// Pure data: no React, no GPU, no layout ALGORITHM (orchestration only — same contract as
+// local-refine.ts / local-layout.ts).
+
+import {
+  type CachedLocalLayout,
+  type LocalLayoutCache,
+  makeLocalLayoutCache,
+  type ProxyCacheKey,
+  proxyCacheKeyEquals,
+  serializeProxyCacheKey,
+} from "./local-layout";
+import {
+  type GroupReservation,
+  type HierarchicalLayout,
+  makeHierarchicalLayout,
+  type WorldScene,
+  worldScene,
+} from "./local-refine";
+import type { ClusterBox, XYPosition } from "../layout";
+
+export { worldScene };
+export type { WorldScene };
+
+/**
+ * The box key the ungrouped remainder (flat/None/orphan nodes) is reserved under. NUL-prefixed so
+ * it can never collide with a real top-level cluster id — those are caller-supplied and could
+ * legitimately be the literal string "ungrouped", whereas NUL cannot appear in one.
+ */
+export const UNGROUPED_BOX_KEY = "\u0000ungrouped";
+
+/** A laid-out world scene: the worker's output (node top-lefts + nested container boxes). */
+export interface WorldLayoutResult {
+  positions: Map<string, XYPosition>;
+  clusters: ClusterBox[];
+}
+
+/**
+ * Build a {@link ProxyCacheKey} for a group box from the scene's material signature parts +
+ * the group's identity. `representationId` is hashed from the box key AND the group's CONTENT
+ * digest (`contentId` — see {@link groupContentId}), so a group whose membership changed gets a
+ * different key; the rest are scene-wide material inputs the caller already computes. NOTHING
+ * camera/LOD goes in — that is the whole point. (Separating two DIFFERENT groups is not this
+ * hash's job — the cache and the reuse test are both already keyed by box key; see
+ * {@link representationIdOf}.)
+ *
+ * WHY `contentId` is load-bearing: every other part of the key is scene-WIDE, so without it the
+ * key for a given box key is byte-identical across every recut of the same material. The
+ * cache-hit branch of {@link reconcileHierarchicalLayout} would then fire for EVERY group on
+ * EVERY recut and discard the fresh worker layout — including for groups whose contents actually
+ * changed (a nested subgroup refined, a proxy card folded into the ungrouped remainder). Those
+ * newly-revealed nodes would end up with no entry in the world positions at all and render at the
+ * structure default (the world origin). The digest is what makes the reuse test mean "this
+ * group's contents are unchanged" rather than "the scene material is unchanged".
+ *
+ * `contentId` is REQUIRED, and is a branded {@link GroupContentId} rather than a bare string, so
+ * neither omitting it nor passing some other handy string can quietly produce a key that matches
+ * nothing — which is the very failure this parameter exists to prevent, and which a caller has no
+ * way to notice (the bad key is well-formed; it just never hits).
+ */
+export type GroupKeyFn = (boxKey: string, contentId: GroupContentId) => ProxyCacheKey;
+
+declare const GROUP_CONTENT_ID: unique symbol;
+/**
+ * An opaque membership digest produced by {@link groupContentId} — the ONLY producer. Branded so
+ * it cannot be confused with the nine other signature strings floating around a
+ * {@link SceneMaterialKey}; callers only ever thread it from producer to {@link GroupKeyFn}.
+ */
+export type GroupContentId = string & { readonly [GROUP_CONTENT_ID]: true };
+
+/**
+ * Material inputs shared by every group in a scene. A {@link GroupKeyFn} built from these
+ * differs between two groups ONLY in `representationId` (derived from the box key + the group's
+ * content digest), so a recut that changes none of these parts AND leaves a group's membership
+ * alone keeps that group's key — and therefore its cached local layout — byte-identical.
+ */
+export interface SceneMaterialKey {
+  graphVersion: string;
+  filterSignature: string;
+  groupingMode: string;
+  groupingVersion: string;
+  layoutEngine: string;
+  layoutDirection: ProxyCacheKey["layoutDirection"];
+  layoutOptionsHash: string;
+  nodeStyleMetricsVersion: string;
+  edgeKindsSignature: string;
+  representationBuilderVersion: string;
+}
+
+/**
+ * A small deterministic 32-bit string hash (FNV-1a). Used by both the per-group `representationId`
+ * mix and {@link groupContentId}'s per-id accumulation.
+ */
+function hashKey(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * The per-group `representationId`: an FNV-1a over the box key, advanced by one distinct MIX step,
+ * then continued over the content digest.
+ *
+ * What the mix step buys is the removal of SPLIT-POINT ambiguity: a plain concatenation makes
+ * (boxKey "ab", contentId "") and (boxKey "a", contentId "b") hash the same input, and no
+ * delimiter character is reliably safe because box keys are caller-supplied cluster ids. It is
+ * NOT — and on 32 bits cannot be — a collision-freedom guarantee.
+ *
+ * That is fine, because cross-group separation does not rest on this hash at all: the cache is
+ * keyed by (boxKey, serialized key) and the reuse test compares against `prev.activeKey.get(boxKey)`,
+ * so both sides are already segregated by box key. The only collision that could serve a stale
+ * layout is same-boxKey / different-contentId, at ~2^-32 per compared pair, self-correcting on the
+ * group's next content change.
+ */
+function representationIdOf(boxKey: string, contentId: string): number {
+  let h = Math.imul(hashKey(boxKey) ^ 0x9e3779b1, 0x01000193);
+  for (let i = 0; i < contentId.length; i++) {
+    h ^= contentId.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * A {@link GroupKeyFn} that stamps the shared material parts + a per-box, per-CONTENT
+ * `representationId`. `contentId` is the group's membership digest ({@link groupContentId}).
+ */
+export function groupKeyFromMaterial(material: SceneMaterialKey): GroupKeyFn {
+  return (boxKey: string, contentId: GroupContentId): ProxyCacheKey => ({
+    graphVersion: material.graphVersion,
+    filterSignature: material.filterSignature,
+    groupingMode: material.groupingMode,
+    groupingVersion: material.groupingVersion,
+    layoutEngine: material.layoutEngine,
+    layoutDirection: material.layoutDirection,
+    layoutOptionsHash: material.layoutOptionsHash,
+    nodeStyleMetricsVersion: material.nodeStyleMetricsVersion,
+    edgeKindsSignature: material.edgeKindsSignature,
+    representationId: representationIdOf(boxKey, contentId),
+    representationBuilderVersion: material.representationBuilderVersion,
+  });
+}
+
+/** Does world point `p` (a node top-left) fall inside cluster box `c`? Half-open on the far edge. */
+function within(p: XYPosition, c: ClusterBox): boolean {
+  return p.x >= c.x && p.x < c.x + c.width && p.y >= c.y && p.y < c.y + c.height;
+}
+
+/** Does box `inner`'s top-left fall inside box `outer`? (containment of nested boxes). */
+function boxWithin(inner: ClusterBox, outer: ClusterBox): boolean {
+  return inner.id !== outer.id && within({ x: inner.x, y: inner.y }, outer);
+}
+
+/**
+ * The per-group partition of a world layout: the TOP-LEVEL group boxes (a cluster with no
+ * `parentId`), each owning the nodes + nested sub-boxes geometrically inside it, plus the
+ * ungrouped remainder (everything outside every top-level box).
+ */
+interface WorldPartition {
+  /** box key (top-level cluster id) → its world origin + owned world geometry. */
+  groups: Map<
+    string,
+    { origin: XYPosition; positions: Map<string, XYPosition>; clusters: ClusterBox[] }
+  >;
+  /** Flat / None / orphan nodes outside every group box (origin = world origin). */
+  ungrouped: Map<string, XYPosition>;
+}
+
+/**
+ * Partition a world layout into top-level groups by GEOMETRIC containment. A top-level group
+ * is a cluster with no `parentId`; deeper clusters and every node are assigned to the
+ * top-level group whose box contains them (the SMALLEST containing top-level box wins, so
+ * adjacent groups never steal each other's members). Determinism: assignment is positional,
+ * and the per-group geometry preserves the worker's node insertion + cluster array order.
+ */
+function partitionWorldLayout(world: WorldLayoutResult): WorldPartition {
+  const tops = world.clusters.filter((c) => c.parentId == null);
+  // Smallest-area first so a node inside a nested top-level box (shouldn't happen for true
+  // top-levels, but be defensive) is claimed by the tighter box, not an overlapping larger one.
+  const ranked = [...tops].sort((a, b) => a.width * a.height - b.width * b.height);
+
+  const groups = new Map<
+    string,
+    { origin: XYPosition; positions: Map<string, XYPosition>; clusters: ClusterBox[] }
+  >();
+  for (const c of tops)
+    groups.set(c.id, { origin: { x: c.x, y: c.y }, positions: new Map(), clusters: [] });
+
+  // Assign every non-top cluster to its containing top-level group (keep worker array order).
+  for (const c of world.clusters) {
+    if (c.parentId == null) continue;
+    const owner = ranked.find((t) => boxWithin(c, t));
+    if (owner) groups.get(owner.id)?.clusters.push(c);
+  }
+
+  // Assign every node to its containing top-level group, else the ungrouped remainder.
+  const ungrouped = new Map<string, XYPosition>();
+  for (const [id, p] of world.positions) {
+    const owner = ranked.find((t) => within(p, t));
+    if (owner) groups.get(owner.id)?.positions.set(id, p);
+    else ungrouped.set(id, p);
+  }
+  return { groups, ungrouped };
+}
+
+/**
+ * Re-express a group's owned world geometry in its box-local frame (subtract the origin). The
+ * group's OWN box is included FIRST in the local clusters (at local origin) so {@link worldScene}
+ * re-emits the reserved group container itself, not only its nested sub-boxes — otherwise the
+ * scene would lose every top-level group box on the round-trip.
+ */
+function toLocal(
+  origin: XYPosition,
+  positions: Map<string, XYPosition>,
+  clusters: ClusterBox[],
+  groupBox: ClusterBox | undefined,
+): CachedLocalLayout {
+  const localPos = new Map<string, XYPosition>();
+  for (const [id, p] of positions) localPos.set(id, { x: p.x - origin.x, y: p.y - origin.y });
+  const nested = clusters.map((c) => ({ ...c, x: c.x - origin.x, y: c.y - origin.y }));
+  const localClusters = groupBox
+    ? [{ ...groupBox, x: groupBox.x - origin.x, y: groupBox.y - origin.y }, ...nested]
+    : nested;
+  return {
+    positions: localPos,
+    clusters: localClusters,
+    width: groupBox?.width ?? 0,
+    height: groupBox?.height ?? 0,
+  };
+}
+
+/**
+ * A digest of ONE group's membership in the fresh world layout: its node ids plus the ids of the
+ * nested cluster boxes it owns. Folded into the group's {@link ProxyCacheKey} so the cache-hit test
+ * in {@link reconcileHierarchicalLayout} means "this group's contents are unchanged", not merely
+ * "the scene material is unchanged" — see {@link GroupKeyFn} for why that distinction is
+ * load-bearing.
+ *
+ * ORDER-INDEPENDENT by construction: each id is hashed individually and the per-id hashes are
+ * summed (mod 2^32). That keeps the digest O(members) with no sort, and makes it immune to the
+ * worker reordering its output for an otherwise identical group — which would otherwise look like
+ * a content change and force a pointless re-decompose.
+ *
+ * The two id sets are DOMAIN-SEPARATED (node ids hashed as-is, cluster ids salted) because they
+ * share one commutative accumulator: without the salt, a node id migrating into the cluster set
+ * while a cluster id migrates the other way cancels out exactly, and the counts do not move
+ * either — a stale reuse whose symptom is the migrated node rendering at the world origin. Not
+ * reachable today (proxy card ids carry a `__proxy__` marker and can never equal a cluster id),
+ * but the salt costs nothing and removes the latency rather than relying on that.
+ *
+ * Both COUNTS are appended because the sum alone is not sufficient: it is blind to a member whose
+ * hash is 0, or to any added subset summing to 0 mod 2^32, so the counts catch pure add/remove
+ * unconditionally. A member SWAP (same counts, different ids) is caught by the SUM, not the
+ * counts, and so carries the usual ~2^-32 residual rather than a structural guarantee.
+ */
+export function groupContentId(
+  positions: ReadonlyMap<string, XYPosition>,
+  clusters: readonly ClusterBox[],
+): GroupContentId {
+  let acc = 0;
+  for (const id of positions.keys()) acc = (acc + hashKey(id)) >>> 0;
+  // Salted into a separate domain so a node-id/cluster-id migration cannot cancel in the sum.
+  for (const c of clusters) acc = (acc + hashKey(`c:${c.id}`)) >>> 0;
+  return `${acc.toString(36)}:${positions.size}:${clusters.length}` as GroupContentId;
+}
+
+/**
+ * Build a {@link HierarchicalLayout} from ONE global world layout result. Each top-level group
+ * box becomes a {@link GroupReservation} (stable origin + a cached local layout keyed by its
+ * {@link ProxyCacheKey}); the ungrouped remainder becomes one identity-origin reservation so
+ * flat/None scenes round-trip unchanged. Re-running {@link worldScene} on the result reproduces
+ * `world` exactly (modulo the deterministic group ordering).
+ *
+ * `keyFor` MUST depend on material inputs only — feeding camera/LOD into it would defeat the
+ * byte-identical-siblings reuse in {@link reconcileHierarchicalLayout}.
+ */
+export function buildHierarchicalLayoutFromWorld(
+  world: WorldLayoutResult,
+  keyFor: GroupKeyFn,
+  cache: LocalLayoutCache = makeLocalLayoutCache(),
+): HierarchicalLayout {
+  const part = partitionWorldLayout(world);
+  const topById = new Map(world.clusters.filter((c) => c.parentId == null).map((c) => [c.id, c]));
+  const reservations: GroupReservation[] = [];
+  for (const [boxKey, g] of part.groups) {
+    reservations.push({
+      boxKey,
+      origin: g.origin,
+      key: keyFor(boxKey, groupContentId(g.positions, g.clusters)),
+      coarse: toLocal(g.origin, g.positions, g.clusters, topById.get(boxKey)),
+    });
+  }
+  if (part.ungrouped.size > 0) {
+    const origin = { x: 0, y: 0 };
+    reservations.push({
+      boxKey: UNGROUPED_BOX_KEY,
+      origin,
+      key: keyFor(UNGROUPED_BOX_KEY, groupContentId(part.ungrouped, [])),
+      coarse: toLocal(origin, part.ungrouped, [], undefined),
+    });
+  }
+  return makeHierarchicalLayout(reservations, cache);
+}
+
+/**
+ * Reconcile a fresh world layout against the PRIOR {@link HierarchicalLayout}, replacing the
+ * old "global relayout per recut". For each group in the new layout: if its {@link ProxyCacheKey}
+ * is byte-identical to the prior key AND a cached local layout exists for it, REUSE that cached
+ * layout + the prior origin verbatim (so its world geometry is byte-identical across the recut);
+ * otherwise install the freshly decomposed local layout under the new key.
+ *
+ * Result: a recut that changes no material input AND no group's membership leaves every group
+ * byte-identical; a recut that changes only one group (its material, or its CONTENTS — e.g. that
+ * group refined and revealed new children) moves only that group — the spec's "opening one
+ * directory must not move any other directory", now at the live-scene level.
+ *
+ * The shared `cache` carries cached local layouts across recuts; pass the prior layout's `cache`
+ * to preserve hits. The cache stays bounded by the DISTINCT BOX-KEY count: a key that is
+ * superseded (membership moved) or whose box key vanished from the partition is deleted here,
+ * because the reuse gate only ever consults `prev.activeKey` and so can never serve a historical
+ * entry. That bound is enforced HERE, not by the caller — the live path's cache is a plain Map
+ * with no LRU (`makeLocalLayoutCache`).
+ */
+export function reconcileHierarchicalLayout(
+  prev: HierarchicalLayout | undefined,
+  world: WorldLayoutResult,
+  keyFor: GroupKeyFn,
+): HierarchicalLayout {
+  const cache = prev?.cache ?? makeLocalLayoutCache();
+  const part = partitionWorldLayout(world);
+  const topById = new Map(world.clusters.filter((c) => c.parentId == null).map((c) => [c.id, c]));
+
+  const reservations: GroupReservation[] = [];
+  const consider = (
+    boxKey: string,
+    origin: XYPosition,
+    positions: Map<string, XYPosition>,
+    clusters: ClusterBox[],
+    groupBox: ClusterBox | undefined,
+  ) => {
+    // The key carries this group's MEMBERSHIP digest — see {@link GroupKeyFn} for why the reuse
+    // test below would otherwise mean "the scene material is unchanged" and fire for every group.
+    const key = keyFor(boxKey, groupContentId(positions, clusters));
+    const prevKey = prev?.activeKey.get(boxKey);
+    const prevOrigin = prev?.origins.get(boxKey);
+    // A superseded key's entry is UNREACHABLE, so drop it rather than let it accumulate. The
+    // reuse gate below only ever compares against `prev.activeKey` — the IMMEDIATELY preceding
+    // key — so no historical entry can be served again, not even if the group later returns to an
+    // earlier membership. Before the content digest entered the key a group's key was constant per
+    // material, so `cache.set` overwrote one slot per box key and the cache was self-bounding; now
+    // the key moves whenever membership moves, and the live path's cache is a bare Map with no LRU
+    // (makeLocalLayoutCache — see the note in useScene's stitchThroughHierarchy). Without this
+    // delete, steady exploration appends one full CachedLocalLayout per changed group per recut:
+    // measured at 201 entries for 2 box keys over 200 recuts.
+    if (prevKey && !proxyCacheKeyEquals(prevKey, key)) cache.delete(boxKey, prevKey);
+    if (prevKey && prevOrigin && proxyCacheKeyEquals(prevKey, key)) {
+      const hit = cache.get(boxKey, key);
+      if (hit) {
+        // Byte-identical reuse: keep the PRIOR origin + cached local layout. The new world
+        // layout's coordinates for this group are discarded — material is unchanged, so the
+        // group must not move just because the worker re-ran (mental-map / sibling stability).
+        reservations.push({ boxKey, origin: prevOrigin, key, coarse: hit });
+        return;
+      }
+    }
+    reservations.push({
+      boxKey,
+      origin,
+      key,
+      coarse: toLocal(origin, positions, clusters, groupBox),
+    });
+  };
+
+  for (const [boxKey, g] of part.groups)
+    consider(boxKey, g.origin, g.positions, g.clusters, topById.get(boxKey));
+  if (part.ungrouped.size > 0)
+    consider(UNGROUPED_BOX_KEY, { x: 0, y: 0 }, part.ungrouped, [], undefined);
+
+  // Drop cache entries for box keys that VANISHED from the new partition (a top-level group that
+  // folded into a proxy card owns no box any more). `consider` never runs for them, so nothing
+  // else would ever overwrite or evict their entry — and the next layout cannot reach it either,
+  // since reuse is keyed off `prev.activeKey`, which no longer lists them.
+  if (prev) {
+    const live = new Set(reservations.map((r) => r.boxKey));
+    for (const [boxKey, staleKey] of prev.activeKey) {
+      if (!live.has(boxKey)) cache.delete(boxKey, staleKey);
+    }
+  }
+
+  return makeHierarchicalLayout(reservations, cache);
+}
+
+/** Serialize a layout's per-group cache keys (debug / test aid — proves which keys are live). */
+export function hierarchicalLayoutKeys(layout: HierarchicalLayout): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [boxKey, key] of layout.activeKey) out.set(boxKey, serializeProxyCacheKey(key));
+  return out;
+}

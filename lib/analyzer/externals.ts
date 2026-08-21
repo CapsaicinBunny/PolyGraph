@@ -18,12 +18,17 @@ export function npmPackageName(spec: string): string {
   return spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
 }
 
-// Runtime globals whose member usage becomes an external API node.
-const RUNTIME_GLOBALS: Record<string, ExternalKind> = {
-  Bun: "bun",
-  Deno: "deno",
-  process: "node",
-};
+// Runtime globals whose member usage becomes an external API node. A Map, not an
+// object literal: a property access whose object identifier collides with an
+// Object.prototype member (`toString.x`, `constructor.x`, `__proto__.x`, …) would
+// otherwise resolve an inherited function via `OBJ[key]` — truthy, so the `!kind`
+// guard passes — and store it as a bogus ExternalKind. `Map.get` only matches own
+// entries. See the same fix in lib/analyzer/facets.ts (RUNTIME_GLOBALS).
+const RUNTIME_GLOBALS = new Map<string, ExternalKind>([
+  ["Bun", "bun"],
+  ["Deno", "deno"],
+  ["process", "node"],
+]);
 
 function classifyModule(spec: string): ExternalKind {
   if (spec === "bun" || spec.startsWith("bun:")) return "bun";
@@ -98,7 +103,7 @@ export function analyzeExternals(
     for (const access of file.getDescendantsOfKind(SyntaxKind.PropertyAccessExpression)) {
       const obj = access.getExpression();
       if (!Node.isIdentifier(obj)) continue;
-      const externalKind = RUNTIME_GLOBALS[obj.getText()];
+      const externalKind = RUNTIME_GLOBALS.get(obj.getText());
       if (!externalKind) continue;
 
       const label = `${obj.getText()}.${access.getName()}`;

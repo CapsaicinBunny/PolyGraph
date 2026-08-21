@@ -5,14 +5,18 @@
 
 /**
  * Analyze a bucket of same-language files. `files_json` is a JSON object of
- * relative path -> source text. Returns a `Promise` that resolves to a JSON
- * `{ nodes, edges, errors }` string. The heavy work runs off the JS thread on
- * napi's libuv threadpool (see [`AnalyzeTask`]); the inputs and the resolved
- * JSON shape are identical to the previous synchronous binding.
+ * relative path -> source text. `facet_schema_json` is the pack's facet catalog
+ * as a JSON array of flat `DimensionDescriptor`s (from pack.yaml) — pass `""`
+ * for a pack with no facets. Returns a `Promise` that resolves to a JSON
+ * `{ nodes, edges, errors, facetSchema? }` string. The heavy work runs off the
+ * JS thread on napi's libuv threadpool (see [`AnalyzeTask`]); nodes gain an
+ * optional `facets` map from the pack's `@facet` captures, and `facetSchema`
+ * echoes the descriptors so the kernel needn't re-load the pack.
  */
 export declare function analyze(
   grammar: string,
   querySrc: string,
   importStyle: string,
   filesJson: string,
+  facetSchemaJson: string,
 ): Promise<string>;

@@ -1,19 +1,21 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
-import { Box, Flex, HStack, Stack, Text } from "@chakra-ui/react";
+import { type ReactNode, useMemo, useState } from "react";
+import { Box, Flex, HStack, Input, Stack, Text } from "@chakra-ui/react";
 import type { ViewEdgeKind } from "@/lib/aggregate";
+import type { FacetKey } from "@/lib/graph/dimensions";
+import { type FacetSelection, valueEnabled } from "@/lib/graph/facet-selection";
+import type { FilterDimension, FilterValue } from "@/lib/graph/filter-derive";
 import type { SavedSearch } from "@/lib/graph/query-language";
 import { QueryBar, type QueryMode } from "./QueryBar";
 import {
   EDGE_STYLES,
   FILTERABLE_EDGE_KINDS,
-  FILTERABLE_NODE_KINDS,
   KIND_GLYPH,
   NODE_KIND_LAYERS,
   NODE_STYLES,
 } from "@/lib/graph/visual";
-import type { Environment, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
+import type { NodeKind } from "@/lib/graph/types";
 import {
   DIRECTIONAL_ALGORITHMS,
   type GroupBy,
@@ -35,19 +37,24 @@ interface SidebarProps {
   onDeleteSearch: (name: string) => void;
   enabledEdgeKinds: Set<ViewEdgeKind>;
   onToggleEdgeKind: (kind: ViewEdgeKind) => void;
-  enabledNodeKinds: Set<NodeKind>;
-  onToggleNodeKind: (kind: NodeKind) => void;
-  onSetNodeKinds: (kinds: NodeKind[], on: boolean) => void;
-  enabledCategories: Set<NodeCategory>;
-  onToggleCategory: (category: NodeCategory) => void;
-  enabledEnvironments: Set<Environment>;
-  onToggleEnvironment: (env: Environment) => void;
-  enabledRuntimes: Set<Runtime>;
-  onToggleRuntime: (rt: Runtime) => void;
-  /** Scope values actually present in the scanned graph; empty groups are hidden. */
-  presentCategories: Set<NodeCategory>;
-  presentEnvironments: Set<Environment>;
-  presentRuntimes: Set<Runtime>;
+  /** Bulk edge-kind setter (all / none); optional — falls back to per-kind toggles. */
+  onSetEdgeKinds?: (kinds: ViewEdgeKind[], on: boolean) => void;
+  /**
+   * Sparse facet selections (kind/category/env/runtime/role + provider facets).
+   * No entry for a key ⇒ all of its values enabled.
+   */
+  enabledFacets: Map<FacetKey, FacetSelection>;
+  /**
+   * The filterable facet dimensions present in this graph (from
+   * deriveFilterDimensions): one collapsible section each, with per-value counts
+   * + eligibility. EXCLUDES kind (its dedicated Node-types section below) and
+   * folder/language (the FiltersPanel).
+   */
+  filterDimensions: FilterDimension[];
+  /** Toggle one value of a facet on/off. */
+  onToggleFacetValue: (key: FacetKey, value: string) => void;
+  /** Enable/disable a set of a facet's values at once (per-section all/none, layers). */
+  onSetFacetValues: (key: FacetKey, values: string[], on: boolean) => void;
   onResetFilters: () => void;
   algorithm: LayoutAlgorithm;
   onAlgorithm: (algorithm: LayoutAlgorithm) => void;
@@ -55,23 +62,13 @@ interface SidebarProps {
   onDirection: (direction: LayoutDirection) => void;
   groupBy: GroupBy;
   onGroupBy: (groupBy: GroupBy) => void;
+  /**
+   * The eligible grouping modes for this graph (Phase C1a) — Directory, Package (when
+   * manifests exist), Community, eligible groupable facets, then None. Replaces the
+   * fixed directory/community/none chips.
+   */
+  groupByOptions: { key: string; label: string; glyph: string }[];
 }
-
-const CATEGORIES: { value: NodeCategory; label: string; color: string }[] = [
-  { value: "ui", label: "UI", color: "#22c55e" },
-  { value: "feature", label: "Feature", color: "#3b82f6" },
-];
-
-const ENVIRONMENTS: { value: Environment; label: string; color: string }[] = [
-  { value: "client", label: "Client", color: "#fb923c" },
-  { value: "server", label: "Server", color: "#2dd4bf" },
-];
-
-const RUNTIMES: { value: Runtime; label: string; color: string }[] = [
-  { value: "node", label: "node", color: "#4ade80" },
-  { value: "deno", label: "deno", color: "#60a5fa" },
-  { value: "bun", label: "bun", color: "#f472b6" },
-];
 
 const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
   { value: "smart", label: "Smart", glyph: "✦" },
@@ -85,18 +82,16 @@ const ALGORITHMS: { value: LayoutAlgorithm; label: string; glyph: string }[] = [
   { value: "backbone", label: "Backbone", glyph: "⊕" },
 ];
 
-const GROUP_BY: { value: GroupBy; label: string; glyph: string }[] = [
-  { value: "directory", label: "Directory", glyph: "🗀" },
-  { value: "community", label: "Community", glyph: "⬡" },
-  { value: "none", label: "None", glyph: "∅" },
-];
-
 const DIRECTIONS: { value: LayoutDirection; label: string; glyph: string }[] = [
   { value: "TB", label: "Top down", glyph: "↓" },
   { value: "LR", label: "Left → right", glyph: "→" },
   { value: "BT", label: "Bottom up", glyph: "↑" },
   { value: "RL", label: "Right → left", glyph: "←" },
 ];
+
+// Above this many total facet values, offer the filter-search box so a polyglot
+// repo's many sections stay navigable.
+const SEARCH_VALUE_THRESHOLD = 10;
 
 const ACCENT = "#3b82f6";
 const BORDER_VAR = "var(--chakra-colors-border)";
@@ -129,25 +124,36 @@ function Chevron({ open }: { open: boolean }) {
 function Section({
   title,
   defaultOpen = true,
+  forceOpen = false,
   modified = false,
   action,
   children,
 }: {
   title: string;
   defaultOpen?: boolean;
+  /**
+   * Force the body open regardless of the user's manual toggle (used by the
+   * filter-search to reveal matches inside an otherwise-collapsed section). React
+   * only reads `defaultOpen` at mount, so a section that becomes relevant *after*
+   * mount — e.g. when a query matches a value living in a collapsed, ineligible
+   * dimension — needs this override to actually open. The user's manual state is
+   * preserved underneath and restored once the override clears.
+   */
+  forceOpen?: boolean;
   modified?: boolean;
   action?: ReactNode;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const toggle = () => setOpen((o) => !o);
+  const effectiveOpen = open || forceOpen;
   return (
     <Box>
       <Flex align="center" justify="space-between" gap="2">
         <HStack
           role="button"
           tabIndex={0}
-          aria-expanded={open}
+          aria-expanded={effectiveOpen}
           onClick={toggle}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
@@ -162,7 +168,7 @@ function Section({
           color="fg.muted"
           _hover={{ color: "fg" }}
         >
-          <Chevron open={open} />
+          <Chevron open={effectiveOpen} />
           <Text
             fontSize="11px"
             fontWeight="semibold"
@@ -184,7 +190,7 @@ function Section({
         </HStack>
         {action}
       </Flex>
-      {open && (
+      {effectiveOpen && (
         <Box mt="2.5" mb="1">
           {children}
         </Box>
@@ -223,6 +229,7 @@ function Chip({
   onClick,
   color,
   glyph,
+  count,
   disabled = false,
 }: {
   label: string;
@@ -230,6 +237,7 @@ function Chip({
   onClick: () => void;
   color?: string;
   glyph?: string;
+  count?: number;
   disabled?: boolean;
 }) {
   const accent = color ?? ACCENT;
@@ -282,6 +290,11 @@ function Chip({
         <Box w="7px" h="7px" rounded="full" flexShrink={0} style={{ backgroundColor: accent }} />
       )}
       {label}
+      {count !== undefined && (
+        <Text as="span" fontSize="10px" color="fg.subtle" ml="0.5">
+          {count}
+        </Text>
+      )}
     </Box>
   );
 }
@@ -302,6 +315,68 @@ function MiniLabel({ children }: { children: ReactNode }) {
   );
 }
 
+/** One dynamic facet dimension as a collapsible section of value chips with counts. */
+function FacetSection({
+  dim,
+  enabledFacets,
+  onToggleFacetValue,
+  onSetFacetValues,
+  match,
+}: {
+  dim: FilterDimension;
+  enabledFacets: Map<FacetKey, FacetSelection>;
+  onToggleFacetValue: (key: FacetKey, value: string) => void;
+  onSetFacetValues: (key: FacetKey, values: string[], on: boolean) => void;
+  /** Lowercased filter-search query; "" shows everything. */
+  match: string;
+}) {
+  const shown: FilterValue[] = match
+    ? dim.values.filter((v) => v.label.toLowerCase().includes(match))
+    : dim.values;
+  if (shown.length === 0) return null;
+
+  const allValues = dim.values.map((v) => v.value);
+  const allOn = allValues.every((v) => valueEnabled(enabledFacets, dim.key, v));
+  // A dominant/single-bucket (ineligible) dimension is collapsed by default so it
+  // doesn't clutter the panel. An active filter-search must still reveal a match that
+  // lives inside such a collapsed section, so force it open while searching (`shown`
+  // is already narrowed to the matches; this section only renders at all when it has
+  // ≥1). `defaultOpen` stays the honest mount-time state; `forceOpen` is the dynamic
+  // search override (a one-time `useState(defaultOpen)` can't react to a later query).
+  const defaultOpen = dim.stats.eligible;
+  const forceOpen = match.length > 0;
+  const modified = !allOn;
+
+  return (
+    <Section
+      title={dim.label}
+      defaultOpen={defaultOpen}
+      forceOpen={forceOpen}
+      modified={modified}
+      action={
+        <HideAllToggle
+          allOn={allOn}
+          onToggle={() => onSetFacetValues(dim.key, allValues, !allOn)}
+        />
+      }
+    >
+      <ChipRow>
+        {shown.map((v) => (
+          <Chip
+            key={v.value}
+            label={v.label}
+            color={v.color}
+            glyph={v.glyph}
+            count={v.count}
+            active={valueEnabled(enabledFacets, dim.key, v.value)}
+            onClick={() => onToggleFacetValue(dim.key, v.value)}
+          />
+        ))}
+      </ChipRow>
+    </Section>
+  );
+}
+
 export function Sidebar({
   search,
   onSearch,
@@ -316,18 +391,11 @@ export function Sidebar({
   onDeleteSearch,
   enabledEdgeKinds,
   onToggleEdgeKind,
-  enabledNodeKinds,
-  onToggleNodeKind,
-  onSetNodeKinds,
-  enabledCategories,
-  onToggleCategory,
-  enabledEnvironments,
-  onToggleEnvironment,
-  enabledRuntimes,
-  onToggleRuntime,
-  presentCategories,
-  presentEnvironments,
-  presentRuntimes,
+  onSetEdgeKinds,
+  enabledFacets,
+  filterDimensions,
+  onToggleFacetValue,
+  onSetFacetValues,
   onResetFilters,
   algorithm,
   onAlgorithm,
@@ -335,35 +403,39 @@ export function Sidebar({
   onDirection,
   groupBy,
   onGroupBy,
+  groupByOptions,
 }: SidebarProps) {
   const directionEnabled = DIRECTIONAL_ALGORITHMS.includes(algorithm);
+  const [facetQuery, setFacetQuery] = useState("");
 
   const relationshipsModified = enabledEdgeKinds.size !== FILTERABLE_EDGE_KINDS.length;
   const allEdgesOn = enabledEdgeKinds.size === FILTERABLE_EDGE_KINDS.length;
-  // No bulk edge setter prop exists, so drive "hide all" / "show all" by flipping just the kinds
-  // that need it via the single-toggle prop (its setter is a functional update, so the calls
-  // compound correctly).
   const setAllEdges = (on: boolean) => {
+    if (onSetEdgeKinds) {
+      onSetEdgeKinds([...FILTERABLE_EDGE_KINDS], on);
+      return;
+    }
+    // Fallback: drive "hide all"/"show all" via the single-toggle prop.
     for (const kind of FILTERABLE_EDGE_KINDS) {
       if (enabledEdgeKinds.has(kind) !== on) onToggleEdgeKind(kind);
     }
   };
-  const nodeTypesModified = enabledNodeKinds.size !== FILTERABLE_NODE_KINDS.length;
 
-  // Only surface scope values the codebase actually has. On a C/Rust project the
-  // JS/TS-oriented Category / Environment / Runtime heuristics produce nothing,
-  // so each group — and the whole section — collapses away.
-  const categories = CATEGORIES.filter((c) => presentCategories.has(c.value));
-  const environments = ENVIRONMENTS.filter((e) => presentEnvironments.has(e.value));
-  const runtimes = RUNTIMES.filter((r) => presentRuntimes.has(r.value));
-  const hasScope = categories.length > 0 || environments.length > 0 || runtimes.length > 0;
-  // "Modified" iff a scope chip the user can actually SEE is turned off. Iterate the same
-  // filtered lists the chips render from (not the raw present* sets), so a present value with no
-  // rendered chip can never light the dot when every visible chip is on.
-  const scopeModified =
-    categories.some((c) => !enabledCategories.has(c.value)) ||
-    environments.some((e) => !enabledEnvironments.has(e.value)) ||
-    runtimes.some((r) => !enabledRuntimes.has(r.value));
+  // The kind dimension drives the Node-types section through the generic facet
+  // selection (no enabledNodeKinds set any more). A kind is enabled unless the
+  // sparse selection excludes it.
+  const kindEnabled = (kind: NodeKind) => valueEnabled(enabledFacets, "kind", kind);
+  const nodeTypesModified = NODE_KIND_LAYERS.some((layer) =>
+    layer.kinds.some((k) => !kindEnabled(k)),
+  );
+
+  // Offer the filter-search box once a polyglot repo accumulates many facet values.
+  const totalFacetValues = useMemo(
+    () => filterDimensions.reduce((sum, d) => sum + d.values.length, 0),
+    [filterDimensions],
+  );
+  const showFacetSearch = totalFacetValues >= SEARCH_VALUE_THRESHOLD;
+  const match = facetQuery.trim().toLowerCase();
 
   return (
     <Stack
@@ -423,13 +495,13 @@ export function Sidebar({
           <Box mt="3">
             <MiniLabel>Group by</MiniLabel>
             <ChipRow>
-              {GROUP_BY.map((g) => (
+              {groupByOptions.map((g) => (
                 <Chip
-                  key={g.value}
+                  key={g.key}
                   label={g.label}
                   glyph={g.glyph}
-                  active={groupBy === g.value}
-                  onClick={() => onGroupBy(g.value)}
+                  active={groupBy === g.key}
+                  onClick={() => onGroupBy(g.key)}
                 />
               ))}
             </ChipRow>
@@ -462,7 +534,7 @@ export function Sidebar({
         </Text>
         <Stack gap="3">
           {NODE_KIND_LAYERS.map((layer) => {
-            const allOn = layer.kinds.every((k) => enabledNodeKinds.has(k));
+            const allOn = layer.kinds.every((k) => kindEnabled(k));
             return (
               <Box key={layer.label}>
                 <Flex align="center" justify="space-between" mb="1.5">
@@ -476,7 +548,7 @@ export function Sidebar({
                   </Text>
                   <HideAllToggle
                     allOn={allOn}
-                    onToggle={() => onSetNodeKinds(layer.kinds, !allOn)}
+                    onToggle={() => onSetFacetValues("kind", layer.kinds, !allOn)}
                   />
                 </Flex>
                 <ChipRow>
@@ -486,8 +558,8 @@ export function Sidebar({
                       label={NODE_STYLES[kind].label}
                       color={NODE_STYLES[kind].color}
                       glyph={KIND_GLYPH[kind]}
-                      active={enabledNodeKinds.has(kind)}
-                      onClick={() => onToggleNodeKind(kind)}
+                      active={kindEnabled(kind)}
+                      onClick={() => onToggleFacetValue("kind", kind)}
                     />
                   ))}
                 </ChipRow>
@@ -497,60 +569,27 @@ export function Sidebar({
         </Stack>
       </Section>
 
-      {hasScope && (
-        <Section title="Scope" defaultOpen={false} modified={scopeModified}>
-          <Stack gap="3">
-            {categories.length > 0 && (
-              <Box>
-                <MiniLabel>Category</MiniLabel>
-                <ChipRow>
-                  {categories.map((c) => (
-                    <Chip
-                      key={c.value}
-                      label={c.label}
-                      color={c.color}
-                      active={enabledCategories.has(c.value)}
-                      onClick={() => onToggleCategory(c.value)}
-                    />
-                  ))}
-                </ChipRow>
-              </Box>
-            )}
-            {environments.length > 0 && (
-              <Box>
-                <MiniLabel>Environment</MiniLabel>
-                <ChipRow>
-                  {environments.map((e) => (
-                    <Chip
-                      key={e.value}
-                      label={e.label}
-                      color={e.color}
-                      active={enabledEnvironments.has(e.value)}
-                      onClick={() => onToggleEnvironment(e.value)}
-                    />
-                  ))}
-                </ChipRow>
-              </Box>
-            )}
-            {runtimes.length > 0 && (
-              <Box>
-                <MiniLabel>Runtime</MiniLabel>
-                <ChipRow>
-                  {runtimes.map((r) => (
-                    <Chip
-                      key={r.value}
-                      label={r.label}
-                      color={r.color}
-                      active={enabledRuntimes.has(r.value)}
-                      onClick={() => onToggleRuntime(r.value)}
-                    />
-                  ))}
-                </ChipRow>
-              </Box>
-            )}
-          </Stack>
-        </Section>
+      {/* Dynamic, registry-driven facet sections (category / env / runtime / role /
+          provider facets). One collapsible section per present() dimension, value
+          chips with counts, sparse toggles + all/none, and a filter-search when many. */}
+      {showFacetSearch && (
+        <Input
+          size="xs"
+          placeholder="Filter values…"
+          value={facetQuery}
+          onChange={(e) => setFacetQuery(e.target.value)}
+        />
       )}
+      {filterDimensions.map((dim) => (
+        <FacetSection
+          key={dim.key}
+          dim={dim}
+          enabledFacets={enabledFacets}
+          onToggleFacetValue={onToggleFacetValue}
+          onSetFacetValues={onSetFacetValues}
+          match={match}
+        />
+      ))}
     </Stack>
   );
 }

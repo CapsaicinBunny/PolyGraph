@@ -2,7 +2,11 @@
 // serializable Workspace (plain arrays). No DOM/storage here — that's store.ts.
 
 import type { ViewEdgeKind } from "../aggregate";
-import type { Environment, NodeCategory, NodeKind, Runtime } from "../graph/types";
+import {
+  facetSelectionsToState,
+  facetStateToSelections,
+  migrateLegacyEnabledFacets,
+} from "./facet-migrate";
 import { type ExplorerWorkspaceState, type Workspace, WORKSPACE_VERSION } from "./schema";
 
 /** Capture the current Explorer state as a serializable Workspace. */
@@ -18,10 +22,7 @@ export function captureWorkspace(state: ExplorerWorkspaceState): Workspace {
       showExternal: state.showExternal,
       search: state.search,
       enabledEdgeKinds: [...state.enabledEdgeKinds].sort(),
-      enabledNodeKinds: [...state.enabledNodeKinds].sort(),
-      enabledCategories: [...state.enabledCategories].sort(),
-      enabledEnvironments: [...state.enabledEnvironments].sort(),
-      enabledRuntimes: [...state.enabledRuntimes].sort(),
+      enabledFacets: facetSelectionsToState(state.enabledFacets),
       enabledFolders: [...state.enabledFolders].sort(),
       enabledLanguages: [...state.enabledLanguages].sort(),
     },
@@ -30,6 +31,7 @@ export function captureWorkspace(state: ExplorerWorkspaceState): Workspace {
       direction: state.direction,
       groupBy: state.groupBy,
       density: state.density,
+      lodOpenPx: state.lodOpenPx,
       edgeRouting: state.edgeRouting,
       communityCollapse: state.communityCollapse,
     },
@@ -50,16 +52,17 @@ export function restoreWorkspace(ws: Workspace): ExplorerWorkspaceState {
     showExternal: f.showExternal,
     search: f.search,
     enabledEdgeKinds: new Set(f.enabledEdgeKinds as ViewEdgeKind[]),
-    enabledNodeKinds: new Set(f.enabledNodeKinds as NodeKind[]),
-    enabledCategories: new Set(f.enabledCategories as NodeCategory[]),
-    enabledEnvironments: new Set(f.enabledEnvironments as Environment[]),
-    enabledRuntimes: new Set(f.enabledRuntimes as Runtime[]),
+    // New `enabledFacets` map, or the legacy named arrays migrated to it — so an
+    // old workspace restores the SAME filtering (its enabled lists → include mode).
+    enabledFacets: facetStateToSelections(migrateLegacyEnabledFacets(f)),
     enabledFolders: new Set(f.enabledFolders),
     enabledLanguages: new Set(f.enabledLanguages),
     algorithm: ws.layout.algorithm,
     direction: ws.layout.direction,
     groupBy: ws.layout.groupBy,
     density: ws.layout.density,
+    // Old workspaces predate the LOD-detail control — restore the shipped 120 default.
+    lodOpenPx: ws.layout.lodOpenPx ?? 120,
     edgeRouting: ws.layout.edgeRouting,
     communityCollapse: ws.layout.communityCollapse,
     ...(ws.camera ? { camera: ws.camera } : {}),
@@ -92,23 +95,38 @@ export function parseWorkspace(text: string): Workspace {
   return ws as Workspace;
 }
 
-const STRING_ARRAY_FILTERS = [
-  "enabledEdgeKinds",
+/** Filter fields that are always string arrays in every workspace version. */
+const STRING_ARRAY_FILTERS = ["enabledEdgeKinds", "enabledFolders", "enabledLanguages"] as const;
+
+/** Legacy named arrays — optional now, but if present must still be string arrays. */
+const LEGACY_ARRAY_FILTERS = [
   "enabledNodeKinds",
   "enabledCategories",
   "enabledEnvironments",
   "enabledRuntimes",
-  "enabledFolders",
-  "enabledLanguages",
 ] as const;
 
 function isStringArray(v: unknown): boolean {
   return Array.isArray(v) && v.every((x) => typeof x === "string");
 }
 
+/** A `Record<string, FacetSelectionState>` shape check (each entry mode + string[]). */
+function isFacetSelectionState(v: unknown): boolean {
+  if (typeof v !== "object" || v === null) return false;
+  for (const sel of Object.values(v as Record<string, unknown>)) {
+    if (typeof sel !== "object" || sel === null) return false;
+    const s = sel as { mode?: unknown; values?: unknown };
+    if (s.mode !== "all" && s.mode !== "include" && s.mode !== "exclude") return false;
+    if (!isStringArray(s.values)) return false;
+  }
+  return true;
+}
+
 /**
  * Validate the contents (not just presence) of a workspace so a malformed but
  * present `filters`/`layout` can't restore `undefined` fields into Explorer state.
+ * Accepts BOTH the new generic `enabledFacets` map and the legacy named arrays
+ * (older workspaces), so back-compat loading is preserved.
  */
 function validateShape(ws: Partial<Workspace>): void {
   if (!ws.filters || typeof ws.filters !== "object")
@@ -122,12 +140,28 @@ function validateShape(ws: Partial<Workspace>): void {
   for (const key of STRING_ARRAY_FILTERS) {
     if (!isStringArray(f[key])) throw new Error(`filters.${key} must be a string array`);
   }
+  // Either the generic facet map (current) or the legacy arrays (older) must be valid.
+  if (f.enabledFacets !== undefined && !isFacetSelectionState(f.enabledFacets)) {
+    throw new Error("filters.enabledFacets must be a facet-selection map");
+  }
+  if (f.enabledFacets === undefined) {
+    for (const key of LEGACY_ARRAY_FILTERS) {
+      // A legacy workspace must carry the named arrays; a malformed value is rejected.
+      if (f[key] !== undefined && !isStringArray(f[key])) {
+        throw new Error(`filters.${key} must be a string array`);
+      }
+    }
+  }
 
   const l = ws.layout;
   for (const key of ["algorithm", "direction", "groupBy", "edgeRouting"] as const) {
     if (typeof l[key] !== "string") throw new Error(`layout.${key} must be a string`);
   }
   if (typeof l.density !== "number") throw new Error("layout.density must be a number");
+  // Optional (added with the LOD-detail control); only a present-but-wrong-typed value is invalid.
+  if (l.lodOpenPx !== undefined && typeof l.lodOpenPx !== "number") {
+    throw new Error("layout.lodOpenPx must be a number");
+  }
   if (typeof l.communityCollapse !== "boolean") {
     throw new Error("layout.communityCollapse must be a boolean");
   }

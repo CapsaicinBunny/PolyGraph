@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box } from "@chakra-ui/react";
 import { useTheme } from "next-themes";
 import type { ViewEdgeKind } from "@/lib/aggregate";
-import { clusterIdOfAggregate, isAggregateId } from "@/lib/graph/collapse";
+import { aggregateNodeId, clusterIdOfAggregate, isAggregateId } from "@/lib/graph/collapse";
 import {
   buildAdjacency,
   connectionHighlight,
@@ -15,8 +15,16 @@ import {
   pairKey,
   pruneAnchors,
 } from "@/lib/graph/connections";
-import type { Scene, SceneEdge, SceneFilters } from "@/lib/graph/scene";
-import type { Environment, GraphModel, NodeCategory, NodeKind, Runtime } from "@/lib/graph/types";
+import {
+  IncrementalSceneSession,
+  type Scene,
+  type SceneEdge,
+  type SceneFilters,
+} from "@/lib/graph/scene";
+import type { GraphModel } from "@/lib/graph/types";
+import type { PackageManifest } from "@/lib/graph/levels/types";
+import type { DimensionCatalog, FacetKey } from "@/lib/graph/dimensions";
+import type { FacetSelection } from "@/lib/graph/facet-selection";
 import {
   type GroupBy,
   type LayoutAlgorithm,
@@ -25,8 +33,28 @@ import {
 } from "@/lib/layout";
 import { frameBoxes } from "@/lib/graph/frame";
 import { buildDirTree, type DirNode } from "@/lib/graph/hierarchy";
-import { computeCut, computeCutTraced, cutEquals } from "@/lib/graph/lod-cut";
-import { cameraBand, sceneBoxes, shouldFit } from "@/lib/graph/lod-scene";
+import type { CollapseIntent, GroupId } from "@/lib/graph/collapse-model";
+import type { CompactGroupingSnapshot } from "@/lib/graph/grouping-snapshot";
+import { buildGroupingSnapshot, NO_GROUP } from "@/lib/graph/grouping-snapshot";
+import { directoryGrouping, syntheticNoneGrouping } from "@/lib/graph/grouping";
+import {
+  type RepLodResult,
+  type RepresentationRuntime,
+  acquireRepresentationRuntime,
+  activeProxyBoxKeyOfNode,
+  buildSceneRepresentationCut,
+  DEFAULT_REP_LOD_OPTIONS,
+  LOD_BUDGET,
+  materialSignature,
+} from "@/lib/graph/lod-representation-cut";
+import { cameraBand, proxyBoxes, sceneBoxes, sceneExtent, shouldFit } from "@/lib/graph/lod-scene";
+import { decideRecut, type RecutTrigger } from "@/lib/graph/lod-recut-mode";
+import {
+  BoundedLayoutCache,
+  type LayoutCacheKey,
+  planTransition,
+  ReadinessController,
+} from "@/lib/graph/readiness";
 import {
   centerCameraOn,
   contentBounds,
@@ -40,13 +68,27 @@ import { useScene } from "./useScene";
 // Adaptive-LOD tuning. Conservative starting values — a directory opens into its
 // children once its on-screen height passes OPEN_PX, and the cut is capped at
 // MAX_CARDS cards. These want desktop calibration (see docs/SCALE-100K.md).
-const LOD_OPEN_PX = 240;
-const LOD_MAX_CARDS = 800;
-// Cap on estimated layout NODES (files + their symbols when expanded). Smart lays out
-// ~2.5k dense nodes in ~1s but ~40s at 29k, so keep the cut's input under this and
-// Smart always finishes within the worker timeout (never degrading to the grid
-// fallback). See docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md.
-const LOD_NODE_BUDGET = 2500;
+// On-screen height (px) at which a proxy becomes eligible to refine (open into its children).
+// LOWER = more sensitive = less aggressive combining (proxies open at a smaller on-screen size,
+// so more individual detail shows at a given zoom). Lowered 240→120 after desktop testing: at the
+// fitted camera a top-level group projects to ~100-110px, so the old 240 kept the whole graph
+// collapsed to its bootstrap cards ("combining everything"); 120 lets those top groups open while
+// the finite card/layout budget + hysteresis still bound the result (no flood, no oscillation).
+const LOD_OPEN_PX = 120;
+// The card budgets are sourced from the ONE finite LOD_BUDGET (P4 budget-consolidation):
+//   maxCards   = LOD_BUDGET.targetCards (the soft antichain-width target the cut steers toward)
+//   nodeBudget = LOD_BUDGET.hardCards   (the finite ceiling on a forced open / expand-all)
+// The local `LOD_MAX_CARDS` (800) and `LOD_NODE_BUDGET` (1500) copies were removed — the same
+// numbers now live in exactly one place. `hardCards` stays 1500 (the measured value that keeps
+// the layout input within Smart's reliable range and the 8s worker timeout — the expand-all fix;
+// see docs/superpowers/plans/2026-06-18-nanite-lod-node-budget.md), so nothing here regresses.
+const LOD_MAX_CARDS = LOD_BUDGET.targetCards;
+const LOD_NODE_BUDGET = LOD_BUDGET.hardCards;
+// Bound on RETAINED auto-opened group proxies (the deadband set): a group opened while
+// on-screen stays open through a small pan/zoom-out, but exploring many regions can't grow
+// the open set without limit — the IntrusiveLru evicts the oldest offscreen opens past this
+// (spec "auto open & offscreen → eviction-eligible … over budget → evict … (LRU)").
+const LOD_OFFSCREEN_OPEN_BUDGET = 64;
 // Debounce the adaptive recompute so a single zoom *gesture* (many wheel ticks
 // across bands) triggers ONE cut+rebuild after it settles — not one per tick. The
 // rebuild reprocesses the whole base graph (1.39M nodes on the kernel), so coalescing
@@ -66,10 +108,10 @@ export interface GraphViewProps {
   groupBy: GroupBy;
   density: number;
   showExternal: boolean;
-  enabledNodeKinds: Set<NodeKind>;
-  enabledCategories: Set<NodeCategory>;
-  enabledEnvironments: Set<Environment>;
-  enabledRuntimes: Set<Runtime>;
+  /** Sparse facet selections (kind/category/env/runtime/role + provider facets). */
+  enabledFacets: Map<FacetKey, FacetSelection>;
+  /** The catalog the scene gate resolves facet values against. */
+  catalog: DimensionCatalog;
   enabledFolders: Set<string>;
   enabledLanguages: Set<string>;
   collapsedClusters: Set<string>;
@@ -82,6 +124,8 @@ export interface GraphViewProps {
   highlightIds: Set<string> | null;
   /** True at the Package/Workspace levels, where the graph is a projection. */
   projected: boolean;
+  /** Package manifests, for the "package" grouping mode's layout snapshot. */
+  manifests?: PackageManifest[];
   onSelect: (id: string) => void;
   onToggleExpand: (fileId: string) => void;
   onToggleCollapse: (clusterId: string) => void;
@@ -90,8 +134,52 @@ export interface GraphViewProps {
   minimap?: boolean;
   /** Adaptive level-of-detail: recompute the collapsed cut as the camera zooms. */
   adaptiveLod?: boolean;
-  /** Called with a new collapsed-directory set when the adaptive cut changes. */
-  onCut?: (collapsed: Set<string>) => void;
+  /**
+   * Live representation-LOD refine-gate openPx (px). Lower = proxies refine at a smaller
+   * on-screen size = less combining. Read at recut time via the `lod` ref; falls back to
+   * LOD_OPEN_PX when undefined. Adjustable without a rebuild.
+   */
+  lodOpenPx?: number;
+  /**
+   * Called when the adaptive cut changes with the GroupLodSelection — the set of OPEN
+   * namespaced group ids — FOR the active grouping mode (the modeKey is the first arg, so
+   * the camera state stays per-mode). It updates only the selection layer of the
+   * three-layer collapse model (spec "Three-layer collapse"); the camera owns this layer
+   * alone and never writes user intent or the bootstrap.
+   */
+  onCut?: (modeKey: string, selection: Set<GroupId>) => void;
+  /**
+   * Reports the community assignment the scene actually laid out (detected over the
+   * FILTERED graph). Explorer feeds it back into the cut snapshot so its "Community N"
+   * box keys match the rendered boxes — otherwise re-detecting over the full graph
+   * relabels communities under filters and silently disables Community-mode LOD. Null in
+   * non-community modes / before the first scene.
+   */
+  onCommunityOf?: (communityOf: Map<string, string> | null) => void;
+  /**
+   * The active grouping mode's CUT snapshot (full, over the rendered graph). Directory uses
+   * the canvas-built directoryRepSnapshot (null here); every OTHER mode supplies a snapshot
+   * the representation cut runs over. Null leaves the rep cut inert for that mode.
+   */
+  groupingSnapshot?: CompactGroupingSnapshot | null;
+  /**
+   * The active grouping mode's user collapse INTENT (group id → open/closed). The
+   * representation cut — the sole LOD authority now that C1a is retired (spec P5) — consumes
+   * it as solver constraints (forceClosed/forceOpen).
+   */
+  intent?: CollapseIntent;
+  /** Dev: observe each committed representation cut (overlay / telemetry). */
+  onRepLod?: (result: RepLodResult) => void;
+  /**
+   * P1 incremental proxy materialization (design impl point 4 / Gap 9). When supplied AND the
+   * representation cut is active, each COMMITTED cut is folded by a persistent
+   * {@link IncrementalSceneSession}: the first cut runs the full O(N) fold, every later cut diffs
+   * against the prior committed cut and re-folds ONLY the changed subtrees + their incident
+   * boundary edges (cost proportional to the changed region, never O(all nodes + all edges)). The
+   * folded GraphModel is handed up here so the owner can adopt it as the render scene. Optional —
+   * omitted → the canvas only produces the cut (the existing `onCut` selection path is unchanged).
+   */
+  onProxyScene?: (scene: GraphModel) => void;
   /**
    * Signature of everything that warrants re-framing the camera (graph, level,
    * filters) but NOT the cut. When it's unchanged across a scene update, the
@@ -208,10 +296,8 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     groupBy,
     density,
     showExternal,
-    enabledNodeKinds,
-    enabledCategories,
-    enabledEnvironments,
-    enabledRuntimes,
+    enabledFacets,
+    catalog,
     enabledFolders,
     enabledLanguages,
     collapsedClusters,
@@ -221,43 +307,49 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     queryIds,
     highlightIds,
     projected,
+    manifests,
     onSelect,
     onToggleExpand,
     onToggleCollapse,
     onSelectEdge,
     minimap = true,
     adaptiveLod,
+    lodOpenPx,
     onCut,
+    onCommunityOf,
+    groupingSnapshot,
+    intent,
+    onRepLod,
+    onProxyScene,
     fitSignature,
   } = props;
 
   const filters: SceneFilters = useMemo(
     () => ({
       showExternal,
-      enabledNodeKinds,
-      enabledCategories,
-      enabledEnvironments,
-      enabledRuntimes,
+      enabledFacets,
       enabledEdgeKinds,
       enabledFolders,
       enabledLanguages,
     }),
-    [
-      showExternal,
-      enabledNodeKinds,
-      enabledCategories,
-      enabledEnvironments,
-      enabledRuntimes,
-      enabledEdgeKinds,
-      enabledFolders,
-      enabledLanguages,
-    ],
+    [showExternal, enabledFacets, enabledEdgeKinds, enabledFolders, enabledLanguages],
+  );
+
+  // The AUTHORITATIVE rep-cut render scene (design impl point 5). The recut materializes the
+  // committed cut into a folded proxy GraphModel and stores it here; `useScene` then builds the
+  // rendered structure DIRECTLY from it (NOT from `compose()`/`collapsedClusters`/
+  // `collapseClusters()`). Null until the first committed cut (the bootstrap-seeded base
+  // structure renders meanwhile).
+  const [repScene, setRepScene] = useState<{ scene: GraphModel; cutSignature: string } | null>(
+    null,
   );
 
   const {
     scene,
     layingOut,
     ready: layoutReady,
+    communityOf,
+    visibleNodeIds,
   } = useScene(
     graph,
     expanded,
@@ -271,8 +363,19 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     focusedIds,
     queryIds,
     projected,
+    catalog,
+    manifests,
+    repScene,
   );
   const { resolvedTheme } = useTheme();
+
+  // Report the scene's community assignment up so Explorer's cut snapshot reuses the SAME
+  // (filtered-graph) labels the layout used — keeping Community-mode LOD box keys aligned
+  // with the rendered boxes. Fires only when the map identity changes (it's memoized in
+  // the scene structure). Explorer guards against redundant updates.
+  useEffect(() => {
+    onCommunityOf?.(communityOf ?? null);
+  }, [communityOf, onCommunityOf]);
 
   // "Layout simplified" notice: surfaces when the budget guard downgraded any Smart cluster's
   // engine (e.g. Layered → Grid for an oversized component), so a grid fallback isn't mistaken
@@ -292,6 +395,34 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   // Tracks the previous plain click so a quick second click on the same card = double-click.
   const lastClick = useRef<{ id: string; time: number }>({ id: "", time: 0 });
   const sceneIds = useMemo(() => new Set(scene.nodes.map((n) => n.id)), [scene.nodes]);
+  // Phase C1b — a SELECTED HIDDEN node highlights its active proxy: when the selection is a
+  // node currently folded into a proxy (not in the scene), resolve it to that proxy's
+  // aggregate card id so the renderer's selection outline lands on the visible proxy. Recomputed
+  // on a selection or scene change; falls back to the raw selectedId when it's visible or there
+  // is no representation result. (No-op outside the representation cut — lastRep stays null.)
+  const nodeOrdinalById = useMemo(() => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < graph.nodes.length; i++) m.set(graph.nodes[i].id, i);
+    return m;
+  }, [graph.nodes]);
+  // The most recent representation-cut result (Phase C1b), written by recomputeCut. Read on the
+  // render side to map a SELECTED HIDDEN node to its active proxy's aggregate card so the selection
+  // outline lands on the visible proxy. Holds the hierarchy + runtimeCut for the representativeOf
+  // walk. MUST be declared before `effectiveSelectionId` below: that memo reads `lastRep.current`
+  // at compute time (during render), so a later `useRef` is a temporal-dead-zone crash ("Cannot
+  // access 'lastRep' before initialization") the moment a folded node is selected.
+  const lastRep = useRef<RepLodResult | null>(null);
+  const effectiveSelectionId = useMemo(() => {
+    if (!selectedId || sceneIds.has(selectedId)) return selectedId ?? undefined;
+    const rep = lastRep.current;
+    const ord = nodeOrdinalById.get(selectedId);
+    if (!rep || ord === undefined) return selectedId;
+    const boxKey = activeProxyBoxKeyOfNode(rep, ord);
+    if (boxKey == null) return selectedId;
+    const aggId = aggregateNodeId(boxKey);
+    return sceneIds.has(aggId) ? aggId : selectedId;
+    // lastRep is a ref (read at compute time); scene changes drive the recompute via sceneIds.
+  }, [selectedId, sceneIds, nodeOrdinalById]);
   // containment edges are dropped inside buildAdjacency, so paths run through code relationships.
   const connAdj = useMemo(() => buildAdjacency(scene.edges), [scene.edges]);
   // Actively prune anchors whose card left the scene on an LOD/collapse transition, so a stale
@@ -398,37 +529,169 @@ export function VelloGraphCanvas(props: GraphViewProps) {
   };
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // (`lastRep` is declared earlier, above `effectiveSelectionId`, which reads it at compute time.)
+
+  // A handle to the mount-effect's `recomputeCut`, so effects OUTSIDE the mount effect (e.g. the
+  // scene-ready effect that fires the FIRST cut when a new scene lands) can trigger a recut without
+  // a camera gesture. Assigned once the mount effect installs the listeners; null before that.
+  const recomputeCutRef = useRef<((trigger: RecutTrigger) => void) | null>(null);
+
+  // The PERSISTENT representation runtime (design Gap 4): the cached hierarchy, node
+  // ordinals, group-id map, eviction + runtime-cut controller, and committed-generation
+  // runtime. A camera recut REUSES this (updating bounds/priorities/cut) rather than
+  // rebuilding the O(N) hierarchy; it is rebuilt only when the material signature changes
+  // (filtered-graph identity + grouping mode/version + node-cost inputs + builder version).
+  // Reset on a grouping-mode switch (the rep id domain moves). The eviction controller that
+  // was a standalone ref now lives INSIDE this runtime.
+  const repRuntimeRef = useRef<RepresentationRuntime | undefined>(undefined);
+  // The PERSISTENT incremental materialization session (design impl point 4 / Gap 9). Paired with
+  // `repRuntimeRef`: rebuilt whenever the runtime is (a fresh hierarchy / post-filter projection),
+  // then driven each committed cut to re-fold ONLY the changed subtrees. Its `signature` mirrors
+  // the runtime's so the canvas can detect a stale session and rebuild it in lockstep. Null until
+  // the first committed representation cut, or whenever `onProxyScene` is absent (no consumer).
+  const proxySessionRef = useRef<{ session: IncrementalSceneSession; signature: string } | null>(
+    null,
+  );
+  // The async-readiness orchestrator (design B3 + impl note (d), P3 "async-readiness"). Governs
+  // the PENDING-target → committed-scene transition: a coarsen (fold) and a refine with a cached
+  // local layout commit immediately; a refine whose local layout is a cache MISS retains the
+  // existing proxy and runs ASYNC (the worker layout in useScene), tagged with the committed
+  // generation; a result whose generation is superseded is discarded; advancing the generation
+  // CANCELS every obsolete in-flight request. The bounded cache is the P3 "cache memory limit /
+  // LRU" — a HIT/MISS probe here, the actual layout bytes live in useScene's HierarchicalLayout.
+  // Both reset on a grouping-mode switch (the rep id domain + generation chain move).
+  const readinessRef = useRef<ReadinessController>(new ReadinessController());
+  const layoutCacheRef = useRef<BoundedLayoutCache>(new BoundedLayoutCache());
+  // Reference-identity tokens for the material signature: a monotonic id per distinct object
+  // reference (graph / snapshot / visible-set / cost inputs). React hands a NEW reference on
+  // a real change, so comparing references is a cheap, correct proxy for "did the material
+  // inputs change?" without an O(N) content hash each recut.
+  const idTokens = useRef(new WeakMap<object, number>());
+  const nextIdToken = useRef(1);
+  const tokenOf = (o: object): number => {
+    let t = idTokens.current.get(o);
+    if (t === undefined) {
+      t = nextIdToken.current++;
+      idTokens.current.set(o, t);
+    }
+    return t;
+  };
 
   // Adaptive level-of-detail state the (mount-time) wheel handler reads via refs.
   const dirTree = useMemo(() => buildDirTree(graph), [graph]);
+  // Phase C1b: Directory and None modes have no `groupingSnapshot` prop (Directory uses the
+  // DirNode cut; None renders no visible containers), so build one here for the representation
+  // cut, but only when the mode is one of those — otherwise this is null and never built (the
+  // snapshot prop covers the rest).
+  //
+  //   - Directory → directoryGrouping (the canvas's own DirNode path has no snapshot).
+  //   - None → syntheticNoneGrouping (components → communities, design Gap 2 / P2). This is a
+  //     FALLBACK: Explorer also builds a None `cutGrouping` snapshot (also modeKey "none") and
+  //     passes it as the `groupingSnapshot` prop, which `repSnap` prefers (see below). Either
+  //     source is modeKey "none", so the materializer renders None FLAT (isFlatMode → +N overflow
+  //     cards, never named container boxes). The representation cut needs a hierarchy to bound
+  //     None's budget; it drives the rep path on stable, layout-independent proxy bounds WITHOUT
+  //     drawing group boxes. None emits no live cluster boxes, so the cut runs purely on those
+  //     stable bounds. The C1a seed/intent/cluster machinery still must NOT run for None.
+  const directoryRepSnapshot = useMemo(() => {
+    if (groupBy === "directory") {
+      return buildGroupingSnapshot(
+        directoryGrouping(graph),
+        "directory",
+        graph.nodes.map((n) => n.id),
+      );
+    }
+    if (groupBy === "none") {
+      return buildGroupingSnapshot(
+        syntheticNoneGrouping(graph),
+        "none",
+        graph.nodes.map((n) => n.id),
+      );
+    }
+    return null;
+  }, [groupBy, graph]);
   const lod = useRef<{
     adaptiveLod?: boolean;
-    onCut?: (c: Set<string>) => void;
+    lodOpenPx?: number;
+    onCut?: (modeKey: string, selection: Set<GroupId>) => void;
     dirTree: DirNode;
     scene: Scene;
-    collapsed: Set<string>;
     expanded: Set<string>;
     symbolCount: Map<string, number>;
     groupBy: GroupBy;
+    // The active mode's CUT snapshot (non-directory modes), for the mode-agnostic cut.
+    groupingSnapshot: CompactGroupingSnapshot | null;
+    // Phase C1b representation-cut inputs + the committed runtime (persists across recuts).
+    intent?: CollapseIntent;
+    onRepLod?: (result: RepLodResult) => void;
+    onProxyScene?: (scene: GraphModel) => void;
+    graph: GraphModel;
+    directoryRepSnapshot: CompactGroupingSnapshot | null;
+    // POST-FILTER visible base-node ids (Gap 7): the rep cut builds its hierarchy from this
+    // projection so filtered-out nodes add no proxy-subtree cost / card pressure.
+    visibleNodeIds: Set<string>;
   }>({
     adaptiveLod,
+    lodOpenPx,
     onCut,
     dirTree,
     scene,
-    collapsed: collapsedClusters,
     expanded,
     symbolCount,
     groupBy,
+    groupingSnapshot: groupingSnapshot ?? null,
+    intent,
+    onRepLod,
+    onProxyScene,
+    graph,
+    directoryRepSnapshot,
+    visibleNodeIds,
   });
   lod.current.adaptiveLod = adaptiveLod;
+  lod.current.lodOpenPx = lodOpenPx;
   lod.current.onCut = onCut;
   lod.current.dirTree = dirTree;
   lod.current.scene = scene;
-  lod.current.collapsed = collapsedClusters;
   lod.current.expanded = expanded;
   lod.current.symbolCount = symbolCount;
+  lod.current.intent = intent;
+  lod.current.onRepLod = onRepLod;
+  lod.current.onProxyScene = onProxyScene;
+  lod.current.graph = graph;
+  lod.current.directoryRepSnapshot = directoryRepSnapshot;
+  lod.current.visibleNodeIds = visibleNodeIds;
+  // On a grouping-mode switch, drop the persistent representation runtime so the new mode
+  // rebuilds its hierarchy and starts a fresh generation chain. (The runtime's material
+  // signature includes the mode key, so it would rebuild anyway; clearing the ref also frees
+  // the old eviction controller, whose tracked rep ids belong to the OLD mode's disjoint id
+  // domain.)
+  if (lod.current.groupBy !== groupBy) {
+    repRuntimeRef.current = undefined;
+    proxySessionRef.current = null; // the rep id domain moved — start a fresh fold session
+    // The generation chain + the in-flight async requests belong to the OLD mode's rep id
+    // domain; forget them so a late result from the prior mode can never commit (and the
+    // bounded local-layout cache's entries — keyed on the old material — can never be hit).
+    readinessRef.current.reset();
+    layoutCacheRef.current.clear();
+  }
   lod.current.groupBy = groupBy;
+  lod.current.groupingSnapshot = groupingSnapshot ?? null;
   const lodBand = useRef(cameraBand(1));
+
+  // Drop the authoritative rep scene when the rep id domain moves (a grouping-mode switch) OR
+  // the POST-FILTER projection could have changed (graph / filters / query narrowing). A folded
+  // scene from the OLD mode must not keep rendering; just as important, a fold from the PRIOR
+  // filter set is stale —
+  // `buildSceneStructureFromModel` renders the materialized nodes VERBATIM (it deliberately does
+  // not re-filter), so a now-hidden node would linger as a rendered own-node and a proxy's
+  // member-count badge would be wrong until the next committed recut lands. Clearing here drops to
+  // the always-correct bootstrap-seeded base structure for one frame (the honest bootstrap) instead
+  // of showing the stale fold. The scene-ready effect then fires a recut that repopulates `repScene`
+  // from the
+  // new projection. (This effect only invalidates; the recut owns repopulation.)
+  useEffect(() => {
+    setRepScene(null);
+  }, [groupBy, graph, filters, queryIds]);
 
   // The JSON payload Vello consumes. Built from the positioned scene.
   const payload = useMemo(() => {
@@ -642,34 +905,51 @@ export function VelloGraphCanvas(props: GraphViewProps) {
 
     // Recompute the adaptive cut from what's currently on screen and hand the new
     // collapsed set up. The box coordinates come from the live scene, so the cut
-    // decision matches exactly what the user sees. No-op unless adaptiveLod is on or
-    // the zoom band hasn't actually changed since the last cut.
-    const recomputeCut = () => {
+    // decision matches exactly what the user sees. No-op unless adaptiveLod is on.
+    //
+    // `trigger` separates the two camera gestures (design Gap 8 — "Eviction LRU ignores
+    // panning"; "zoom → band/deadband refine; pan → visibility/LRU only"):
+    //   • "wheel" — a ZOOM gesture: may REFINE to a higher band (advances lodBand). Monotonic
+    //     (never re-collapses on zoom-out).
+    //   • "pan"  — a DRAG gesture: refreshes on-screen VISIBILITY + the eviction LRU at the
+    //     SAME band WITHOUT advancing lodBand (no forced deeper refinement). Before this, the
+    //     recut fired only from the wheel handler and the band guard rejected any non-zoom
+    //     recompute, so panning an open region off-screen never updated retention / eviction.
+    const recomputeCut = (trigger: RecutTrigger) => {
       const l = lod.current;
       if (!l.adaptiveLod || !l.onCut) return;
-      // The cut walks the DIRECTORY tree and measures boxes keyed by dir path. Under
-      // Community grouping the scene's boxes are keyed by community id (no dir match) so
-      // every dir would read as off-screen and the cut would wrongly collapse the whole
-      // view; under "none" there are no cluster boxes at all. The adaptive cut only makes
-      // sense for Directory grouping — leave the other modes' layouts alone.
-      if (l.groupBy !== "directory") return;
-      // The cut measures each directory's on-screen size from the layout's cluster
-      // boxes. The grid fallback (forced on large/dense graphs) and groupBy:"none"
-      // produce NO clusters, so every dir reads as "off-screen, height 0" and the cut
-      // would wrongly collapse the whole graph to a few aggregates (the disappearing
-      // view). With no clusters to measure, leave the cut alone.
-      if (l.scene.clusters.length === 0) return;
+      // The representation cut is the SOLE LOD authority (spec P5 — C1a retired). It runs only
+      // when the active mode supplies a hierarchy: every non-directory mode passes a
+      // `groupingSnapshot`; Directory/None use the canvas-built `directoryRepSnapshot`. No
+      // snapshot → nothing to cut → the recut is inert (the bootstrap-seeded base scene bounds
+      // the first frame meanwhile).
+      const repSnap = l.groupingSnapshot ?? l.directoryRepSnapshot;
+      if (!repSnap) return;
+      // Box geometry the cut measures from. The rendered scene is the materializer's proxy cards —
+      // a collapsed group is a generic `«proxy»` card, NOT an `isAggregateId` directory card — so
+      // read collapsed-group bounds via `proxyBoxes` (rep → group → box key through the prior cut's
+      // hierarchy). Open groups still come from scene.clusters. Before the first committed cut (no
+      // hierarchy yet) the bootstrap-seeded base structure is what's rendered, so the
+      // directory-aggregate `sceneBoxes` is correct. The cut does NOT depend on live boxes existing:
+      // it carries STABLE, layout-independent proxy bounds (design Gap 3 / P2), so it OPERATES under
+      // box-less engines (Grid / classic / None) where `boxes.size === 0` — no zero-box guard is
+      // needed now that the box-measuring C1a fallback is gone.
+      const prevHier = lastRep.current?.hierarchy;
+      const boxes = prevHier ? proxyBoxes(l.scene, prevHier) : sceneBoxes(l.scene);
       const c = cam.current;
       const band = cameraBand(c.scale);
-      // Monotonic LOD: only ever REFINE (open more detail) as the user zooms IN —
-      // never re-collapse on zoom-OUT. Collapsing the view you're looking at when you
-      // zoom out is the disliked behavior; once a region is opened it stays open. The
-      // cut resets (re-fits lodBand) on a new scan / expand / collapse-all. computeCut
-      // still caps the result at maxCards, so the open set stays bounded.
-      if (band <= lodBand.current) return;
-      const prevBand = lodBand.current;
-      lodBand.current = band;
-      const boxes = sceneBoxes(l.scene);
+      // Apply the camera policy. Zoom only ever REFINEs as the user zooms IN (band increases),
+      // advancing lodBand — never re-collapsing on zoom-out (collapsing the view you're looking
+      // at is the disliked behavior; once opened a region stays open). Pan runs in VISIBILITY
+      // mode at the unchanged band so the rep cut updates retention + the eviction LRU from the
+      // new viewport, without forcing deeper refinement. lodBand resets on a new scan / expand /
+      // collapse-all; the solver still caps the open set at maxCards.
+      const decision = decideRecut(trigger, band, lodBand.current);
+      if (decision.skip) return;
+      // Only a refine advances the band; a pan-end visibility recut leaves it untouched.
+      if (decision.mode === "refine" && decision.nextRefinedBand !== undefined) {
+        lodBand.current = decision.nextRefinedBand;
+      }
       const vp = { w: canvas.width, h: canvas.height };
       // An expanded file pulls its symbols into the layout too, so cost it as
       // 1 + symbols; collapsed/unexpanded files are a single node. Bounding the cut on
@@ -677,51 +957,189 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       const exp = l.expanded;
       const sc = l.symbolCount;
       const nodeCost = (id: string) => 1 + (exp.has(id) ? (sc.get(id) ?? 0) : 0);
-      const cutOpts = {
-        openPx: LOD_OPEN_PX,
-        maxCards: LOD_MAX_CARDS,
-        prevCut: l.collapsed,
-        nodeBudget: LOD_NODE_BUDGET,
-        nodeCost,
-      };
-      let next: Set<string>;
-      // When telemetry is on, take the traced path and log everything about this cut
-      // (per-dir decisions, deltas, timings); otherwise the cheap one.
-      if (telemetry.isEnabled()) {
-        const t0 = performance.now();
-        const r = computeCutTraced(l.dirTree, boxes, c, vp, cutOpts);
-        const computeMs = performance.now() - t0;
-        next = r.cut;
-        const changed = !cutEquals(next, l.collapsed);
-        telemetry.event("lod", "cut", {
-          trigger: "zoom",
-          cam: { x: c.x, y: c.y, scale: c.scale },
-          band,
-          prevBand,
-          viewport: vp,
-          openPx: LOD_OPEN_PX,
-          maxCards: LOD_MAX_CARDS,
-          dirsEvaluated: r.dirsEvaluated,
-          dirsOnScreen: r.dirsOnScreen,
-          cutSize: next.size,
-          prevCutSize: l.collapsed.size,
-          cards: r.cards,
-          computeMs,
-          changed,
-          opened: [...l.collapsed].filter((p) => !next.has(p)), // collapsed → open
-          collapsed: [...next].filter((p) => !l.collapsed.has(p)), // open → collapsed
-          trace: r.trace,
-        });
-        telemetry.metric("lod.computeMs", computeMs);
-        telemetry.metric("lod.cutSize", next.size);
-        telemetry.metric("lod.cards", r.cards);
-        telemetry.count("lod.recomputes");
-        if (changed) telemetry.count("lod.cutChanges");
-      } else {
-        next = computeCut(l.dirTree, boxes, c, vp, cutOpts);
+
+      // Phase C1b — REPRESENTATION CUT (the sole LOD authority; spec P5). A budgeted valid
+      // antichain through the proxy hierarchy (Appendix A) drives the rendered scene. It hands up
+      // a GroupLodSelection via onCut, so the downstream render path is unchanged. Only a
+      // materially-different COMMITTED cut fires onCut (the runtime gates the generation), and the
+      // runtime persists across recuts on the ref. Directory has no snapshot prop, so it uses the
+      // canvas-built directoryRepSnapshot. (`repSnap` was computed above; a missing snapshot
+      // already early-returned.)
+      {
+        // MATERIAL-signature inputs (Gap 4): reference-identity tokens for the filtered graph
+        // (graph ref + visible-set ref), the grouping (snapshot ref), and the per-node cost
+        // inputs (expanded set + symbol-count map refs). React hands a NEW reference on a real
+        // change, so these tokens change iff the material inputs do — keying the persistent
+        // runtime's reuse-vs-rebuild without an O(N) content hash each recut.
+        const exp = l.expanded;
+        const sc = l.symbolCount;
+        const filteredGraphId = `${tokenOf(l.graph)}:${tokenOf(l.visibleNodeIds)}`;
+        const groupingVersion = tokenOf(repSnap);
+        const nodeCostSignature = `${tokenOf(exp)}:${tokenOf(sc)}`;
+        // The material signature reads only the signature inputs (not the node-id CONTENT),
+        // so compute it cheaply with an empty nodeIds to decide reuse vs rebuild.
+        const sigInputs = {
+          snapshot: repSnap,
+          boxes,
+          cam: c,
+          vp,
+          intent: l.intent ?? new Map(),
+          options: { ...DEFAULT_REP_LOD_OPTIONS, nodeCost },
+          filteredGraphId,
+          groupingVersion,
+          nodeCostSignature,
+        };
+        const sig = materialSignature({ ...sigInputs, nodeIds: [] });
+        const reuse = repRuntimeRef.current?.signature === sig;
+        // POST-FILTER projection (Gap 7): a node is visible iff it survived the active filters.
+        // Reuse the runtime's cached node-id order on a recut; only materialize a fresh node-id
+        // array + visibility mask when the runtime will actually be REBUILT — never per recut.
+        const visible = l.visibleNodeIds;
+        const repNodeIds = reuse
+          ? (repRuntimeRef.current as RepresentationRuntime).nodeIds
+          : l.graph.nodes.map((n) => n.id);
+        const visibleNode = (ordinal: number): boolean => visible.has(repNodeIds[ordinal]);
+
+        // SCALE CALIBRATION (the collapse↔refine limit-cycle fix). Measure the LIVE scene's world
+        // extent and hand it to the cut, which rescales its fixed-4096 stable bounds by
+        // (liveExtent / PROXY_WORLD_SIZE) so a top-level group projects to the same on-screen size
+        // at the FITTED camera that the live boxes did — instead of a few pixels that never clear
+        // openPx (which collapsed the view to 1 card and drove the camera-refit limit cycle). The
+        // cut caches it on the runtime per material signature, so it is only CONSUMED when the
+        // runtime is rebuilt; on the reuse (camera-recut) hot path we skip the O(scene) measure
+        // entirely and pass undefined — the runtime's cached extent stays authoritative. Mirrors
+        // how `repNodeIds` is only materialized on a rebuild.
+        const liveExtent = reuse ? undefined : sceneExtent(l.scene);
+        // Acquire the persistent runtime: reused verbatim (no O(N) hierarchy rebuild) when the
+        // signature is unchanged, rebuilt once when it changes. A camera recut takes the reuse
+        // path; only a graph/filter/grouping/cost change rebuilds.
+        const input = {
+          ...sigInputs,
+          nodeIds: repNodeIds,
+          visibleNode,
+          liveExtent,
+          options: {
+            ...DEFAULT_REP_LOD_OPTIONS,
+            openPx: l.lodOpenPx ?? LOD_OPEN_PX,
+            maxCards: LOD_MAX_CARDS,
+            nodeBudget: LOD_NODE_BUDGET,
+            nodeCost,
+          },
+          collectDiagnostics: !!l.onRepLod,
+        };
+        const runtime = acquireRepresentationRuntime(
+          input,
+          repRuntimeRef.current,
+          LOD_OFFSCREEN_OPEN_BUDGET,
+        );
+        repRuntimeRef.current = runtime;
+        const result = buildSceneRepresentationCut({ ...input, runtime });
+        lastRep.current = result;
+        l.onRepLod?.(result);
+        // DEEP RECUT TELEMETRY (the collapse↔refine investigation). The recut path previously
+        // logged NOTHING to ndjson — which is why the camera-driven limit cycle took three rounds
+        // to find. Emit one structured event on every COMMITTED recut with the exact state needed
+        // to spot the cycle in the session log: the trigger source, the camera scale + the live
+        // extent the gate was calibrated against (the two coordinate spaces whose mismatch caused
+        // the bug), the committed card count, and the `collapsed` flag (cards ≤ 1 = the super-root
+        // 1-card scene that the camera then refits to). A healthy session shows a steady card
+        // count; the cycle shows `collapsed:true` alternating with large counts and `camScale`
+        // swinging tiny↔huge. Gated on `committed` (an idempotent no-op recut writes nothing).
+        if (result.committed) {
+          const cards = result.cut.selectedRepresentations.length;
+          telemetry.event("lod", "recut", {
+            trigger,
+            camScale: c.scale,
+            liveExtent: result.liveExtent ?? null,
+            boundsScale: result.boundsScale,
+            cards,
+            collapsed: cards <= 1,
+            committed: result.committed,
+            generation: result.runtime.generation,
+          });
+        }
+        // Only a committed generation drives a scene rebuild.
+        if (result.committed) {
+          // Hand up the open selection. This still feeds compose() → collapsedClusters, but ONLY
+          // for legacy UI state (the cluster-collapse toggles, workspace export, the C1a fallback
+          // base structure). It NO LONGER builds the production scene (design impl point 5): the
+          // rendered scene is the materializer output set below, not collapseClusters(openSelection).
+          l.onCut(l.groupBy, result.openSelection);
+
+          // P1 GENERIC + INCREMENTAL materialization (design Gap 1 / Gap 9 / impl point 5). Fold the
+          // committed cut into the AUTHORITATIVE production scene: intent → solver constraints →
+          // LodCut → proxy materializer → scene, with NO compose()/collapseClusters() in the path.
+          // The persistent fold session re-folds ONLY the changed subtrees (cost ∝ changed region);
+          // it is rebuilt in lockstep with the runtime (same material signature → same hierarchy /
+          // node ordinals; `l.graph` is the post-filter graph in `repNodeIds` ordinal order).
+          let entry = proxySessionRef.current;
+          if (!entry || entry.signature !== sig) {
+            entry = {
+              session: new IncrementalSceneSession(l.graph, runtime.hierarchy, { visibleNode }),
+              signature: sig,
+            };
+            proxySessionRef.current = entry;
+          }
+
+          // ── Single atomic readiness policy (design B3 + impl note (d)) ──────────────────
+          // Advance the live target generation; this CANCELS every obsolete in-flight async
+          // request from a prior generation (the spec's "cancellation of obsolete requests"),
+          // so a late worker result from a superseded cut can never commit (rule 6 — stale
+          // generations discarded; the controller judges such a result "cancelled"/"stale").
+          const gen = result.runtime.generation;
+          readinessRef.current.beginGeneration(gen);
+          // Classify the pending transition against the bounded local-layout cache. A COARSEN
+          // (fold) and a refine with a cached local layout are IMMEDIATE; a refine that MISSES
+          // retains its proxy and would run async (the visual layout itself runs in useScene's
+          // worker, keyed off the cutSignature below — the prior committed cut stays visible
+          // until it lands, with no blank/partial frame; rules 2–5). The cache key is the rep's
+          // stable box key under THIS material signature (generation-independent), so the same
+          // group's layout is a HIT across recuts of the same material that merely re-open it.
+          const diff = entry.session.peekDiff(result.cut);
+          const cols = runtime.hierarchy.columns;
+          const boxKeyByGroup = runtime.hierarchy.snapshot.boxKeyByGroup;
+          const cacheKeyOf = (root: number): LayoutCacheKey => {
+            // A group rep keys on its stable box key (stable across recuts of the same material);
+            // an intermediate-tier / super-root / orphan rep (NO_GROUP, or a group ordinal with no
+            // box key) keys on its rep id. Both are prefixed by the material signature so a
+            // material flip can never hit a stale entry.
+            const g = cols.groupByRep[root];
+            const bk = g !== NO_GROUP ? boxKeyByGroup[g] : undefined;
+            return `${sig}\n${bk ?? `rep:${root}`}`;
+          };
+          if (diff) {
+            const plan = planTransition(diff, layoutCacheRef.current, cacheKeyOf, gen);
+            // Track each cache MISS as an in-flight async request (generation-tagged). The
+            // worker layout in useScene resolves it; when its result lands at the live
+            // generation the group's local layout is cached (via the future resolve() path),
+            // turning the next recut into a HIT.
+            //
+            // NOTE: we deliberately do NOT seed the BoundedLayoutCache with a placeholder layout
+            // here. A cache entry must stand for a REAL local layout the worker actually produced
+            // (positioned children) — seeding an empty `{ positions: new Map() }` would (1) make
+            // the very next recut that re-opens the same group classify as a HIT (under-reporting
+            // `pendingAsync`), and (2) plant a blank-frame trap for the moment resolve() is wired
+            // to gate commits: a phantom empty layout would "commit immediately" with zero
+            // positions. Until the worker→resolve() path lands the real layout (builder note 1),
+            // the cache stays empty and every refine is an honest MISS that retains its proxy
+            // (the prior committed scene stays visible via useScene's positionedSig lag).
+            for (const req of plan.requests) readinessRef.current.track(req.root, gen);
+            telemetry.metric("lod.readiness.immediate", plan.immediateRoots.length);
+            telemetry.metric("lod.readiness.pendingAsync", plan.pendingRoots.length);
+          }
+          const folded = entry.session.recut(result.cut);
+          // Adopt the folded scene as the render scene. The salt (material signature + committed
+          // generation) is the layout-cache key term standing in for C1a's ser(collapsedClusters):
+          // a materially-different committed cut gets a distinct cached layout.
+          setRepScene({ scene: folded, cutSignature: `${sig}#${result.runtime.generation}` });
+          // Optional extra consumer (telemetry / external adoption) — the production path no longer
+          // depends on it, but keep the hook for callers that observe the folded scene directly.
+          l.onProxyScene?.(folded);
+        }
       }
-      if (!cutEquals(next, l.collapsed)) l.onCut(next);
     };
+    // Expose to the scene-ready effect so it can fire the first cut on a new scene (no gesture).
+    recomputeCutRef.current = recomputeCut;
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -737,8 +1155,9 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       renderSoon();
       // Debounce the recompute: one cut+rebuild after the zoom gesture settles,
       // not one per wheel tick (each rebuild reprocesses the whole base graph).
+      // A new wheel tick supersedes a pending pan recut — the gesture is now a zoom.
       clearTimeout(recutTimer);
-      recutTimer = setTimeout(recomputeCut, LOD_RECUT_DEBOUNCE_MS);
+      recutTimer = setTimeout(() => recomputeCut("wheel"), LOD_RECUT_DEBOUNCE_MS);
     };
     const onDown = (e: PointerEvent) => {
       dragging = true;
@@ -756,6 +1175,12 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       moved += Math.abs(dx) + Math.abs(dy);
       vcRef.current?.set_camera(cam.current.x, cam.current.y, cam.current.scale);
       renderSoon();
+      // Debounce a PAN-end visibility/LRU recut (design Gap 8): each move resets the timer, so
+      // it fires once the pan SETTLES — updating which proxies are on-screen + the eviction LRU
+      // from the new viewport WITHOUT advancing the band (no forced deeper refinement). Without
+      // this, panning an open region off-screen never updated retention / eviction.
+      clearTimeout(recutTimer);
+      recutTimer = setTimeout(() => recomputeCut("pan"), LOD_RECUT_DEBOUNCE_MS);
     };
     const onUp = (e: PointerEvent) => {
       dragging = false;
@@ -763,6 +1188,15 @@ export function VelloGraphCanvas(props: GraphViewProps) {
         el.releasePointerCapture(e.pointerId);
       } catch {
         /* ignore */
+      }
+      // Pointer-up ends the gesture: always cancel any pending settle-timer (a sub-threshold
+      // jitter-drag may have scheduled one in onMove — see below — and we don't want it firing a
+      // spurious pan recut ~200ms after what the user perceives as a click). Then, only on a real
+      // pan (moved > 4px), run the pan recut NOW so retention/eviction reflect the final viewport
+      // without waiting out the debounce. A click (moved ≤ 4px) panned nothing → no recut.
+      clearTimeout(recutTimer);
+      if (moved > 4) {
+        recomputeCut("pan");
       }
       // A drag isn't a click — reset the double-click tracker so it can't pair into a double.
       if (moved > 4 || !vcRef.current) {
@@ -919,6 +1353,15 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     // keeps the same fitSignature — so none of them yank the camera. prevFitSig advances ONLY on
     // an actual fit, so when positions lag the structure by a render the fit still fires the
     // moment they arrive (instead of locking onto the degenerate intermediate scene).
+    //
+    // CAMERA REFIT GUARD (the collapse↔refine limit-cycle precondition). The cycle REQUIRES the
+    // camera to refit between the 1-card (super-root) scene and the N-card scene — that refit is
+    // what swings cam.scale tiny↔huge and re-triggers the gate. This guard PREVENTS it: a pure
+    // cut/relayout writes a new repScene/cutSignature (hence a new `scene` object → sceneChanged)
+    // but NEVER a new `fitSignature` (the cut generation and camera selection are deliberately
+    // EXCLUDED from fitSignature — see cutInputSignature below), so `shouldFit` returns false and
+    // the else-branch preserves the user's camera. The camera fits ONLY on a true material change
+    // (fitSignature flips) or an explicit user fit. Confirmed: nothing here can refit on a cut.
     const sceneChanged = scene !== prevScene.current;
     prevScene.current = scene;
     if (sceneChanged && layoutReady && shouldFit(fitSignature, prevFitSig.current)) {
@@ -935,7 +1378,7 @@ export function VelloGraphCanvas(props: GraphViewProps) {
       // Highlight/dim, an adaptive recut, or a layout not yet ready: keep the user's camera.
       vc.set_camera(cam.current.x, cam.current.y, cam.current.scale);
     }
-    vc.set_selection(selectedId ?? undefined);
+    vc.set_selection(effectiveSelectionId);
     vc.set_search(search);
     if (telemetry.isEnabled()) {
       const t0 = performance.now();
@@ -963,15 +1406,78 @@ export function VelloGraphCanvas(props: GraphViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, payload, fitSignature, scene, layoutReady]);
 
+  // INITIAL / refresh rep cut (design impl point 5). The mount-effect's recomputeCut fires only on
+  // camera gestures, so without this the authoritative materializer path would never run until the
+  // user zooms/pans — the bootstrap-seeded base scene would render indefinitely. When a genuinely
+  // NEW cut input lands (a new graph / filter / grouping / a user collapse-or-expand) we fire one cut
+  // so the committed cut is materialized into the production scene.
+  //
+  // CRITICAL re-entry guard (severe-loop fix): this effect must fire ONCE per real cut-input change,
+  // NOT on the cut's OWN relayout. Previously it keyed off `scene` object identity, but a committed
+  // cut bumps result.runtime.generation → the canvas writes a new cutSignature → useScene's structure
+  // useMemo changes → the layout worker produces a NEW `scene` object for the SAME committed cut →
+  // this effect re-fired recomputeCut("pan") → another committed cut → ~25 cuts/second forever (the
+  // committed scene was provably CONSTANT in telemetry). Each spurious recut also advanced the
+  // STATEFUL eviction/retention re-solve, which could keep the cut from reaching a fixed point.
+  //
+  // The gate is now a signature of the cut's INPUTS that is STABLE across a pure relayout but CHANGES
+  // on every legitimate trigger:
+  //   • `fitSignature` (Explorer) — graph/level/algorithm/direction/groupBy/density/edgeRouting/
+  //     externals/edgeKinds/facets/folders/languages/expanded/focus/query. Covers initial load, new
+  //     graph, filter change, layout-engine change, direction, density, reveal-all/expand. Material-
+  //     stable: a relayout of the same committed cut does NOT change it.
+  //   • a serialization of the ACTIVE grouping mode's collapse INTENT (`intent` prop = Explorer's
+  //     intentByMode.get(groupBy)). fitSignature EXCLUDES this, so without it collapsing/expanding a
+  //     single group or collapse-all (which write intentByMode) would not re-cut. This is the user
+  //     INTENT layer ONLY — it deliberately EXCLUDES the camera-selection layer (collapsedClusters is
+  //     intent ∪ bootstrap ∪ camera-selection); the camera-selection layer is exactly the cut's own
+  //     relayout output, so folding it into the gate would re-create the loop.
+  // It deliberately does NOT include the cut generation or repScene — those are the relayout, not a
+  // new trigger. User wheel-zoom and pan still recut via their OWN handlers (onWheel/onMove/onUp),
+  // unchanged.
+  const cutInputSignature = useMemo(() => {
+    // Order-independent, content-based serialization of the active mode's collapse intent. A pure
+    // relayout never mutates intentByMode, so this string is identical across the relayout; a user
+    // collapse/expand or collapse-all writes intentByMode → a new active `intent` → a new string.
+    let intentSig = "";
+    if (intent && intent.size > 0) {
+      intentSig = [...intent.entries()]
+        .map(([id, state]) => `${id}=${state}`)
+        .sort()
+        .join(",");
+    }
+    // `lodOpenPx` is the LIVE refine-gate (a Settings control, NOT part of fitSignature). It
+    // changes the cut WITHOUT a graph/filter/layout change, so fold it into the gate here —
+    // otherwise a new detail level only takes effect on the next unrelated wheel/pan gesture
+    // (the recut reads l.lodOpenPx from the ref, but nothing re-fires the recut on the change).
+    // `onRepLod` presence flips with the dev overlay (Explorer passes it only while the overlay is
+    // shown), and it is what turns `collectDiagnostics` on below. Fold it in so switching the
+    // overlay ON fires one recut that actually populates its stats — otherwise the overlay would
+    // sit empty until the next unrelated wheel/pan gesture. Same reasoning as `lodOpenPx`.
+    return `${fitSignature ?? ""}::${intentSig}::lod=${lodOpenPx ?? ""}::diag=${onRepLod ? 1 : 0}`;
+  }, [fitSignature, intent, lodOpenPx, onRepLod]);
+
+  const lastCutInputSig = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready || !layoutReady) return;
+    if (cutInputSignature === lastCutInputSig.current) return; // pure relayout / dim — nothing to recut
+    lastCutInputSig.current = cutInputSignature;
+    // "pan" (visibility) ALWAYS runs the cut (no band-advance requirement) without forcing deeper
+    // refinement — exactly what an initial / post-change materialization needs. A real zoom still
+    // refines via the wheel handler.
+    recomputeCutRef.current?.("pan");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, layoutReady, cutInputSignature]);
+
   // Selection / search are cheap — just update + redraw.
   useEffect(() => {
     const vc = vcRef.current;
     if (!ready || !vc) return;
-    vc.set_selection(selectedId ?? undefined);
+    vc.set_selection(effectiveSelectionId);
     vc.set_search(search);
     vc.render();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, selectedId, search]);
+  }, [ready, effectiveSelectionId, search]);
 
   // On search, frame the matching nodes so a match is visible even when zoomed out
   // (keeps the renderer's yellow match outline). No match → leave the camera put.

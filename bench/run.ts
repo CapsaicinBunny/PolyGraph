@@ -16,10 +16,8 @@ import { analyze, layoutGraph } from "./harness";
 import { availableFixtures, loadFixture } from "./fixtures";
 import { makeSyntheticGraph } from "./synthetic";
 import { measureMemory, round, timeIt } from "./metrics";
-import { buildDirTree, dirIndex } from "../lib/graph/hierarchy";
-import { computeCut } from "../lib/graph/lod-cut";
+import { buildDirTree } from "../lib/graph/hierarchy";
 import { autoCollapseDirs } from "../lib/graph/auto-collapse";
-import type { Box } from "../lib/graph/lod-screen";
 import type { SourceFileMap } from "../lib/graph/types";
 
 const BASELINES = `${import.meta.dir}/baselines.json`;
@@ -34,7 +32,6 @@ const THRESHOLDS: Record<string, number> = {
   rssMb: 0.4,
   layoutMs: 0.3,
   hierarchyMs: 0.3,
-  cutMs: 0.3,
   autoCollapseMs: 0.3,
 };
 const DEFAULT_THRESHOLD = 0.3;
@@ -63,7 +60,6 @@ interface ScaleRow {
   edges: number;
   layoutMs: number;
   hierarchyMs: number;
-  cutMs: number;
   autoCollapseMs: number;
 }
 
@@ -109,20 +105,9 @@ async function benchScale(size: number): Promise<ScaleRow> {
   const layout = await timeIt(() => layoutGraph(graph, "smart"), iters);
   const hierarchy = await timeIt(() => buildDirTree(graph), iters);
 
-  // Adaptive cut: build the dir tree + a grid of boxes once, then time the cut.
-  const tree = buildDirTree(graph);
-  const boxes = new Map<string, Box>();
-  const paths = [...dirIndex(tree).keys()];
-  const cols = Math.max(1, Math.ceil(Math.sqrt(paths.length)));
-  paths.forEach((path, i) => {
-    boxes.set(path, { x: (i % cols) * 320, y: Math.floor(i / cols) * 240, w: 280, h: 180 });
-  });
-  const cam = { x: 0, y: 0, scale: 0.5 };
-  const vp = { w: 1600, h: 900 };
-  const cut = await timeIt(
-    () => computeCut(tree, boxes, cam, vp, { openPx: 24, maxCards: 2000 }),
-    iters,
-  );
+  // The geometry-free initial-collapse seed (the Directory LOD bootstrap). The C1a camera
+  // cut (`computeCut`) has been retired — the representation cut is the sole LOD authority
+  // and is benched in bench/lod-parity.ts; this scale suite keeps the seed/hierarchy timings.
   const auto = await timeIt(() => autoCollapseDirs(graph, 2000), iters);
 
   return {
@@ -131,7 +116,6 @@ async function benchScale(size: number): Promise<ScaleRow> {
     edges: graph.edges.length,
     layoutMs: layout.median,
     hierarchyMs: hierarchy.median,
-    cutMs: cut.median,
     autoCollapseMs: auto.median,
   };
 }
@@ -149,7 +133,6 @@ function scaleMetrics(r: ScaleRow): Record<string, number> {
   return {
     layoutMs: r.layoutMs,
     hierarchyMs: r.hierarchyMs,
-    cutMs: r.cutMs,
     autoCollapseMs: r.autoCollapseMs,
   };
 }
@@ -193,7 +176,6 @@ async function main(): Promise<void> {
       edges: r.edges,
       "layout(guarded)": `${r.layoutMs}ms`,
       hierarchy: `${r.hierarchyMs}ms`,
-      "lod-cut": `${r.cutMs}ms`,
       "auto-collapse": `${r.autoCollapseMs}ms`,
     })),
   );

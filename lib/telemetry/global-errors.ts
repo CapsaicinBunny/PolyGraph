@@ -7,6 +7,7 @@
 // and idempotent. React *render* crashes are caught separately by ErrorBoundary; this
 // covers async errors, event-handler throws, rejected promises, and failed resources.
 
+import { diagnosticContext } from "./diagnostic-context";
 import { flushSessionLog } from "./persist";
 import { telemetry } from "./telemetry";
 
@@ -61,6 +62,8 @@ export function installGlobalErrorHandlers(): void {
           line: e.lineno || undefined,
           col: e.colno || undefined,
           stack: clip(e.error instanceof Error ? e.error.stack : undefined),
+          // What was on screen when it threw (scan size, level, group-by, filters).
+          context: diagnosticContext(),
         },
         "error",
       );
@@ -78,6 +81,7 @@ export function installGlobalErrorHandlers(): void {
       {
         message: r instanceof Error ? r.message : String(r),
         stack: clip(r instanceof Error ? r.stack : undefined),
+        context: diagnosticContext(),
       },
       "error",
     );

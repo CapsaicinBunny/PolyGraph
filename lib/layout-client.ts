@@ -72,7 +72,21 @@ function ensureWorker(): Worker | null {
       for (const [id, x, y] of e.data.positions) positions.set(id, { x, y });
       resolve({ positions, clusters: e.data.clusters });
     };
-    worker.onerror = () => {
+    worker.onerror = (e: ErrorEvent) => {
+      // Surface the crash before falling back — otherwise a layout-worker failure (e.g. a
+      // malformed LayoutInput) silently degrades to the main thread and never reaches the
+      // session log, hiding a whole class of layout bugs.
+      telemetry.event(
+        "layout",
+        "worker-error",
+        {
+          message: e.message,
+          source: e.filename || undefined,
+          line: e.lineno || undefined,
+          col: e.colno || undefined,
+        },
+        "error",
+      );
       // Disable the worker on error; future calls fall back to the main thread.
       worker = null;
     };
@@ -128,6 +142,10 @@ export function layoutInWorker(input: LayoutInput, options: LayoutOptions): Prom
       finish(layoutSync(input, gridOptions(opts)));
     }, LAYOUT_TIMEOUT_MS);
     pending.set(id, finish);
+    // The grouping snapshot's typed arrays cross to the worker inside `options`. We do
+    // NOT add them to the transfer list (no second arg): the main thread retains the
+    // scene's snapshot (sync fallback, re-post), so structured-clone COPY-on-send is
+    // correct — transferring would detach buffers the sender still reads (spec App. G).
     w.postMessage({ id, input, options: opts });
   });
 }
