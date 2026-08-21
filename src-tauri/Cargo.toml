@@ -21,8 +21,8 @@ tauri-build = { version = "2.6.2", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-base64 = "0.22"
-tauri = { version = "2.11.2", features = ["devtools"] }
+base64 = "0.23"
+tauri = { version = "2.11.5", features = ["devtools"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
@@ -32,5 +32,5 @@ tauri-plugin-dialog = "2"
 # ~180 MB runtime, so warn-and-link if a machine lacks it. Both crates are already in
 # the dependency tree on every platform; this just makes them direct deps on Windows.
 [target.'cfg(windows)'.dependencies]
-rfd = "0.16"
+rfd = "0.17"
 open = "5"

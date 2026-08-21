@@ -60,9 +60,9 @@ export interface InitOutput {
     readonly vellocanvas_set_selection: (a: number, b: number, c: number) => void;
     readonly vellocanvas_set_theme: (a: number, b: number) => void;
     readonly vellocanvas_stats: (a: number) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h8d0a2bd66ba9dad6: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h26b056603e6c5143: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h1f61da4447a6259c: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h6fe3d4738279a340: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h43d2ff10b6ba890a: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h7d032eb7fcf1c099: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

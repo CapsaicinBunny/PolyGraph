@@ -8,10 +8,17 @@ description = "WebGPU vector renderer (Vello) for the PolyGraph node graph"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Vello 0.9 uses a current wgpu (WebGPU enabled by default) that matches today's
-# Chrome/Dawn — older wgpu sent the removed `maxInterStageShaderComponents` limit.
-vello = "0.9"
-skrifa = "0.42"
+# Vello uses a current wgpu (WebGPU enabled by default) that matches today's Chrome/Dawn —
+# older wgpu sent the removed `maxInterStageShaderComponents` limit. 0.9 and 0.10 both pin
+# wgpu ^29.0.3, so this bump does NOT move the browser-compatibility axis.
+# skrifa is kept at LATEST rather than matched to vello's ^0.44. Cargo treats the minor as the
+# major below 1.0, so ^0.44 and ^0.46 are disjoint and both crates resolve — vello builds against
+# 0.44, we build against 0.46. That is fine here because no skrifa type ever crosses the vello
+# boundary (we use skrifa for our own metrics and hand vello only vello types), and the duplicate
+# costs 17 KB of the ~2.06 MB wasm (0.83%) after wasm-opt. Revisit only if we start passing
+# skrifa values into vello's glyph API, which would then fail to typecheck.
+vello = "0.10"
+skrifa = "0.46"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wasm-bindgen = "0.2"
