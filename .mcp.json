@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "polygraph": {
+      "command": "bun",
+      "args": ["run", "mcp/server.ts"]
+    }
+  }
+}

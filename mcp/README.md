@@ -50,10 +50,15 @@ to **stderr** (stdout is the protocol channel).
 
 ## Wire it into a client
 
-**Claude Code:**
+**Claude Code, in this repo — nothing to do.** The repo ships a project-scoped
+[`.mcp.json`](../.mcp.json), so opening PolyGraph in Claude Code discovers the
+server automatically (you'll be asked to approve it once). It uses a relative
+path, so it works on any clone with no per-machine setup.
+
+**Claude Code, to analyze _other_ projects** — register it globally once:
 
 ```sh
-claude mcp add polygraph -- bun run /absolute/path/to/PolyGraph/mcp/server.ts
+claude mcp add --scope user polygraph -- bun run /absolute/path/to/PolyGraph/mcp/server.ts
 ```
 
 **Claude Desktop** (`claude_desktop_config.json`) or any MCP client:
