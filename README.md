@@ -9,9 +9,9 @@
 [![CI](https://github.com/CapsaicinBunny/PolyGraph/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/CapsaicinBunny/PolyGraph/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)](#license)
 &nbsp;
-![Bun](https://img.shields.io/badge/Bun-1.3-fbf0df?logo=bun&logoColor=black)
-![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
-![Next.js](https://img.shields.io/badge/Next.js-15-000?logo=nextdotjs&logoColor=white)
+![Bun](https://img.shields.io/badge/Bun-1.4-fbf0df?logo=bun&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-16-000?logo=nextdotjs&logoColor=white)
 ![Rust](https://img.shields.io/badge/analysis%20core-Rust-DEA584?logo=rust&logoColor=white)
 ![WebGPU](https://img.shields.io/badge/renderer-WebGPU%20·%20Vello-005A9C)
 ![Languages](https://img.shields.io/badge/languages-26-8B5CF6)
