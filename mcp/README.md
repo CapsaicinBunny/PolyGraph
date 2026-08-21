@@ -79,6 +79,22 @@ claude mcp add --scope user polygraph -- bun run /absolute/path/to/PolyGraph/mcp
 Then ask things like _"Scan /path/to/repo and list its dependency cycles"_ or
 _"In /path/to/repo, which files have more than 10 dependents?"_.
 
+## Widget (MCP Apps)
+
+[`widgets/polygraph-scan-widget.html`](widgets/polygraph-scan-widget.html) is an
+[MCP Apps](https://modelcontextprotocol.io) widget that renders a `polygraph_scan`
+result visually in the chat: KPI tiles, a stacked **edge-confidence** bar
+(exact / inferred / ambiguous), and bar charts for node and relationship kinds.
+Problems (parse warnings, unresolved refs, skipped files) appear only when there
+are some. A **Rescan** button re-invokes `polygraph_scan` through
+`callServerTool`, using the `root` the previous result reported.
+
+Self-contained — no build step and no chart library (plain CSS bars, which also
+avoids the UMD global collisions that CDN chart libs cause). It themes itself
+from the host via Fluent tokens, renders all tool data with `textContent`, and
+coerces field types defensively, since JSON fields can arrive as strings or
+nulls. Open the file directly in a browser to preview the loading state.
+
 ## Develop / inspect
 
 ```sh

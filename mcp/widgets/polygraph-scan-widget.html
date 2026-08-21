@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PolyGraph scan</title>
+    <script src="https://unpkg.com/@fluentui/web-components@beta/dist/web-components.min.js"></script>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: var(
+          --fontFamilyBase,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          sans-serif
+        );
+        font-size: 14px;
+        line-height: 1.5;
+        background: var(--colorNeutralBackground1, #fff);
+        color: var(--colorNeutralForeground1, #242424);
+        overflow-x: hidden;
+      }
+      .head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      .title {
+        font-size: 1rem;
+        font-weight: 600;
+        word-break: break-all;
+      }
+      .sub {
+        font-size: 0.75rem;
+        color: var(--colorNeutralForeground3, #616161);
+        margin-top: 4px;
+        word-break: break-all;
+      }
+
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+        gap: 8px;
+        margin-bottom: 24px;
+      }
+      .kpi {
+        background: var(--colorNeutralBackground2, #fafafa);
+        border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+        border-radius: 8px;
+        padding: 12px;
+      }
+      .kpi-v {
+        font-size: 1rem;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .kpi-l {
+        font-size: 0.75rem;
+        color: var(--colorNeutralForeground3, #616161);
+      }
+
+      .section {
+        margin-bottom: 24px;
+      }
+      .section-h {
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--colorNeutralForeground3, #616161);
+        margin-bottom: 12px;
+      }
+
+      .stack {
+        display: flex;
+        height: 12px;
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--colorNeutralBackground3, #f0f0f0);
+      }
+      .stack span {
+        height: 100%;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        margin-top: 12px;
+        font-size: 0.75rem;
+      }
+      .legend > div {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex: none;
+      }
+
+      .rows {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 104px 1fr 52px;
+        align-items: center;
+        gap: 12px;
+      }
+      .row-l {
+        font-size: 0.75rem;
+        color: var(--colorNeutralForeground2, #424242);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .track {
+        background: var(--colorNeutralBackground3, #f0f0f0);
+        border-radius: 8px;
+        height: 12px;
+        overflow: hidden;
+      }
+      .fill {
+        height: 100%;
+        border-radius: 8px;
+        background: var(--colorBrandBackground, #0f6cbd);
+        width: 0;
+      }
+      .row-v {
+        font-size: 0.75rem;
+        text-align: right;
+        color: var(--colorNeutralForeground2, #424242);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .warn {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .pill {
+        font-size: 0.75rem;
+        border-radius: 8px;
+        padding: 4px 8px;
+        border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+        color: var(--colorNeutralForeground2, #424242);
+      }
+
+      .center {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 32px 16px;
+        text-align: center;
+      }
+      .muted {
+        color: var(--colorNeutralForeground2, #424242);
+        font-size: 0.875rem;
+      }
+      .err {
+        color: var(--colorStatusDangerForeground1, #b10e1c);
+        font-size: 0.875rem;
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        .fill,
+        .stack span {
+          transition: width 0.3s ease;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="widget-root"></div>
+    <script type="module">
+      import { App } from "https://cdn.jsdelivr.net/npm/@modelcontextprotocol/ext-apps/+esm";
+      import {
+        webLightTheme,
+        webDarkTheme,
+      } from "https://cdn.jsdelivr.net/npm/@fluentui/tokens/+esm";
+
+      const root = document.getElementById("widget-root");
+      const TOOL = "polygraph_scan";
+      let lastPath = null;
+      let busy = false;
+
+      function applyTheme(theme) {
+        const tokens = theme === "dark" ? webDarkTheme : webLightTheme;
+        const docEl = document.documentElement;
+        for (const [token, value] of Object.entries(tokens))
+          docEl.style.setProperty("--" + token, value);
+        document.body.style.background =
+          theme === "dark"
+            ? "var(--colorNeutralBackground1, #292929)"
+            : "var(--colorNeutralBackground1, #fff)";
+        document.body.style.color =
+          theme === "dark"
+            ? "var(--colorNeutralForeground1, #e0e0e0)"
+            : "var(--colorNeutralForeground1, #242424)";
+      }
+
+      // Runtime values may not match the sample types, so coerce defensively.
+      const num = (v) => {
+        const n = parseFloat(v);
+        return isFinite(n) ? n : 0;
+      };
+      const text = (v) => (v == null || String(v).trim() === "" ? null : String(v).trim());
+
+      function entries(obj) {
+        if (!obj || typeof obj !== "object") return [];
+        return Object.keys(obj)
+          .map((k) => [k, num(obj[k])])
+          .filter((pair) => pair[1] > 0)
+          .sort((a, b) => b[1] - a[1]);
+      }
+
+      // textContent everywhere — tool data is never interpolated as HTML.
+      function el(tag, cls, txt) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (txt != null) n.textContent = txt;
+        return n;
+      }
+
+      function renderLoading(msg) {
+        root.replaceChildren();
+        const box = el("div", "center");
+        const sp = document.createElement("fluent-spinner");
+        sp.setAttribute("aria-label", "Scanning");
+        box.append(sp, el("div", "muted", msg || "Analyzing the codebase…"));
+        root.append(box);
+      }
+
+      function renderError(message) {
+        root.replaceChildren();
+        const box = el("div", "center");
+        box.append(el("div", "err", message || "Something went wrong."));
+        if (lastPath) {
+          const btn = document.createElement("fluent-button");
+          btn.setAttribute("appearance", "primary");
+          btn.textContent = "Try again";
+          btn.addEventListener("click", () => {
+            void rescan();
+          });
+          box.append(btn);
+        } else {
+          box.append(el("div", "muted", "Please try again."));
+        }
+        root.append(box);
+      }
+
+      function kpi(value, label) {
+        const c = el("div", "kpi");
+        c.append(el("div", "kpi-v", value.toLocaleString()), el("div", "kpi-l", label));
+        return c;
+      }
+
+      function barSection(heading, data) {
+        const s = el("div", "section");
+        s.append(el("div", "section-h", heading));
+        const rows = el("div", "rows");
+        const max = data.reduce((m, pair) => Math.max(m, pair[1]), 0) || 1;
+        for (const [k, v] of data.slice(0, 8)) {
+          const r = el("div", "row");
+          r.setAttribute("aria-label", k + ": " + v);
+          const track = el("div", "track");
+          const fill = el("div", "fill");
+          fill.style.width = Math.max(2, (v / max) * 100) + "%";
+          track.append(fill);
+          r.append(el("div", "row-l", k), track, el("div", "row-v", v.toLocaleString()));
+          rows.append(r);
+        }
+        s.append(rows);
+        return s;
+      }
+
+      function confidenceSection(conf) {
+        const order = [
+          ["exact", "var(--colorStatusSuccessForeground1, #0e700e)"],
+          ["inferred", "var(--colorStatusWarningForeground1, #bc4b09)"],
+          ["ambiguous", "var(--colorStatusDangerForeground1, #b10e1c)"],
+        ];
+        const total = order.reduce((t, pair) => t + num(conf[pair[0]]), 0);
+        if (total <= 0) return null;
+
+        const s = el("div", "section");
+        s.append(el("div", "section-h", "Edge confidence"));
+        const stack = el("div", "stack");
+        stack.setAttribute("role", "img");
+        const legend = el("div", "legend");
+        const parts = [];
+
+        for (const [k, color] of order) {
+          const v = num(conf[k]);
+          if (v <= 0) continue;
+          const pct = (v / total) * 100;
+          const seg = document.createElement("span");
+          seg.style.width = pct + "%";
+          seg.style.background = color;
+          stack.append(seg);
+
+          const item = el("div");
+          const dot = el("span", "dot");
+          dot.style.background = color;
+          item.append(
+            dot,
+            el("span", null, k + " " + pct.toFixed(1) + "% (" + v.toLocaleString() + ")"),
+          );
+          legend.append(item);
+          parts.push(k + " " + pct.toFixed(1) + "%");
+        }
+        stack.setAttribute("aria-label", "Edge confidence: " + parts.join(", "));
+        s.append(stack, legend);
+        return s;
+      }
+
+      function renderData(data) {
+        if (!data || typeof data !== "object") {
+          renderError("No data received.");
+          return;
+        }
+        root.replaceChildren();
+
+        const rootPath = text(data.root) || "project";
+        if (text(data.root)) lastPath = text(data.root);
+        const short = rootPath.split(/[\\/]/).filter(Boolean).pop() || rootPath;
+
+        const head = el("div", "head");
+        const left = el("div");
+        left.append(el("div", "title", short), el("div", "sub", rootPath));
+        head.append(left);
+        if (lastPath) {
+          const btn = document.createElement("fluent-button");
+          btn.setAttribute("appearance", "outline");
+          btn.setAttribute("aria-label", "Rescan this project");
+          btn.textContent = busy ? "Scanning…" : "Rescan";
+          if (busy) btn.setAttribute("disabled", "");
+          btn.addEventListener("click", () => {
+            void rescan();
+          });
+          head.append(btn);
+        }
+        root.append(head);
+
+        const kpis = el("div", "kpis");
+        kpis.append(
+          kpi(num(data.fileCount), "files"),
+          kpi(num(data.nodeCount), "nodes"),
+          kpi(num(data.edgeCount), "edges"),
+          kpi(num(data.scanMs) + num(data.analyzeMs), "ms"),
+        );
+        root.append(kpis);
+
+        const conf = confidenceSection(data.edgeConfidence || {});
+        if (conf) root.append(conf);
+
+        const nodeKinds = entries(data.nodeKinds);
+        if (nodeKinds.length) root.append(barSection("Node kinds", nodeKinds));
+
+        const edgeKinds = entries(data.edgeKinds);
+        if (edgeKinds.length) root.append(barSection("Relationship kinds", edgeKinds));
+
+        // Only surface problems when there actually are some.
+        const warnings = num(data.parseWarnings);
+        const unresolved = num(data.unresolved);
+        const skipped = num(data.skipped);
+        if (warnings || unresolved || skipped) {
+          const s = el("div", "section");
+          s.append(el("div", "section-h", "Needs attention"));
+          const w = el("div", "warn");
+          if (warnings)
+            w.append(
+              el(
+                "span",
+                "pill",
+                warnings.toLocaleString() + " parse warning" + (warnings === 1 ? "" : "s"),
+              ),
+            );
+          if (unresolved)
+            w.append(
+              el(
+                "span",
+                "pill",
+                unresolved.toLocaleString() + " unresolved ref" + (unresolved === 1 ? "" : "s"),
+              ),
+            );
+          if (skipped)
+            w.append(
+              el(
+                "span",
+                "pill",
+                skipped.toLocaleString() + " file" + (skipped === 1 ? "" : "s") + " skipped",
+              ),
+            );
+          s.append(w);
+          root.append(s);
+        }
+      }
+
+      async function rescan() {
+        if (busy || !lastPath) return;
+        busy = true;
+        renderLoading("Rescanning " + lastPath + "…");
+        try {
+          const res = await app.callServerTool({ name: TOOL, arguments: { path: lastPath } });
+          busy = false;
+          if (res && res.isError) {
+            renderError("The scan failed. Check that the path still exists.");
+            return;
+          }
+          const d = res && res.structuredContent;
+          if (d) renderData(d);
+          else renderError("The scan returned no data.");
+        } catch {
+          busy = false;
+          renderError("Could not reach the PolyGraph server.");
+        }
+      }
+
+      renderLoading();
+
+      const app = new App({ name: "polygraph-scan-widget", version: "1.0.0" });
+
+      app.ontoolresult = (result) => {
+        const data = result.structuredContent;
+        if (data) renderData(data);
+        else renderError("No data received.");
+      };
+      app.onhostcontextchanged = (ctx) => {
+        if (ctx.theme) applyTheme(ctx.theme);
+      };
+      app.onteardown = () => ({});
+
+      await app.connect();
+
+      const hostCtx = app.getHostContext();
+      if (hostCtx?.theme) applyTheme(hostCtx.theme);
+    </script>
+  </body>
+</html>
