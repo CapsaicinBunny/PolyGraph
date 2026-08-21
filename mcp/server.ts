@@ -7,7 +7,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { histText } from "./format";
+// `with { type: "text" }` yields the file's contents as a string (verified at
+// runtime), but Bun's ambient declaration types every *.html import as its bundler's
+// HTMLBundle regardless of the import attribute — hence the cast.
+import scanWidgetHtmlBundle from "./widgets/polygraph-scan-widget.html" with { type: "text" };
+import { errMsg, histText } from "./format";
 import { telemetry } from "./telemetry";
 import * as ops from "./operations";
 
@@ -28,6 +32,13 @@ const briefNode = {
   filePath: z.string(),
   line: z.number(),
 };
+// polygraph_node returns a library GraphNode verbatim, so this schema must track
+// GraphNode exactly. Zod publishes `additionalProperties: false`, and the SDK CLIENT
+// validates against the published schema — so a field missing here is not a lax
+// server that strips it, it is a hard client-side rejection of every response that
+// carries it. `facets` was added by the dimension-spine work and is populated for any
+// node with a role/env/runtime or a non-default category (a third of nodes in a React
+// codebase). `mcp/server.test.ts` pins the two in sync.
 const fullNode = z.object({
   ...briefNode,
   parentFile: z.string(),
@@ -38,7 +49,13 @@ const fullNode = z.object({
   externalKind: z.string().optional(),
   version: z.string().optional(),
   dependencyType: z.string().optional(),
+  facets: z.record(z.string(), z.array(z.string())).optional(),
 });
+
+/** Echoed by every tool that reads a cached scan — see CachedScan.scannedAt. */
+const scannedAt = z
+  .number()
+  .describe("Epoch ms of the scan these results came from; re-run polygraph_scan after editing.");
 
 /**
  * Run an operation, recording it (and its timing) on the telemetry bus so the
@@ -49,23 +66,42 @@ export async function instrument<T>(
   tool: string,
   fn: () => Promise<T>,
   summary: (res: T) => Record<string, unknown>,
+  args?: Record<string, unknown>,
 ): Promise<T> {
   const t0 = performance.now();
+  let res: T;
   try {
-    const res = await fn();
-    const ms = Math.round(performance.now() - t0);
-    telemetry.metric(`mcp.${tool}.ms`, ms);
-    telemetry.event("analysis", `mcp.${tool}`, { ...summary(res), ms });
-    return res;
+    res = await fn();
   } catch (err) {
+    // Record timing on failures too: without this the histograms silently exclude
+    // the slowest calls (the ones that died), so a p95 used to diagnose "why is this
+    // slow" is computed only over the calls that succeeded.
+    telemetry.metric(`mcp.${tool}.ms`, Math.round(performance.now() - t0));
     telemetry.event(
       "analysis",
       `mcp.${tool}.error`,
-      { message: err instanceof Error ? err.message : String(err) },
+      {
+        // Log the arguments: the SDK flattens errors to `message` alone, so this is
+        // the last place the failing inputs can still be recovered from.
+        ...(args ? { args } : {}),
+        message: errMsg(err),
+        ...(err instanceof Error && err.cause !== undefined ? { cause: errMsg(err.cause) } : {}),
+        ...(err instanceof Error && err.stack ? { stack: err.stack.slice(0, 2000) } : {}),
+      },
       "error",
     );
     throw err;
   }
+  // Outside the try on purpose: `summary` is instrumentation, and a throw in it must
+  // not convert an operation that already succeeded into an isError response.
+  const ms = Math.round(performance.now() - t0);
+  try {
+    telemetry.metric(`mcp.${tool}.ms`, ms);
+    telemetry.event("analysis", `mcp.${tool}`, { ...summary(res), ms });
+  } catch (err) {
+    telemetry.event("analysis", `mcp.${tool}.summary-failed`, { message: errMsg(err) }, "warn");
+  }
+  return res;
 }
 
 /** Build the PolyGraph MCP server with all tools registered (no transport yet). */
@@ -81,16 +117,23 @@ export function createServer(): McpServer {
       inputSchema: { path: pathArg },
       outputSchema: {
         root: z.string(),
+        scannedAt,
         fileCount: z.number(),
         skipped: z.number(),
         nodeCount: z.number(),
         edgeCount: z.number(),
         parseWarnings: z.number(),
+        parseErrors: z
+          .array(z.object({ filePath: z.string(), message: z.string() }))
+          .describe("The files behind parseWarnings; their symbols are missing from the graph."),
         unresolved: z.number(),
         nodeKinds: z.record(z.string(), z.number()),
         edgeKinds: z.record(z.string(), z.number()),
         edgeConfidence: z.record(z.string(), z.number()),
-        packages: z.array(z.object({ id: z.string(), ecosystem: z.string() })),
+        packagesTotal: z.number(),
+        packages: z
+          .array(z.object({ id: z.string(), ecosystem: z.string() }))
+          .describe("Capped at 100 — compare with packagesTotal."),
         scanMs: z.number(),
         analyzeMs: z.number(),
       },
@@ -105,12 +148,20 @@ export function createServer(): McpServer {
           nodes: res.nodeCount,
           edges: res.edgeCount,
         }),
+        { path },
       );
+      const worst = r.parseErrors
+        .slice(0, 3)
+        .map((e) => e.filePath)
+        .join(", ");
       const text =
         `Scanned ${r.root}: ${r.fileCount} files → ${r.nodeCount} nodes, ${r.edgeCount} edges ` +
         `(${r.parseWarnings} parse warnings, ${r.unresolved} unresolved refs). ` +
         `Node kinds: ${histText(r.nodeKinds)}. Edge kinds: ${histText(r.edgeKinds)}. ` +
-        `Confidence: ${histText(r.edgeConfidence)}. ${r.packages.length} package(s).`;
+        `Confidence: ${histText(r.edgeConfidence)}. ${r.packagesTotal} package(s).` +
+        (r.parseWarnings > 0
+          ? ` Symbols from ${r.parseWarnings} unparseable file(s) are MISSING from the graph (e.g. ${worst}) — dependency answers may be incomplete.`
+          : "");
       return { content: [{ type: "text", text }], structuredContent: r };
     },
   );
@@ -142,12 +193,19 @@ export function createServer(): McpServer {
       },
       outputSchema: {
         query: z.string(),
+        scannedAt,
         matchCount: z.number(),
         returned: z.number(),
         offset: z.number(),
         hasMore: z.boolean(),
         empty: z.boolean(),
         error: z.string().optional(),
+        unknownFields: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Unrecognized query fields — 0 matches here means no such FIELD, not no such code.",
+          ),
         nodes: z.array(z.object(briefNode)),
       },
       annotations: READ_ONLY,
@@ -160,10 +218,14 @@ export function createServer(): McpServer {
           query: res.query,
           matches: res.matchCount,
         }),
+        { path, query, limit, offset },
       );
+      const unknown = r.unknownFields?.length
+        ? ` WARNING: unrecognized field(s) ${r.unknownFields.map((f) => `"${f}"`).join(", ")} — these fell back to a plain text match, so this is probably not the question you asked. Valid fields include kind, path, language, package, environment, category, role, incoming, outgoing, calls, cycle.`
+        : "";
       const text = r.error
         ? `Query error: ${r.error}`
-        : `${r.matchCount} node(s) match "${r.query}"${r.empty ? " (empty query — no constraints)" : ""}; showing ${r.returned} from offset ${r.offset}${r.hasMore ? " (more available)" : ""}.`;
+        : `${r.matchCount} node(s) match "${r.query}"${r.empty ? " (empty query — no constraints)" : ""}; showing ${r.returned} from offset ${r.offset}${r.hasMore ? " (more available)" : ""}.${unknown}`;
       return { content: [{ type: "text", text }], structuredContent: r };
     },
   );
@@ -182,6 +244,7 @@ export function createServer(): McpServer {
       },
       outputSchema: {
         node: fullNode,
+        scannedAt,
         dependencyCount: z.number(),
         dependentCount: z.number(),
         dependencies: z.array(
@@ -214,6 +277,7 @@ export function createServer(): McpServer {
           dependencies: res.dependencyCount,
           dependents: res.dependentCount,
         }),
+        { path, id },
       );
       const text =
         `${r.node.kind} ${r.node.label} (${r.node.filePath}:${r.node.line}) — ` +
@@ -233,17 +297,21 @@ export function createServer(): McpServer {
         severity: z.enum(["info", "warning"]).optional().describe("Filter to one severity."),
       },
       outputSchema: {
+        scannedAt,
         total: z.number(),
         byKind: z.record(z.string(), z.number()),
-        insights: z.array(
-          z.object({
-            kind: z.string(),
-            severity: z.string(),
-            title: z.string(),
-            detail: z.string(),
-            nodeIds: z.array(z.string()),
-          }),
-        ),
+        insights: z
+          .array(
+            z.object({
+              kind: z.string(),
+              severity: z.string(),
+              title: z.string(),
+              detail: z.string(),
+              nodeIdTotal: z.number(),
+              nodeIds: z.array(z.string()).describe("Capped at 10 — compare with nodeIdTotal."),
+            }),
+          )
+          .describe("Capped at 100 — compare with total."),
       },
       annotations: READ_ONLY,
     },
@@ -254,6 +322,7 @@ export function createServer(): McpServer {
         (res) => ({
           total: res.total,
         }),
+        { path, severity },
       );
       const text = `${r.total} insight(s): ${histText(r.byKind)}.`;
       return { content: [{ type: "text", text }], structuredContent: r };
@@ -304,6 +373,7 @@ export function createServer(): McpServer {
           violations: res.total,
           errors: res.errors,
         }),
+        { path, config, format },
       );
       const text = `${r.total} violation(s) (${r.errors} error, ${r.warnings} warning) against ${r.config}.`;
       return { content: [{ type: "text", text }], structuredContent: r };
@@ -336,7 +406,10 @@ export function createServer(): McpServer {
         addedNodes: z.array(z.object(briefNode)),
         removedNodes: z.array(z.object(briefNode)),
         newCycles: z.array(z.object({ members: z.array(z.string()) })),
-        blastRadius: z.array(z.object({ label: z.string(), delta: z.number() })),
+        blastRadiusTotal: z.number(),
+        blastRadius: z
+          .array(z.object({ label: z.string(), delta: z.number() }))
+          .describe("The 10 largest moves — compare with blastRadiusTotal."),
       },
       annotations: READ_ONLY,
     },
@@ -350,6 +423,7 @@ export function createServer(): McpServer {
           nodesAdded: res.summary.nodesAdded,
           nodesRemoved: res.summary.nodesRemoved,
         }),
+        { path, base, head },
       );
       const s = r.summary;
       const text =
@@ -373,6 +447,7 @@ export function createServer(): McpServer {
       },
       outputSchema: {
         file: z.string(),
+        scannedAt,
         startLine: z.number(),
         endLine: z.number(),
         totalLines: z.number(),
@@ -386,6 +461,7 @@ export function createServer(): McpServer {
         "read",
         () => ops.readSource(path, file, startLine, endLine),
         (res) => ({ file: res.file, lines: `${res.startLine}-${res.endLine}/${res.totalLines}` }),
+        { path, file, startLine, endLine },
       );
       const text = `${r.file} (lines ${r.startLine}-${r.endLine} of ${r.totalLines}${r.truncated ? ", truncated" : ""}):\n\n${r.content}`;
       return { content: [{ type: "text", text }], structuredContent: r };
@@ -451,7 +527,8 @@ export function createServer(): McpServer {
       },
       annotations: {
         readOnlyHint: false,
-        destructiveHint: false,
+        // `clear` discards the ring buffer irrecoverably.
+        destructiveHint: true,
         idempotentHint: false,
         openWorldHint: false,
       },
@@ -459,12 +536,20 @@ export function createServer(): McpServer {
     async ({ action, limit }) => {
       const r = ops.logs(action ?? "tail", limit);
       const state = `telemetry ${r.enabled ? "on" : "off"}`;
+      // `disable` also silences the error events instrument() records — the only
+      // place tool failures are logged — so say so rather than let it go quiet.
+      const caveat =
+        r.action === "disable"
+          ? " Tool errors will NOT be logged until you re-enable."
+          : r.action === "clear"
+            ? " Previously buffered events are gone."
+            : "";
       const text =
         r.action === "tail"
           ? `${state}, ${r.eventCount} event(s); showing ${r.events.length}.`
           : r.action === "metrics"
             ? `${state}; ${Object.keys(r.metrics.histograms).length} metric series, ${Object.keys(r.metrics.counters).length} counter(s).`
-            : `${state}, ${r.eventCount} event(s) (action: ${r.action}).`;
+            : `${state}, ${r.eventCount} event(s) (action: ${r.action}).${caveat}`;
       return { content: [{ type: "text", text }], structuredContent: r };
     },
   );
@@ -481,11 +566,15 @@ export function createServer(): McpServer {
       },
       outputSchema: {
         id: z.string(),
+        scannedAt,
         label: z.string(),
         total: z.number(),
         byPackage: z.record(z.string(), z.number()),
         byKind: z.record(z.string(), z.number()),
-        topFiles: z.array(z.object({ file: z.string(), affected: z.number() })),
+        filesAffected: z.number(),
+        topFiles: z
+          .array(z.object({ file: z.string(), affected: z.number() }))
+          .describe("The 30 worst-hit files — compare with filesAffected."),
       },
       annotations: READ_ONLY,
     },
@@ -494,9 +583,10 @@ export function createServer(): McpServer {
         "impact",
         () => ops.impactOf(path, id),
         (res) => ({ id: res.id, total: res.total }),
+        { path, id },
       );
       const text =
-        `Changing ${r.label} affects ${r.total} node(s) transitively. ` +
+        `Changing ${r.label} affects ${r.total} node(s) across ${r.filesAffected} file(s) transitively. ` +
         `By area: ${histText(r.byPackage)}. Via: ${histText(r.byKind)}.`;
       return { content: [{ type: "text", text }], structuredContent: r };
     },
@@ -516,6 +606,7 @@ export function createServer(): McpServer {
       outputSchema: {
         from: z.string(),
         to: z.string(),
+        scannedAt,
         connected: z.boolean(),
         hops: z.number(),
         path: z.array(z.object({ id: z.string(), label: z.string() })),
@@ -528,12 +619,37 @@ export function createServer(): McpServer {
         "path",
         () => ops.pathBetween(path, from, to),
         (res) => ({ from: res.from, to: res.to, connected: res.connected, hops: res.hops }),
+        { path, from, to },
       );
       const text = r.connected
         ? `${r.from} → ${r.to} in ${r.hops} hop(s): ${r.path.map((p) => p.label).join(" → ")}.`
         : `${r.from} does not reach ${r.to} (no directed dependency path).`;
       return { content: [{ type: "text", text }], structuredContent: r };
     },
+  );
+
+  // The scan widget, served as a resource so it is actually reachable. Imported as
+  // text (rather than read from disk) so `bun run build:mcp` embeds it in the
+  // compiled binary, which has no `mcp/widgets/` beside it.
+  //
+  // NOTE: registering the resource makes a host able to FETCH the widget; it does not
+  // by itself make a host render it automatically for polygraph_scan results. That
+  // binding is carried in tool `_meta` under a key the MCP Apps host defines, and is
+  // deliberately not guessed here — see mcp/README.md.
+  server.registerResource(
+    "polygraph-scan-widget",
+    "ui://polygraph/scan-widget",
+    {
+      title: "PolyGraph scan widget",
+      description:
+        "Self-rendering HTML view of a polygraph_scan result: KPI tiles, the edge-confidence mix, and node/relationship kind charts.",
+      mimeType: "text/html",
+    },
+    (uri: URL) => ({
+      contents: [
+        { uri: uri.href, mimeType: "text/html", text: scanWidgetHtmlBundle as unknown as string },
+      ],
+    }),
   );
 
   return server;

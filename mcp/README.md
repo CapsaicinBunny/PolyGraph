@@ -26,7 +26,23 @@ first `polygraph_scan` does the work and follow-up tools are fast.
 
 All tools return a text summary plus `structuredContent`. All are `readOnlyHint`
 except `polygraph_logs`, whose `enable` / `disable` / `clear` actions mutate the
-telemetry buffer.
+telemetry buffer (`clear` is irreversible, hence `destructiveHint`).
+
+Two behaviors worth knowing, because both would otherwise produce a confident
+wrong answer:
+
+- **Only `polygraph_scan` re-analyzes.** Every other tool reuses the cached scan
+  for that path, so after editing files you must re-run `polygraph_scan` or you
+  get pre-edit answers. Each result echoes `scannedAt` (epoch ms) so the staleness
+  is at least visible.
+- **An unrecognized query field is not an error** in the query language — it
+  degrades to a text match. `polygraph_query` therefore reports `unknownFields`,
+  because otherwise a typo'd field is indistinguishable from a valid query that
+  genuinely matched nothing.
+
+Capped lists always ship their true total alongside (`packagesTotal`,
+`nodeIdTotal`, `filesAffected`, `blastRadiusTotal`, `matchCount`), so a truncated
+list is never mistaken for the whole answer.
 
 ## Safety: the read tool
 
@@ -47,8 +63,11 @@ steer it into reading arbitrary files on the machine.
 bun run mcp          # = bun run mcp/server.ts
 ```
 
-The server speaks MCP on stdio; it prints only `[polygraph-mcp] ready on stdio`
-to **stderr** (stdout is the protocol channel).
+The server speaks MCP on **stdout**, so every diagnostic goes to **stderr**: a
+`[polygraph-mcp] ready on stdio` line at startup, then a `[scan]` line and a
+telemetry line per tool call (silence those with
+`polygraph_logs {"action":"disable"}`), plus `[polygraph-mcp] fatal:` on a crash.
+Nothing but JSON-RPC is ever written to stdout.
 
 ## Wire it into a client
 
@@ -83,26 +102,46 @@ _"In /path/to/repo, which files have more than 10 dependents?"_.
 
 [`widgets/polygraph-scan-widget.html`](widgets/polygraph-scan-widget.html) is an
 [MCP Apps](https://modelcontextprotocol.io) widget that renders a `polygraph_scan`
-result visually in the chat: KPI tiles, a stacked **edge-confidence** bar
-(exact / inferred / ambiguous), and bar charts for node and relationship kinds.
-Problems (parse warnings, unresolved refs, skipped files) appear only when there
-are some. A **Rescan** button re-invokes `polygraph_scan` through
-`callServerTool`, using the `root` the previous result reported.
+result: KPI tiles, a stacked **edge-confidence** bar (exact / inferred /
+ambiguous), and bar charts for node and relationship kinds. Problems (parse
+warnings, unresolved refs, skipped files) appear only when there are some — and a
+"scan health unknown" pill when those fields are absent, so a partial payload
+can't masquerade as a clean scan. A **Rescan** button re-invokes `polygraph_scan`
+through `callServerTool`, using the `root` the previous result reported.
 
-Self-contained — no build step and no chart library (plain CSS bars, which also
-avoids the UMD global collisions that CDN chart libs cause). It themes itself
-from the host via Fluent tokens, renders all tool data with `textContent`, and
-coerces field types defensively, since JSON fields can arrive as strings or
-nulls. Open the file directly in a browser to preview the loading state.
+The server registers it as the resource **`ui://polygraph/scan-widget`**, so a
+client can list and fetch it. That is as far as the wiring goes: **no host will
+render it automatically yet.** Auto-rendering requires binding the resource to the
+tool through `_meta`, under a key the MCP Apps host defines; that key is not
+guessed here. Until it's added, the widget is fetchable and self-testable, not
+automatic.
+
+No build step and no chart library (plain CSS bars). It does load three modules
+from CDNs at runtime — the Fluent UI web components, `@fluentui/tokens`, and the
+MCP `ext-apps` client — so it needs network access in the host and will not render
+offline or under a strict CSP. It themes itself from the host via Fluent tokens,
+renders all tool data with `textContent`, and coerces field types defensively,
+since JSON fields can arrive as strings or nulls.
 
 ## Develop / inspect
 
 ```sh
-bun test mcp                                   # unit tests (operations)
+bun test mcp            # operations, cache, instrumentation + a client round-trip
 npx @modelcontextprotocol/inspector bun run mcp/server.ts   # interactive tool inspector
 ```
 
 Architecture: `operations.ts` holds the ten analysis functions (unit-tested
-directly); `server.ts` is a thin layer that registers each as an MCP tool;
-`cache.ts` memoizes scans per project path; `telemetry.ts` is the stderr-pinned
-telemetry bus the `polygraph_logs` tool reads.
+directly); `server.ts` registers each as an MCP tool and wraps it in `instrument`
+(both unit-tested); `cache.ts` memoizes scans per project path; `telemetry.ts` is
+the stderr-pinned telemetry bus the `polygraph_logs` tool reads.
+
+`mcp/server.test.ts` drives the server through a real MCP `Client` over
+`InMemoryTransport`. That layer is not optional: the SDK **client** validates
+`structuredContent` against the published `outputSchema`, so a field the schema
+omits is a hard client-side rejection even though the server's own parse strips it
+and looks healthy. Testing `operations.ts` alone cannot see that class of bug —
+it shipped once already (`GraphNode.facets`).
+
+Beyond `bun run mcp`, the server is also available as the `polygraph-mcp` bin, and
+`bun run build:mcp` compiles a standalone binary (with the widget embedded) for
+hosts without Bun.

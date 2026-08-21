@@ -1,7 +1,8 @@
 <!--
   Evaluation questions for the PolyGraph MCP server, answered against the committed
   fixture project in mcp/evals/fixture/ (6 TypeScript files: a db hub imported by
-  user/order/app, plus a two-file import cycle). Answers are verified and stable as
+  user and order — and reached transitively from app — plus a two-file import
+  cycle). Answers are verified and stable as
   long as the fixture is unchanged. Point the MCP server at the absolute path of
   mcp/evals/fixture and ask each question; each has a single verifiable answer.
 -->

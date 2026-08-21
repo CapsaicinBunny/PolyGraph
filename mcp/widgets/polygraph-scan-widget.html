@@ -199,6 +199,8 @@
       const TOOL = "polygraph_scan";
       let lastPath = null;
       let busy = false;
+      // Set once the host is reachable, so the connect watchdog knows to stand down.
+      let connected = false;
 
       function applyTheme(theme) {
         const tokens = theme === "dark" ? webDarkTheme : webLightTheme;
@@ -216,16 +218,25 @@
       }
 
       // Runtime values may not match the sample types, so coerce defensively.
+      // Missing/non-numeric returns null, NOT 0: rendering an absent field as 0 makes
+      // a payload with no parseWarnings look identical to a clean scan, which is a
+      // wrong answer that degrades invisibly. Callers render null as "—".
       const num = (v) => {
+        if (v == null || v === "") return null;
         const n = parseFloat(v);
-        return isFinite(n) ? n : 0;
+        return isFinite(n) ? n : null;
+      };
+      const num0 = (v) => num(v) ?? 0;
+      const numText = (v) => {
+        const n = num(v);
+        return n == null ? "—" : n;
       };
       const text = (v) => (v == null || String(v).trim() === "" ? null : String(v).trim());
 
       function entries(obj) {
         if (!obj || typeof obj !== "object") return [];
         return Object.keys(obj)
-          .map((k) => [k, num(obj[k])])
+          .map((k) => [k, num0(obj[k])])
           .filter((pair) => pair[1] > 0)
           .sort((a, b) => b[1] - a[1]);
       }
@@ -360,10 +371,15 @@
 
         const kpis = el("div", "kpis");
         kpis.append(
-          kpi(num(data.fileCount), "files"),
-          kpi(num(data.nodeCount), "nodes"),
-          kpi(num(data.edgeCount), "edges"),
-          kpi(num(data.scanMs) + num(data.analyzeMs), "ms"),
+          kpi(numText(data.fileCount), "files"),
+          kpi(numText(data.nodeCount), "nodes"),
+          kpi(numText(data.edgeCount), "edges"),
+          kpi(
+            num(data.scanMs) == null && num(data.analyzeMs) == null
+              ? "—"
+              : num0(data.scanMs) + num0(data.analyzeMs),
+            "ms",
+          ),
         );
         root.append(kpis);
 
@@ -376,11 +392,20 @@
         const edgeKinds = entries(data.edgeKinds);
         if (edgeKinds.length) root.append(barSection("Relationship kinds", edgeKinds));
 
-        // Only surface problems when there actually are some.
+        // Only surface problems when there actually are some — but treat MISSING
+        // fields as unknown rather than zero, so a payload lacking parseWarnings
+        // can't silently render as a clean scan.
         const warnings = num(data.parseWarnings);
         const unresolved = num(data.unresolved);
         const skipped = num(data.skipped);
-        if (warnings || unresolved || skipped) {
+        if (warnings == null || unresolved == null || skipped == null) {
+          const s = el("div", "section");
+          s.append(el("div", "section-h", "Needs attention"));
+          const w = el("div", "warn");
+          w.append(el("span", "pill pill-warn", "scan health unknown — fields missing"));
+          s.append(w);
+          root.append(s);
+        } else if (warnings || unresolved || skipped) {
           const s = el("div", "section");
           s.append(el("div", "section-h", "Needs attention"));
           const w = el("div", "warn");
@@ -413,24 +438,39 @@
         }
       }
 
+      // The server's own error text is far more actionable than any guess we could
+      // make here ("Path not found: …", "No source files found under that path.").
+      function serverText(res) {
+        const c = res && Array.isArray(res.content) ? res.content : [];
+        const hit = c.find((x) => x && x.type === "text" && x.text);
+        return hit ? String(hit.text) : null;
+      }
+
       async function rescan() {
         if (busy || !lastPath) return;
         busy = true;
         renderLoading("Rescanning " + lastPath + "…");
+        let res;
         try {
-          const res = await app.callServerTool({ name: TOOL, arguments: { path: lastPath } });
+          res = await app.callServerTool({ name: TOOL, arguments: { path: lastPath } });
+        } catch (e) {
+          // Bind the error: discarding it leaves no trace anywhere for a debugger,
+          // and reports protocol/permission failures as a network problem.
+          console.error("[polygraph-widget] rescan call failed", e);
           busy = false;
-          if (res && res.isError) {
-            renderError("The scan failed. Check that the path still exists.");
-            return;
-          }
-          const d = res && res.structuredContent;
-          if (d) renderData(d);
-          else renderError("The scan returned no data.");
-        } catch {
-          busy = false;
-          renderError("Could not reach the PolyGraph server.");
+          renderError("Rescan failed: " + ((e && e.message) || String(e)));
+          return;
         }
+        busy = false;
+        if (res && res.isError) {
+          renderError(serverText(res) || "The scan failed.");
+          return;
+        }
+        const d = res && res.structuredContent;
+        // Rendering is deliberately OUTSIDE the try above: a bug in renderData must
+        // not be reported to the user as "could not reach the server".
+        if (d) renderData(d);
+        else renderError(serverText(res) || "The scan returned no data.");
       }
 
       renderLoading();
@@ -438,19 +478,44 @@
       const app = new App({ name: "polygraph-scan-widget", version: "1.0.0" });
 
       app.ontoolresult = (result) => {
-        const data = result.structuredContent;
+        connected = true;
+        // A failed tool call carries `content` but no `structuredContent`, so without
+        // this isError check it would fall through to "No data received." — which
+        // reads as a transport fault and hides the server's actual message.
+        if (result && result.isError) {
+          renderError(serverText(result) || "The scan failed.");
+          return;
+        }
+        const data = result && result.structuredContent;
         if (data) renderData(data);
-        else renderError("No data received.");
+        else renderError(serverText(result) || "No data received.");
       };
       app.onhostcontextchanged = (ctx) => {
         if (ctx.theme) applyTheme(ctx.theme);
       };
       app.onteardown = () => ({});
 
-      await app.connect();
+      // Without this the spinner is terminal: connect() rejecting (or a CDN import
+      // failing) would otherwise leave "Analyzing the codebase…" on screen forever.
+      const watchdog = setTimeout(() => {
+        if (!connected) {
+          renderError("The widget could not connect to the PolyGraph server (timed out).");
+        }
+      }, 10000);
 
-      const hostCtx = app.getHostContext();
-      if (hostCtx?.theme) applyTheme(hostCtx.theme);
+      try {
+        await app.connect();
+        connected = true;
+        clearTimeout(watchdog);
+        const hostCtx = app.getHostContext();
+        if (hostCtx?.theme) applyTheme(hostCtx.theme);
+      } catch (e) {
+        clearTimeout(watchdog);
+        console.error("[polygraph-widget] connect failed", e);
+        renderError(
+          "Could not connect to the PolyGraph server: " + ((e && e.message) || String(e)),
+        );
+      }
     </script>
   </body>
 </html>

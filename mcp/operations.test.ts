@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearScanCache } from "./cache";
@@ -87,10 +87,45 @@ test("checkRules without a config gives an actionable error", async () => {
 });
 
 test("diffRevisions outside a git repo gives an actionable error", async () => {
-  expect(await rejectMessage(diffRevisions(dir, "main"))).toMatch(
-    /Could not read revisions to diff/,
-  );
+  const m = await rejectMessage(diffRevisions(dir, "main"));
+  expect(m).toMatch(/Diff of .* failed/);
+  // Guidance must be the git/revision one for a genuine revision failure.
+  expect(m).toMatch(/needs a git repo and valid revisions/);
 });
+
+test("diffRevisions compares a revision against the working tree in a real repo", async () => {
+  // The only coverage of the diff pipeline itself: scanRevision + scanTarget +
+  // diffGraphs wiring, and the `head ?? WORKING_TREE` default.
+  const repo = await mkdtemp(join(tmpdir(), "polygraph-mcp-git-"));
+  const git = async (...args: string[]): Promise<void> => {
+    const p = Bun.spawn(["git", ...args], { cwd: repo, stdout: "ignore", stderr: "ignore" });
+    await p.exited;
+  };
+  try {
+    await git("init");
+    await git("config", "user.email", "t@example.com");
+    await git("config", "user.name", "t");
+    await writeFile(join(repo, "a.ts"), "export function a(): number {\n  return 1;\n}\n");
+    await git("add", "-A");
+    await git("commit", "-m", "base");
+
+    // Add a second file in the working tree only.
+    await writeFile(
+      join(repo, "b.ts"),
+      'import { a } from "./a";\n\nexport function b(): number {\n  return a();\n}\n',
+    );
+
+    clearScanCache();
+    const r = await diffRevisions(repo, "HEAD");
+    expect(r.head).toBe("working tree"); // the omitted-head default
+    expect(r.summary.nodesAdded).toBeGreaterThan(0);
+    expect(r.addedNodes.some((n) => n.filePath.endsWith("b.ts"))).toBe(true);
+    expect(r.blastRadiusTotal).toBeGreaterThanOrEqual(r.blastRadius.length);
+  } finally {
+    clearScanCache();
+    await rm(repo, { recursive: true, force: true });
+  }
+}, 60_000);
 
 test("readSource reads a scanned file and honors a line range", async () => {
   const whole = await readSource(dir, "a.ts");
@@ -103,8 +138,57 @@ test("readSource reads a scanned file and honors a line range", async () => {
   expect(firstLine.content).toBe('import { b } from "./b";');
 });
 
-test("readSource refuses a path that isn't a scanned source file (no escaping the root)", async () => {
+// Gate 1 of readSource: graph membership. "../cache.ts" is rejected here and never
+// reaches the realpath containment check — the test below covers that separately.
+test("readSource refuses a file that isn't in the scanned graph", async () => {
   expect(await rejectMessage(readSource(dir, "../cache.ts"))).toMatch(/not a scanned source file/);
+});
+
+// Gate 2: realpath containment. This pins `realpath(root)` on the LEFT of the
+// comparison — drop it and every read under a symlinked root breaks, a regression
+// nothing else here would catch.
+test("readSource reads through a symlinked root (realpath applies to both sides)", async () => {
+  const real = await mkdtemp(join(tmpdir(), "polygraph-mcp-real-"));
+  const linkDir = await mkdtemp(join(tmpdir(), "polygraph-mcp-link-"));
+  const link = join(linkDir, "root");
+  await writeFile(join(real, "s.ts"), "export const s = 1;\n");
+  try {
+    await symlink(real, link, "junction");
+  } catch {
+    return; // Windows without Developer Mode / elevated rights: skip, don't fail.
+  }
+  try {
+    clearScanCache();
+    const r = await readSource(link, "s.ts");
+    expect(r.content).toContain("export const s");
+  } finally {
+    clearScanCache();
+    await rm(linkDir, { recursive: true, force: true });
+    await rm(real, { recursive: true, force: true });
+  }
+});
+
+test("readSource counts lines without the trailing newline artifact, and rejects an inverted range", async () => {
+  // Its own fixture dir: adding a file to the shared one would change the node
+  // counts other tests assert.
+  const d2 = await mkdtemp(join(tmpdir(), "polygraph-mcp-lines-"));
+  try {
+    // 4 real lines, newline-terminated: split("\n") alone would report 5.
+    await writeFile(
+      join(d2, "four.ts"),
+      "const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\n",
+    );
+    clearScanCache();
+    const r = await readSource(d2, "four.ts");
+    expect(r.totalLines).toBe(4);
+    expect(r.truncated).toBe(false);
+    expect(r.content.split("\n").length).toBe(4);
+
+    expect(await rejectMessage(readSource(d2, "four.ts", 3, 1))).toMatch(/Invalid line range/);
+  } finally {
+    clearScanCache();
+    await rm(d2, { recursive: true, force: true });
+  }
 });
 
 test("logs reads and controls the telemetry bus", () => {
@@ -189,12 +273,25 @@ test("pathBetween reports no connection in the unreachable direction", async () 
   expect(r.path).toEqual([]);
 });
 
-test("checkRules emits SARIF only when asked", async () => {
+test("checkRules emits SARIF only when asked, carrying every violation", async () => {
+  // A rule that the fixture actually violates (a.ts imports b.ts). Asserting against
+  // an empty log would still pass if SARIF conversion dropped every result — which is
+  // the bug that matters, since a zero-result upload reads as "clean" in CI.
   const cfg = join(dir, "sarif.polygraph.yml");
-  await writeFile(cfg, "rules: []\nthresholds:\n  maxFanOut: 1\n  severity: warning\n");
+  await writeFile(
+    cfg,
+    "rules:\n  - name: no-a-to-b\n    severity: error\n    from:\n      path: '**/a.ts'\n    disallow:\n      path: '**/b.ts'\n",
+  );
   const plain = await checkRules(dir, cfg);
   expect(plain.sarif).toBeUndefined();
+  expect(plain.total).toBeGreaterThan(0); // the config must actually bite
+
   const sarif = await checkRules(dir, cfg, "sarif");
   expect(typeof sarif.sarif).toBe("string");
-  expect(JSON.parse(sarif.sarif!).version).toBe("2.1.0");
+  const log = JSON.parse(sarif.sarif!);
+  expect(log.version).toBe("2.1.0");
+  // Every violation survives the conversion, with its location.
+  expect(log.runs[0].results.length).toBe(plain.total);
+  expect(log.runs[0].results[0].ruleId).toBe("no-a-to-b");
+  expect(log.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri).toBeTruthy();
 });
