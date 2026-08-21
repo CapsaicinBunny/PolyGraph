@@ -40,8 +40,11 @@ jobs:
       - name: Benchmark (report)
         run: bun run bench
 
-      - name: Build sidecar
-        run: bun run build:sidecar
+      # Compile-checks both bun entrypoints into dist/bin. No Rust on this runner,
+      # so the sidecar is not staged as a Tauri externalBin here — that (and the
+      # desktop build it feeds) is release.yml's job.
+      - name: Build binaries (sidecar + MCP server)
+        run: bun run build:bin
 
       - name: Build web (static export)
-        run: bun run build
+        run: bun run build:web
