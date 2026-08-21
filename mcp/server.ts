@@ -42,9 +42,10 @@ const fullNode = z.object({
 
 /**
  * Run an operation, recording it (and its timing) on the telemetry bus so the
- * polygraph_logs tool can tail live activity. Errors are logged, then rethrown.
+ * polygraph_logs tool can tail live activity. Errors are logged, then rethrown
+ * (the SDK turns the rethrow into an MCP isError response). Exported for tests.
  */
-async function instrument<T>(
+export async function instrument<T>(
   tool: string,
   fn: () => Promise<T>,
   summary: (res: T) => Record<string, unknown>,
@@ -397,8 +398,12 @@ export function createServer(): McpServer {
           .optional()
           .describe("Max events for tail (default 50)."),
       },
+      // Deliberately flatter than the TS `LogsResult` union: MCP wants an object
+      // schema, and passing a top-level z.discriminatedUnion here makes the SDK
+      // publish an empty schema and fail the call. `events`/`metrics` are therefore
+      // optional on the wire even though the TS type ties them to `action`.
       outputSchema: {
-        action: z.string(),
+        action: z.enum(["tail", "metrics", "status", "enable", "disable", "clear"]),
         enabled: z.boolean(),
         eventCount: z.number(),
         events: z
@@ -440,11 +445,13 @@ export function createServer(): McpServer {
     },
     async ({ action, limit }) => {
       const r = ops.logs(action ?? "tail", limit);
-      const text = r.events
-        ? `telemetry ${r.enabled ? "on" : "off"}, ${r.eventCount} event(s); showing ${r.events.length}.`
-        : r.metrics
-          ? `telemetry ${r.enabled ? "on" : "off"}; ${Object.keys(r.metrics.histograms).length} metric series, ${Object.keys(r.metrics.counters).length} counter(s).`
-          : `telemetry ${r.enabled ? "on" : "off"}, ${r.eventCount} event(s) (action: ${r.action}).`;
+      const state = `telemetry ${r.enabled ? "on" : "off"}`;
+      const text =
+        r.action === "tail"
+          ? `${state}, ${r.eventCount} event(s); showing ${r.events.length}.`
+          : r.action === "metrics"
+            ? `${state}; ${Object.keys(r.metrics.histograms).length} metric series, ${Object.keys(r.metrics.counters).length} counter(s).`
+            : `${state}, ${r.eventCount} event(s) (action: ${r.action}).`;
       return { content: [{ type: "text", text }], structuredContent: r };
     },
   );

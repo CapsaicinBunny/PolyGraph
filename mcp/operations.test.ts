@@ -113,20 +113,20 @@ test("logs reads and controls the telemetry bus", () => {
   telemetry.event("analysis", "mcp.test", { ok: 1 });
   const tail = logs("tail");
   expect(tail.eventCount).toBe(1);
-  expect(tail.events?.[0]?.event).toBe("mcp.test");
+  expect(tail.events[0]?.event).toBe("mcp.test"); // no narrowing needed: overloads
 
   // metrics action surfaces recorded metric series.
   telemetry.metric("mcp.scan.ms", 12);
   const metrics = logs("metrics");
-  expect(metrics.metrics?.histograms["mcp.scan.ms"]?.count).toBe(1);
-  expect(metrics.metrics?.histograms["mcp.scan.ms"]?.max).toBe(12);
+  expect(metrics.metrics.histograms["mcp.scan.ms"]?.count).toBe(1);
+  expect(metrics.metrics.histograms["mcp.scan.ms"]?.max).toBe(12);
 
   // tail honors `limit` and returns the most recent events, in order.
   telemetry.clearAll();
   telemetry.event("analysis", "mcp.a");
   telemetry.event("analysis", "mcp.b");
   telemetry.event("analysis", "mcp.c");
-  expect(logs("tail", 2).events?.map((e) => e.event)).toEqual(["mcp.b", "mcp.c"]);
+  expect(logs("tail", 2).events.map((e) => e.event)).toEqual(["mcp.b", "mcp.c"]);
 
   expect(logs("disable").enabled).toBe(false);
   expect(logs("enable").enabled).toBe(true);

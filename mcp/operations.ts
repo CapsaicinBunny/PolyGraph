@@ -336,28 +336,42 @@ export type LogEvent = {
 // second copy that can drift.
 export type MetricSummary = HistogramSummary;
 export type LogsAction = "tail" | "metrics" | "status" | "enable" | "disable" | "clear";
-export type LogsResult = {
-  action: LogsAction;
-  enabled: boolean;
-  eventCount: number;
-  events?: LogEvent[];
-  metrics?: { histograms: Record<string, MetricSummary>; counters: Record<string, number> };
+export type LogsMetrics = {
+  histograms: Record<string, MetricSummary>;
+  counters: Record<string, number>;
 };
+type LogsBase = { enabled: boolean; eventCount: number };
+export type LogsTail = LogsBase & { action: "tail"; events: LogEvent[] };
+export type LogsMetricsResult = LogsBase & { action: "metrics"; metrics: LogsMetrics };
+export type LogsStatus = LogsBase & { action: "status" | "enable" | "disable" | "clear" };
+/**
+ * Discriminated on `action` so the payload can't disagree with it: `tail` always
+ * carries `events`, `metrics` always carries `metrics`, and the control actions
+ * carry neither (rather than every field being independently optional).
+ */
+export type LogsResult = LogsTail | LogsMetricsResult | LogsStatus;
 
 /**
  * Read and control the live telemetry bus (lib/telemetry) of THIS server process:
  * `tail` recent events, `metrics` rolling histograms + counters, `status`, or the
  * control actions `enable`/`disable`/`clear`. The MCP tools emit their own activity
  * here, so `tail` is a live log of what the agent has been doing.
+ *
+ * Overloaded so a literal action yields its exact variant (`logs("tail").events`
+ * needs no narrowing); a dynamic action still returns the full union.
  */
+export function logs(action: "tail", limit?: number): LogsTail;
+export function logs(action: "metrics", limit?: number): LogsMetricsResult;
+export function logs(action: "status" | "enable" | "disable" | "clear"): LogsStatus;
+export function logs(action?: LogsAction, limit?: number): LogsResult;
 export function logs(action: LogsAction = "tail", limit = 50): LogsResult {
   if (action === "enable") telemetry.setEnabled(true);
   else if (action === "disable") telemetry.setEnabled(false);
   else if (action === "clear") telemetry.clearAll();
 
   const snap = telemetry.snapshot();
-  const base = { action, enabled: snap.enabled, eventCount: telemetry.eventCount() };
-  if (action === "metrics") return { ...base, metrics: snap.metrics };
+  const base: LogsBase = { enabled: snap.enabled, eventCount: telemetry.eventCount() };
+  if (action === "metrics") return { ...base, action, metrics: snap.metrics };
   if (action === "tail") {
     const events = snap.events.slice(-limit).map((e) => ({
       t: e.t,
@@ -366,7 +380,7 @@ export function logs(action: LogsAction = "tail", limit = 50): LogsResult {
       event: e.event,
       ...(e.data ? { data: e.data } : {}),
     }));
-    return { ...base, events };
+    return { ...base, action, events };
   }
-  return base; // status / enable / disable / clear
+  return { ...base, action }; // status / enable / disable / clear
 }
