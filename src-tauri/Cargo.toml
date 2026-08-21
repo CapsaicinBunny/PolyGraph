@@ -26,3 +26,11 @@ tauri = { version = "2.11.2", features = ["devtools"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+
+# Windows-only: a pre-launch native dialog (rfd) + open-in-browser (open) for the
+# "WebView2 runtime missing" warning. The portable build doesn't bundle WebView2's
+# ~180 MB runtime, so warn-and-link if a machine lacks it. Both crates are already in
+# the dependency tree on every platform; this just makes them direct deps on Windows.
+[target.'cfg(windows)'.dependencies]
+rfd = "0.16"
+open = "5"

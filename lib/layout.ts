@@ -1310,10 +1310,23 @@ const HEAVY_COMPONENT_CAP = {
   force: 1800,
 } as const;
 const HEAVY_EDGE_CAP = 8_000;
+// dagre's crossing-minimisation / network-simplex explodes on DENSE components — many
+// edges per rank — long before the node/edge caps bite: a 196-node/752-edge component
+// (3.8 edges/node) hangs network-simplex for >60s. Above this edges-per-node ratio, lay
+// the component out as a grid instead (a graph that dense isn't hierarchical, so a
+// layered view would look poor regardless). Tiny components are exempt — dagre is instant
+// there whatever the density.
+const DAGRE_DENSITY_CAP = 2.5;
+const DAGRE_DENSITY_MIN_NODES = 32;
 
 /** True when a (sub)graph is too big for a heavy engine to lay out within the time budget. */
 function tooHeavy(view: LayoutInput, nodeCap: number): boolean {
   return view.nodes.length > nodeCap || view.edges.length > HEAVY_EDGE_CAP;
+}
+
+/** True when a component is too dense for dagre (layered) to lay out within the time budget. */
+function tooDenseForDagre(nodes: number, edges: number): boolean {
+  return nodes > DAGRE_DENSITY_MIN_NODES && edges > nodes * DAGRE_DENSITY_CAP;
 }
 
 /**
@@ -1335,12 +1348,20 @@ export function resolveEngineForBudget(
   // Stress is near-linear in edges (PivotMDS for large comps), so the dense edge backstop
   // doesn't apply to it; the other heavy engines are ~O(V·E) and keep it.
   const overEdges = requested !== "stress" && edgeCount > HEAVY_EDGE_CAP;
-  if (!overNodes && !overEdges) return { engine: requested, fallbackReason: null };
+  // dagre (layered) hangs on DENSE components even well under the node/edge caps: a
+  // 196-node/752-edge component (3.8 edges/node) pins network-simplex for >60s. Density is a
+  // third, independent reason to refuse the requested engine (#75).
+  const overDense = requested === "layered" && tooDenseForDagre(nodeCount, edgeCount);
+  if (!overNodes && !overEdges && !overDense) return { engine: requested, fallbackReason: null };
   const reason: FallbackReason = overNodes ? "node-cap" : "edge-cap";
   // Prefer a STRUCTURAL fallback — backbone shows the dependency core, not the meaningless
   // alphabetical grid users complained about — whenever the component still fits backbone's
   // budget. Only a component too big even for backbone (or backbone itself overflowing)
   // falls all the way to the cheap grid.
+  //
+  // Density is safe to route here: backbone lays out via forceLayout, NOT dagre, so it cannot
+  // reproduce the network-simplex hang that makes a dense component unsuitable for layered in
+  // the first place. Grid stays the destination only when backbone's own budget can't take it.
   if (
     requested !== "backbone" &&
     nodeCount <= HEAVY_COMPONENT_CAP.backbone &&
@@ -1416,8 +1437,13 @@ export function layoutView(view: LayoutInput, options: LayoutOptions = {}): Posi
         ? gridLayout(view)
         : forceLayout(view, options);
     default:
-      return cappedComponents(view, HEAVY_COMPONENT_CAP.layered, (sub) =>
-        dagreLayout(sub, direction, "network-simplex"),
+      // Like cappedComponents, but also grids components too DENSE for dagre (small
+      // node counts can still hang network-simplex — see tooDenseForDagre).
+      return layoutByComponents(view, (sub) =>
+        tooHeavy(sub, HEAVY_COMPONENT_CAP.layered) ||
+        tooDenseForDagre(sub.nodes.length, sub.edges.length)
+          ? gridLayout(sub)
+          : dagreLayout(sub, direction, "network-simplex"),
       );
   }
 }

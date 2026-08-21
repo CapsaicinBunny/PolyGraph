@@ -33,8 +33,8 @@ describe("resolveEngineForBudget — structural backbone fallback", () => {
       engine: "grid",
       fallbackReason: "edge-cap",
     });
-    // Within budget → unchanged.
-    expect(resolveEngineForBudget("layered", 1000, 3000)).toEqual({
+    // Within budget AND under the dagre density cap (2.0 edges/node < 2.5) → unchanged.
+    expect(resolveEngineForBudget("layered", 1000, 2000)).toEqual({
       engine: "layered",
       fallbackReason: null,
     });
@@ -655,6 +655,56 @@ describe("heavy-engine safety caps (no engine pins a core)", () => {
     const pos = layoutView({ nodes, edges: [] }, { algorithm: "force" });
     expect(pos.size).toBe(n);
     expect(distinctColumns(pos)).toBeLessThan(120);
+  });
+
+  test("layered grids a small-but-DENSE component (dagre hangs on density)", () => {
+    // The CI-hanging case: a 196n/752e component (3.8 edges/node) sails under the node
+    // (1200) and edge (8000) caps but pins dagre's network-simplex for >60s. The density
+    // guard grids it. Here: 60 nodes, 4 out-edges each = 4 edges/node, well over the cap.
+    const n = 60;
+    const nodes: LayoutInput["nodes"] = Array.from({ length: n }, (_, i) => ({
+      id: `d${i}`,
+      kind: "file" as const,
+    }));
+    const edges: LayoutInput["edges"] = [];
+    for (let i = 0; i < n; i++)
+      for (let k = 1; k <= 4; k++)
+        edges.push({
+          source: `d${i}`,
+          target: `d${(i + k) % n}`,
+          kind: "import" as const,
+          count: 1,
+          weight: edgeWeight("import", 1),
+        });
+    const pos = layoutView({ nodes, edges }, { algorithm: "layered" });
+    expect(pos.size).toBe(n);
+    expect(distinctColumns(pos)).toBeLessThan(20); // gridded (~sqrt(60)≈8), not dagre-ranked
+  });
+});
+
+describe("resolveEngineForBudget (density guard for the Smart per-cluster path)", () => {
+  test("layered never keeps a dense cluster on dagre (the 196n/752e CI hang)", () => {
+    // THE invariant: whatever we pick, it must not be layered — network-simplex pinned for >60s
+    // on this input. The destination is backbone rather than grid because backbone lays out via
+    // forceLayout, not dagre, so it cannot reproduce the hang (measured: 374ms on this exact
+    // input) while still showing the dependency core instead of an alphabetical grid.
+    const resolved = resolveEngineForBudget("layered", 196, 752);
+    expect(resolved.engine).not.toBe("layered");
+    expect(resolved).toEqual({ engine: "backbone", fallbackReason: "edge-cap" });
+  });
+
+  test("a dense cluster too big for backbone still falls all the way to grid", () => {
+    // Backbone is preferred only while the component fits ITS budget; past that the cheap grid
+    // is the only safe destination. 9000 edges is over HEAVY_EDGE_CAP.
+    expect(resolveEngineForBudget("layered", 3000, 9000).engine).toBe("grid");
+  });
+
+  test("layered keeps a sparse cluster of the same node count", () => {
+    expect(resolveEngineForBudget("layered", 196, 200).engine).toBe("layered");
+  });
+
+  test("the density guard is layered-only — stress absorbs density via PivotMDS", () => {
+    expect(resolveEngineForBudget("stress", 196, 752).engine).toBe("stress");
   });
 });
 
