@@ -59,6 +59,23 @@ const BUILTIN_FIELDS: ReadonlySet<string> = new Set([
   "depends_on",
 ]);
 
+/**
+ * Every field the evaluator handles explicitly: the built-ins above plus the legacy
+ * facet fields in `matchesPredicate`'s switch. Anything else falls through to a
+ * lenient text match on the *value*, so `bogusfield:x` quietly becomes a search for
+ * "x". Exported so callers that must distinguish "unknown field" from "genuinely no
+ * matches" (the MCP tools, whose caller is an LLM) can check without duplicating
+ * this list and letting it drift.
+ */
+export const KNOWN_QUERY_FIELDS: ReadonlySet<string> = new Set([
+  ...BUILTIN_FIELDS,
+  "environment",
+  "env",
+  "runtime",
+  "category",
+  "role",
+]);
+
 const DEP_TYPE_ALIASES: Record<string, string> = {
   prod: "dependency",
   dev: "devDependency",

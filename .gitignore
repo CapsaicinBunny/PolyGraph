@@ -16,6 +16,8 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+# Chromium/crashpad noise written next to the exe by the Tauri app's WebView2 host.
+debug.log
 
 # typescript
 *.tsbuildinfo

@@ -227,9 +227,12 @@ bun run cli/index.ts diff .          # graph diff vs. HEAD
 
 ```bash
 bun run dev            # Next dev server (port 3003) + analysis sidecar (port 4319)
-bun run build          # production build → static export in out/
-bun run build:sidecar  # compile the sidecar to a standalone binary (dist/)
-bun run start          # serve the static export locally (out/)
+bun run build          # everything → dist/
+bun run build:web      # just the static SPA → dist/web
+bun run build:bin      # just the standalone binaries → dist/bin
+bun run build:desktop  # just the desktop app → dist/desktop
+bun run clean          # remove dist/ and every build cache
+bun run start          # serve the static export locally (dist/web)
 bun run check          # architecture rules check on the current directory
 bun run diff           # graph diff of the current directory vs. HEAD
 bun test               # analyzer + view unit tests
@@ -238,7 +241,27 @@ bun run format         # oxfmt
 bun run tauri          # Tauri CLI (desktop shell)
 ```
 
-Building the cross-platform desktop installers is handled by CI — see
+Every shippable artifact lands under one root:
+
+```
+dist/
+├── web/       the static SPA
+├── bin/       polygraph-sidecar, polygraph-mcp
+└── desktop/   the app executable + installers
+```
+
+Three directories look like build output but are not, and stay where their
+toolchain requires them: `out/` is Next's export target (`output: "export"`
+hardcodes it, and `next build` wipes it, so `build:web` stages it into
+`dist/web`); `src-tauri/binaries/` holds the Tauri `externalBin` _input_, whose
+filename must carry the Rust target triple; `src-tauri/target/` is cargo's cache.
+`bun run clean` clears all of them.
+
+`build:desktop` needs a Rust toolchain. `build:web` and `build:bin` do not —
+without `rustc`, `build:bin` still compiles both binaries into `dist/bin` and
+warns that it could not stage the sidecar for Tauri.
+
+Building the cross-platform desktop installers for release is handled by CI — see
 [docs/RELEASING.md](docs/RELEASING.md).
 
 ### How it works

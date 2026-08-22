@@ -1,6 +1,6 @@
 // Public surface of the search query language.
 
-export { type EvalOptions, type QueryResult, runQuery } from "./evaluate";
+export { type EvalOptions, KNOWN_QUERY_FIELDS, type QueryResult, runQuery } from "./evaluate";
 export { type Node as QueryNode, parse } from "./parse";
 export { BUILTIN_SEARCHES, type SavedSearch } from "./presets";
 

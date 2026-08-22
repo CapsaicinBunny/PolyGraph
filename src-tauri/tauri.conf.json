@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.polygraph.desktop",
   "build": {
-    "frontendDist": "../out",
+    "frontendDist": "../dist/web",
     "devUrl": "http://localhost:3003",
-    "beforeBuildCommand": "bun run build"
+    "beforeBuildCommand": "bun run build:web"
   },
   "app": {
     "windows": [
